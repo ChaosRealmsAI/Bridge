@@ -1,0 +1,48 @@
+{
+  "name": "panda-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build:web": "node scripts/build-web.mjs",
+    "check": "npm run check:protocol && npm run check:sdk && npm run check:worker && npm run check:connector && npm run check:desktop",
+    "check:protocol": "node packages/protocol/test/protocol.test.mjs",
+    "check:sdk": "node packages/sdk/test/sdk.test.mjs",
+    "check:worker": "node apps/cloud-worker/test/worker.test.mjs",
+    "check:connector": "node apps/connector-cli/test/connector.test.mjs",
+    "check:desktop": "npm --workspace @panda-bridge/desktop run check",
+    "verify:local": "node scripts/verify/local-smoke.mjs",
+    "verify:cloud": "node scripts/verify/cloud-smoke.mjs",
+    "verify:browser": "node scripts/verify/browser-smoke.mjs",
+    "verify:mobile-browser": "node scripts/verify/mobile-browser-smoke.mjs",
+    "verify:desktop-lite": "node scripts/verify/desktop-lite-smoke.mjs",
+    "verify:installed-desktop-e2e": "node scripts/verify/installed-desktop-e2e.mjs",
+    "verify:account-e2e": "node scripts/verify/account-password-e2e.mjs",
+    "verify:concurrency:matrix": "node scripts/verify/concurrency-matrix.mjs",
+    "verify:concurrency:cloud": "node scripts/verify/cloud-concurrency-matrix.mjs",
+    "verify:real-codex:queue": "node scripts/verify/real-codex-queue.mjs",
+    "verify:performance": "node scripts/verify/account-password-e2e.mjs",
+    "verify:performance:matrix": "node scripts/verify/performance-matrix.mjs",
+    "verify:performance:real-codex": "PANDA_BRIDGE_REAL_CODEX=1 node scripts/verify/account-password-e2e.mjs",
+    "verify:performance:matrix:real-codex": "PANDA_BRIDGE_REAL_CODEX=1 node scripts/verify/performance-matrix.mjs",
+    "cloud:dev": "npm --workspace @panda-bridge/cloud-worker run dev",
+    "cloud:deploy": "npm run build:web && npm --workspace @panda-bridge/cloud-worker run deploy",
+    "cloud:migrate": "node scripts/cloud/migrate.mjs",
+    "connector": "node apps/connector-cli/src/cli.mjs",
+    "desktop:install:mac": "node scripts/desktop/install-macos.mjs",
+    "desktop:dev": "npm --workspace @panda-bridge/desktop run run",
+    "desktop:build": "npm --workspace @panda-bridge/desktop run build",
+    "desktop:check": "npm --workspace @panda-bridge/desktop run check",
+    "web:serve": "node scripts/serve-web.mjs"
+  },
+  "dependencies": {
+    "pg": "^8.21.0"
+  },
+  "devDependencies": {
+    "playwright": "^1.60.0"
+  }
+}

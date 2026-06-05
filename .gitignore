@@ -1,0 +1,12 @@
+node_modules/
+.wrangler/
+.env
+.env.*
+.DS_Store
+dist/
+target/
+apps/desktop/target/
+.tmp/
+spec/evidence/
+apps/web-chat/public/sdk/
+*.log

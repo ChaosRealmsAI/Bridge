@@ -1,0 +1,368 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Panda Connector</title>
+  <style>
+    :root{
+      --accent:#0a84ff;--accent-soft:rgba(10,132,255,.12);
+      --text:#1c1c1e;--muted:#797982;--faint:#abacb3;
+      --line:rgba(0,0,0,.08);--hair:rgba(0,0,0,.05);
+      --green:#34c759;--amber:#ff9f0a;--red:#ff453a;
+      --side-bg:rgba(255,255,255,.62);--detail-bg:rgba(255,255,255,.74);
+      --card:rgba(255,255,255,.7);--card-hover:#fff;--btn:rgba(255,255,255,.85);
+      --hover:rgba(0,0,0,.045);--okgreen:#1a8c3a;
+      --codex-bg:rgba(52,199,89,.1);--codex-bd:rgba(52,199,89,.26);--ico-set:#8a8f99;
+      color-scheme: light;
+      font-family:-apple-system,"SF Pro Display","SF Pro Text","Helvetica Neue",sans-serif;
+    }
+    [data-theme="dark"]{
+      color-scheme: dark;
+      --text:#ededf0;--muted:#9a9ca3;--faint:#6a6d75;
+      --line:rgba(255,255,255,.1);--hair:rgba(255,255,255,.06);
+      --side-bg:rgba(26,27,30,.9);--detail-bg:rgba(20,21,24,.84);
+      --card:rgba(255,255,255,.07);--card-hover:rgba(255,255,255,.12);--btn:rgba(255,255,255,.09);
+      --hover:rgba(255,255,255,.06);--okgreen:#46d168;--accent-soft:rgba(10,132,255,.22);
+      --codex-bg:rgba(52,199,89,.14);--codex-bd:rgba(52,199,89,.34);--ico-set:#6c707a;
+    }
+    *{box-sizing:border-box;margin:0;padding:0}
+    html,body{height:100%}
+    body{background:transparent;color:var(--text);-webkit-font-smoothing:antialiased;overflow:hidden}
+    .app{height:100vh;display:grid;grid-template-columns:230px 1fr}
+
+    .side{background:var(--side-bg);backdrop-filter:blur(30px) saturate(180%);
+      -webkit-backdrop-filter:blur(30px) saturate(180%);border-right:.5px solid var(--line);
+      padding:14px 11px;display:flex;flex-direction:column;gap:3px;overflow:auto}
+    .codex{display:flex;align-items:center;gap:9px;padding:9px 10px;margin-bottom:6px;border-radius:10px;
+      background:var(--codex-bg);border:.5px solid var(--codex-bd)}
+    .codex.bad{background:rgba(255,159,10,.12);border-color:rgba(255,159,10,.32)}
+    .codex .d{width:8px;height:8px;border-radius:50%;background:var(--green);flex:none;box-shadow:0 0 0 3px rgba(52,199,89,.18)}
+    .codex.bad .d{background:var(--amber);box-shadow:0 0 0 3px rgba(255,159,10,.18)}
+    .codex .t{font-size:12.5px;font-weight:650}
+    .codex .s{font-size:10.5px;color:var(--muted);margin-top:1px}
+
+    .grp{font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--faint);padding:10px 8px 4px}
+    .item{display:flex;align-items:center;gap:10px;padding:8px;border-radius:8px;cursor:pointer;transition:.12s}
+    .item:hover{background:var(--hover)}
+    .item.sel{background:var(--accent);box-shadow:0 1px 4px rgba(10,132,255,.35)}
+    .item.sel *{color:#fff !important}
+    .item .ic{width:26px;height:26px;border-radius:7px;display:grid;place-items:center;font-size:13px;font-weight:700;color:#fff;flex:none}
+    .item .nm{font-size:13.5px;font-weight:550;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .item .tail{margin-left:auto;flex:none;display:flex;align-items:center;gap:7px}
+    .item .cnt{font-size:11.5px;color:var(--faint)}
+    .item .on{width:6px;height:6px;border-radius:50%;background:var(--green)}
+    .item .on.off{background:var(--faint)}
+    .item .alert{width:18px;height:18px;border-radius:50%;background:var(--red);color:#fff;font-size:11px;font-weight:700;display:grid;place-items:center}
+    .side .spacer{flex:1;min-height:12px}
+    .setitem{margin-top:2px;border-top:.5px solid var(--line);padding-top:11px}
+    .setitem .ic{background:var(--ico-set) !important;font-size:14px}
+
+    .detail{background:var(--detail-bg);backdrop-filter:blur(20px) saturate(160%);
+      -webkit-backdrop-filter:blur(20px) saturate(160%);padding:26px 28px;overflow:auto}
+    .dhead{display:flex;align-items:center;gap:14px;margin-bottom:4px}
+    .dhead .big{width:50px;height:50px;border-radius:13px;display:grid;place-items:center;font-size:19px;font-weight:700;color:#fff;flex:none}
+    .dhead .big.set{background:linear-gradient(135deg,#cfd4dd,#a6acba);font-size:23px}
+    .dhead h2{font-size:22px;font-weight:750;letter-spacing:-.02em}
+    .dhead p{font-size:13px;color:var(--muted);margin-top:3px}
+    .dhead .open{margin-left:auto;height:32px;padding:0 15px;border-radius:8px;border:.5px solid var(--line);
+      background:var(--btn);font:inherit;font-size:12.5px;font-weight:600;cursor:pointer;color:var(--accent)}
+    .dhead .open:hover{background:var(--card-hover)}
+
+    .lbl{display:flex;align-items:center;font-size:11.5px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--faint);margin:26px 0 11px}
+    .lbl .add{margin-left:auto;text-transform:none;letter-spacing:0;font-size:13px;color:var(--accent);cursor:pointer;font-weight:600}
+
+    .acct{display:flex;align-items:center;gap:13px;padding:14px 15px;background:var(--card);border:.5px solid var(--line);border-radius:12px;margin-bottom:9px}
+    .acct .av{width:34px;height:34px;border-radius:50%;flex:none;display:grid;place-items:center;font-size:12.5px;font-weight:700;color:#22356f;background:linear-gradient(135deg,#cfdcff,#9fb6ff)}
+    .acct .em{font-size:14px;font-weight:550;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .acct .ok{font-size:11px;color:var(--okgreen);margin-top:2px;display:flex;align-items:center;gap:5px}
+    .acct .ok::before{content:"";width:5px;height:5px;border-radius:50%;background:var(--green);display:inline-block}
+    .acct .rv{margin-left:auto;font-size:12.5px;color:var(--muted);cursor:pointer;font-weight:550;flex:none}
+    .acct .rv:hover{color:var(--red)}
+    .acctempty{text-align:center;color:var(--faint);font-size:13.5px;padding:34px 16px;line-height:1.7;border:1px dashed var(--line);border-radius:12px;background:var(--card)}
+
+    .segtheme{display:flex;gap:10px;margin-bottom:6px}
+    .themecard{flex:1;border:1.5px solid var(--line);border-radius:13px;padding:8px 8px 9px;cursor:pointer;text-align:center;transition:.14s;background:var(--card)}
+    .themecard:hover{background:var(--card-hover)}
+    .themecard.on{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+    .themecard.on .nm{color:var(--accent)}
+    .thumb{display:grid;grid-template-columns:34% 66%;height:46px;border-radius:7px;overflow:hidden;border:.5px solid var(--line);margin-bottom:8px}
+    .thumb .ct{padding:7px 7px;display:flex;flex-direction:column;gap:4px;justify-content:center}
+    .thumb .ct i{height:5px;border-radius:2px;display:block}
+    .thumb .ct i:first-child{width:74%}.thumb .ct i:last-child{width:46%}
+    .thumb.light .sb{background:#e6e9ee}.thumb.light .ct{background:#fcfcfd}.thumb.light .ct i{background:#d6dae1}
+    .thumb.dark .sb{background:#26272c}.thumb.dark .ct{background:#161719}.thumb.dark .ct i{background:#35373d}
+    .thumb.auto .sb{background:#e6e9ee}.thumb.auto .ct{background:#161719}.thumb.auto .ct i{background:#3b3d44}
+    .themecard .nm{font-size:12px;font-weight:600;color:var(--text)}
+    .listcard{background:var(--card);border:.5px solid var(--line);border-radius:13px;overflow:hidden}
+    .lrow{display:flex;align-items:center;padding:13px 16px;cursor:pointer;font-size:14px;font-weight:500;transition:.1s;color:var(--text)}
+    .lrow+.lrow{border-top:.5px solid var(--hair)}
+    .lrow:hover{background:var(--hover)}
+    .lrow.on{font-weight:650}
+    .lrow .ck{margin-left:auto;color:var(--accent);font-weight:800;font-size:15px}
+
+    .reqp{background:var(--card);border:.5px solid var(--line);border-radius:14px;padding:22px;margin-top:10px;box-shadow:0 6px 20px -10px rgba(10,40,90,.18);text-align:center}
+    .reqp .av{width:52px;height:52px;border-radius:50%;margin:0 auto 14px;display:grid;place-items:center;font-size:15px;font-weight:700;color:#22356f;background:linear-gradient(135deg,#cfdcff,#9fb6ff)}
+    .reqp .em{font-size:17px;font-weight:700;letter-spacing:-.01em}
+    .reqp .desc{font-size:13px;color:var(--muted);margin:8px auto 20px;line-height:1.6;max-width:34ch}
+    .reqp .desc b{color:var(--text)}
+    .reqp .qrow{display:flex;gap:12px}
+    .btn{flex:1;height:44px;border-radius:11px;border:.5px solid var(--line);background:var(--btn);font:inherit;font-size:14px;font-weight:600;cursor:pointer;transition:.13s;color:var(--text)}
+    .btn:hover{background:var(--card-hover)}
+    .btn.primary{flex:1.5;background:var(--accent);border-color:var(--accent);color:#fff}
+    .btn.primary:hover{background:#0a78e6}
+    .bigbtn{height:44px;padding:0 26px;border-radius:11px;border:.5px solid var(--line);background:var(--btn);font:inherit;font-size:13.5px;font-weight:600;cursor:pointer;color:var(--accent);margin-top:14px;transition:.13s}
+    .bigbtn:hover{background:var(--card-hover)}
+
+    .empty{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;text-align:center;color:var(--muted);gap:6px;padding:20px}
+    .empty .ico{font-size:46px;margin-bottom:6px}
+    .empty h2{font-size:19px;font-weight:700;color:var(--text);letter-spacing:-.01em}
+    .empty p{font-size:13px;color:var(--faint);max-width:30ch;line-height:1.6}
+
+    .toast{position:fixed;left:50%;bottom:18px;transform:translate(-50%,18px);background:rgba(40,40,44,.94);backdrop-filter:blur(10px);color:#fff;font-size:12.5px;font-weight:600;padding:10px 17px;border-radius:9px;opacity:0;transition:.25s;z-index:30}
+    .toast.on{opacity:1;transform:translate(-50%,0)}
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="side" id="side"></aside>
+    <section class="detail" id="detail"></section>
+  </div>
+  <div class="toast" id="toast"></div>
+
+  <script>
+    const DEFAULT_API = "https://api.bridge.otherline.cc";
+    const WEB_URL = "https://bridge.otherline.cc";
+    const TAGLINES = { "Panda Chat":"chat", "Panda Dev":"dev", "Panda Spec":"spec", "Panda Lab":"lab", "PandaArt":"art" };
+
+    // ── i18n ──
+    const LANGS = [{code:"zh-CN",name:"简体中文"},{code:"zh-TW",name:"繁體中文"},{code:"en",name:"English"},{code:"ja",name:"日本語"}];
+    const TAGS = {
+      chat:{ "zh-CN":"手机 · 网页 · 多端对话","zh-TW":"手機 · 網頁 · 多端對話","en":"Phone · web · multi-device chat","ja":"スマホ · ウェブ · マルチ端末チャット" },
+      dev:{ "zh-CN":"本地项目 · 代码生成","zh-TW":"本地專案 · 程式生成","en":"Local projects · code gen","ja":"ローカルプロジェクト · コード生成" },
+      spec:{ "zh-CN":"规格文档 · 评审","zh-TW":"規格文件 · 評審","en":"Specs · review","ja":"仕様書 · レビュー" },
+      lab:{ "zh-CN":"内部实验产品","zh-TW":"內部實驗產品","en":"Internal experiments","ja":"社内実験プロダクト" },
+      art:{ "zh-CN":"AI 创意生成","zh-TW":"AI 創意生成","en":"AI creative gen","ja":"AI クリエイティブ生成" },
+    };
+    const I18N = {
+      "zh-CN":{ ready:"本机 AI 已就绪",readySub:"这台电脑可被你的账号使用",codexBad:"未检测到 Codex",codexBadSub:"请在本机运行 codex login",noLogin:"未登录",noLoginSub:"登录后即可使用",
+        apps:"应用",pending:"待授权",noApps:"还没有应用",settings:"设置",open:"打开",accounts:"已授权账号",addAccount:"授权新账号",
+        acctOk:"已授权 · 可用这台电脑",signOut:"退出",noAccts:"还没有账号授权 {name}<br>点右上「{add}」从网页 / 手机发起连接",
+        emptyTitle:"让你的应用用上这台电脑",emptyDesc:"在 Panda Chat 等应用里点「连接本机 Agent」，授权账号后就会出现在这里。",login:"登录",
+        reqLine:"{product} 想让这个账号用上你这台电脑的 AI。",reqLine2:"允许后即可使用。",deny:"拒绝",allow:"允许",
+        language:"语言",appearance:"外观",thAuto:"跟随系统",thLight:"浅色",thDark:"深色",
+        tAuth:"已授权 · {name}",tFail:"授权失败",tOut:"已退出该账号",tWeb:"已打开网页，去登录并授权" },
+      "zh-TW":{ ready:"本機 AI 已就緒",readySub:"這台電腦可被你的帳號使用",codexBad:"未偵測到 Codex",codexBadSub:"請在本機執行 codex login",noLogin:"未登入",noLoginSub:"登入後即可使用",
+        apps:"應用",pending:"待授權",noApps:"還沒有應用",settings:"設定",open:"開啟",accounts:"已授權帳號",addAccount:"授權新帳號",
+        acctOk:"已授權 · 可用這台電腦",signOut:"退出",noAccts:"還沒有帳號授權 {name}<br>點右上「{add}」從網頁 / 手機發起連接",
+        emptyTitle:"讓你的應用用上這台電腦",emptyDesc:"在 Panda Chat 等應用裡點「連接本機 Agent」，授權帳號後就會出現在這裡。",login:"登入",
+        reqLine:"{product} 想讓這個帳號用上你這台電腦的 AI。",reqLine2:"允許後即可使用。",deny:"拒絕",allow:"允許",
+        language:"語言",appearance:"外觀",thAuto:"跟隨系統",thLight:"淺色",thDark:"深色",
+        tAuth:"已授權 · {name}",tFail:"授權失敗",tOut:"已退出該帳號",tWeb:"已開啟網頁，去登入並授權" },
+      "en":{ ready:"Local AI is ready",readySub:"This Mac can be used by your accounts",codexBad:"Codex not found",codexBadSub:"Run codex login on this Mac",noLogin:"Not signed in",noLoginSub:"Sign in to get started",
+        apps:"Apps",pending:"Pending",noApps:"No apps yet",settings:"Settings",open:"Open",accounts:"Authorized accounts",addAccount:"Authorize account",
+        acctOk:"Authorized · can use this Mac",signOut:"Sign out",noAccts:"No account has authorized {name} yet<br>Tap “{add}” to connect from web / phone",
+        emptyTitle:"Let your apps use this Mac",emptyDesc:"In Panda Chat and other apps, tap “Connect local Agent”. Authorized accounts show up here.",login:"Sign in",
+        reqLine:"{product} wants this account to use the AI on this Mac.",reqLine2:"Allow to start using it.",deny:"Deny",allow:"Allow",
+        language:"Language",appearance:"Appearance",thAuto:"System",thLight:"Light",thDark:"Dark",
+        tAuth:"Authorized · {name}",tFail:"Authorization failed",tOut:"Account signed out",tWeb:"Opened web — sign in and authorize" },
+      "ja":{ ready:"ローカル AI 準備完了",readySub:"この Mac をアカウントで利用できます",codexBad:"Codex が見つかりません",codexBadSub:"この Mac で codex login を実行",noLogin:"未ログイン",noLoginSub:"ログインして開始",
+        apps:"アプリ",pending:"承認待ち",noApps:"アプリがありません",settings:"設定",open:"開く",accounts:"承認済みアカウント",addAccount:"アカウントを承認",
+        acctOk:"承認済み · この Mac を利用可",signOut:"解除",noAccts:"{name} を承認したアカウントはまだありません<br>右上の「{add}」からウェブ / スマホで接続",
+        emptyTitle:"アプリにこの Mac を使わせる",emptyDesc:"Panda Chat などで「ローカル Agent に接続」をタップ。承認したアカウントがここに表示されます。",login:"ログイン",
+        reqLine:"{product} がこのアカウントでこの Mac の AI を使おうとしています。",reqLine2:"許可するとすぐ使えます。",deny:"拒否",allow:"許可",
+        language:"言語",appearance:"外観",thAuto:"システムに合わせる",thLight:"ライト",thDark:"ダーク",
+        tAuth:"承認済み · {name}",tFail:"承認に失敗",tOut:"アカウントを解除しました",tWeb:"ウェブを開きました — ログインして承認" },
+    };
+    let lang="zh-CN"; try{ lang=localStorage.getItem("panda_lang")||"zh-CN"; }catch(e){}
+    function t(k,vars){ let s=(I18N[lang]||I18N["zh-CN"])[k]??I18N["zh-CN"][k]??k; if(vars) for(const x in vars) s=s.split("{"+x+"}").join(vars[x]); return s; }
+    function tag(p){ const key=TAGLINES[p.name]; return key&&TAGS[key]?(TAGS[key][lang]||TAGS[key]["zh-CN"]):""; }
+    function setLang(l){ lang=l; try{localStorage.setItem("panda_lang",l);}catch(e){} document.documentElement.lang=l; render(); }
+
+    // ── theme (light / dark / auto) ──
+    let theme="auto"; try{ theme=localStorage.getItem("panda_theme")||"auto"; }catch(e){}
+    const THEMES=[{v:"auto",k:"thAuto"},{v:"light",k:"thLight"},{v:"dark",k:"thDark"}];
+    const mq = window.matchMedia("(prefers-color-scheme: dark)");
+    function effectiveDark(){ return theme==="dark" || (theme==="auto" && mq.matches); }
+    function applyTheme(){ document.documentElement.dataset.theme = effectiveDark()?"dark":"light"; }
+    if (mq.addEventListener) mq.addEventListener("change", ()=>{ if(theme==="auto") applyTheme(); });
+    function setTheme(v){ theme=v; try{localStorage.setItem("panda_theme",v);}catch(e){} applyTheme(); render(); }
+
+    // ── IPC bridge (contract with Rust host — do not rename) ──
+    const ipcState = { seq: 0, calls: new Map() };
+    window.PandaBridge = {
+      call(command, params = {}) {
+        const id = String(++ipcState.seq);
+        window.ipc.postMessage(JSON.stringify({ id, command, params }));
+        return new Promise((resolve, reject) => ipcState.calls.set(id, { resolve, reject }));
+      },
+      receive(message) {
+        if (message.type === "response") {
+          const item = ipcState.calls.get(message.id);
+          if (!item) return;
+          ipcState.calls.delete(message.id);
+          if (message.ok) item.resolve(message.result); else item.reject(new Error(message.error || "desktop command failed"));
+          return;
+        }
+        if (message.type === "event" && message.event === "deep_link") handleDeepLink(message.url).catch(()=>{});
+        if (message.type === "event" && message.event === "refresh") refresh().catch(()=>{});
+      },
+    };
+
+    // ── state ──
+    const ui = { view: "app", sel: null, selReq: 0, products: [], pending: [], ready: false, connected: false };
+
+    function ini(name){ const p=(name||"").trim().split(/[\s·_\-]+/).filter(Boolean);
+      if(p.length>=2) return (p[0][0]+p[1][0]).toUpperCase();
+      const s=(name||"P").replace(/[^A-Za-z一-龥]/g,""); return s.slice(0,2).toUpperCase()||"P"; }
+    function av(email){ const s=(email||"").replace(/[^a-z0-9]/ig,""); return (s.slice(0,2)||"?").toUpperCase(); }
+    const COLORS=["#34a06f","#3f6fd1","#c8923a","#8b5cf6","#e0648a","#2bb3c0"];
+    function colorFor(id){ let h=0; for(const ch of (id||"x")) h=(h*31+ch.charCodeAt(0))>>>0; return COLORS[h%COLORS.length]; }
+
+    function buildFromStatus(s){
+      ui.ready = !!(s.device_id && s.codex_available);
+      ui.connected = !!s.device_id;
+      const list = Array.isArray(s.authorized_products) ? s.authorized_products : [];
+      ui.products = list.map(p=>({ id:p.id, name:p.name||p.id,
+        accounts: Array.isArray(p.accounts) ? p.accounts.map(a=>({email:a.email||a}))
+          : (s.account_display ? [{ email:s.account_display }] : []) }));
+    }
+
+    function renderSide(){
+      let h = `<div class="codex ${ui.ready?'':'bad'}"><span class="d"></span>
+          <div><div class="t">${ui.ready?t('ready'):(ui.connected?t('codexBad'):t('noLogin'))}</div>
+          <div class="s">${ui.ready?t('readySub'):(ui.connected?t('codexBadSub'):t('noLoginSub'))}</div></div></div>`;
+      if (ui.pending.length){
+        h += `<div class="grp">${t('pending')} (${ui.pending.length})</div>`;
+        h += ui.pending.map((p,i)=>`<div class="item ${ui.view==='request'&&ui.selReq===i?'sel':''}" onclick="openReq(${i})">
+            <div class="ic" style="background:${colorFor(p.product_id)}">${ini(p.product_name)}</div>
+            <span class="nm">${p.product_name||'Panda'}</span><span class="tail"><span class="alert">!</span></span></div>`).join("");
+      }
+      h += `<div class="grp">${t('apps')}</div>`;
+      if (ui.products.length){
+        h += ui.products.map(p=>`<div class="item ${ui.view==='app'&&ui.sel===p.id?'sel':''}" onclick="openApp('${p.id}')">
+            <div class="ic" style="background:${colorFor(p.id)}">${ini(p.name)}</div>
+            <span class="nm">${p.name}</span>
+            <span class="tail"><span class="cnt">${p.accounts.length}</span><span class="on ${p.accounts.length?'':'off'}"></span></span></div>`).join("");
+      } else {
+        h += `<div class="item" style="cursor:default"><span class="nm" style="color:var(--faint)">${t('noApps')}</span></div>`;
+      }
+      h += `<div class="spacer"></div>
+        <div class="item setitem ${ui.view==='settings'?'sel':''}" onclick="go('settings')">
+          <div class="ic">⚙</div><span class="nm">${t('settings')}</span></div>`;
+      document.getElementById("side").innerHTML = h;
+    }
+
+    function renderDetail(){
+      const el = document.getElementById("detail");
+      if (ui.view === "settings") return el.innerHTML = settingsView();
+      if (ui.view === "request" && ui.pending[ui.selReq]) return el.innerHTML = requestView(ui.pending[ui.selReq]);
+      const p = ui.products.find(x=>x.id===ui.sel) || ui.products[0];
+      if (!p) return el.innerHTML = `<div class="empty"><div class="ico">🐼</div>
+          <h2>${t('emptyTitle')}</h2><p>${t('emptyDesc')}</p>
+          <button class="bigbtn" onclick="connectNew()">${t('login')}</button></div>`;
+      ui.sel = p.id;
+      return el.innerHTML = appView(p);
+    }
+
+    function appView(p){
+      return `<div class="dhead">
+          <div class="big" style="background:${colorFor(p.id)}">${ini(p.name)}</div>
+          <div><h2>${p.name}</h2><p>${tag(p)}</p></div>
+          <button class="open" onclick="openWeb()">${t('open')} ↗</button></div>
+        <div class="lbl">${t('accounts')} · ${p.accounts.length}<span class="add" onclick="addAccount('${p.id}')">＋ ${t('addAccount')}</span></div>
+        ${p.accounts.length ? p.accounts.map((a,ai)=>`<div class="acct">
+            <div class="av">${av(a.email)}</div>
+            <div style="min-width:0"><div class="em">${a.email}</div><div class="ok">${t('acctOk')}</div></div>
+            <span class="rv" onclick="revoke('${p.id}',${ai})">${t('signOut')}</span></div>`).join("")
+          : `<div class="acctempty">${t('noAccts',{name:p.name,add:t('addAccount')})}</div>`}`;
+    }
+
+    function requestView(p){
+      return `<div class="reqp"><div class="av">${av(p.email)}</div>
+          <div class="em">${p.email||'Panda'}</div>
+          <div class="desc">${t('reqLine',{product:'<b>'+(p.product_name||'Panda')+'</b>'})}<br>${t('reqLine2')}</div>
+          <div class="qrow"><button class="btn" onclick="deny(${ui.selReq})">${t('deny')}</button>
+            <button class="btn primary" onclick="approve(${ui.selReq})">${t('allow')}</button></div></div>`;
+    }
+
+    function settingsView(){
+      return `<div class="dhead"><div class="big set">⚙</div><div><h2>${t('settings')}</h2></div></div>
+        <div class="lbl">${t('appearance')}</div>
+        <div class="segtheme">${THEMES.map(o=>`<div class="themecard ${theme===o.v?'on':''}" onclick="setTheme('${o.v}')">
+            <div class="thumb ${o.v}"><div class="sb"></div><div class="ct"><i></i><i></i></div></div>
+            <div class="nm">${t(o.k)}</div></div>`).join("")}</div>
+        <div class="lbl">${t('language')}</div>
+        <div class="listcard">${LANGS.map(l=>`<div class="lrow ${lang===l.code?'on':''}" onclick="setLang('${l.code}')">
+            <span>${l.name}</span>${lang===l.code?'<span class="ck">✓</span>':''}</div>`).join("")}</div>`;
+    }
+
+    function render(){ renderSide(); renderDetail(); }
+
+    // ── navigation ──
+    function go(view){ ui.view=view; render(); }
+    function openApp(id){ ui.view="app"; ui.sel=id; render(); }
+    function openReq(i){ ui.view="request"; ui.selReq=i; render(); }
+
+    // ── commands (real IPC) ──
+    async function handleDeepLink(raw){
+      const url = new URL(raw); const intent = url.searchParams.get("intent"); const api = url.searchParams.get("api") || DEFAULT_API;
+      if (!intent) return;
+      const pre = await window.PandaBridge.call("preview_intent", { api, intent });
+      ui.pending.push({ product_id: pre.product_id, product_name: pre.product_name, email: pre.user_display_name, _api: api, _intent: intent });
+      ui.view = "request"; ui.selReq = ui.pending.length - 1; render();
+    }
+    async function approve(i){
+      const p = ui.pending[i]; if (!p) return;
+      try{
+        const r = await window.PandaBridge.call("claim_intent", { api: p._api, intent: p._intent, device_name: deviceName() });
+        ui.pending.splice(i,1); await startWorker(); await refresh();
+        ui.view = "app"; ui.sel = p.product_id; render();
+        toast(t('tAuth',{name:r.product_name||p.product_name||""}));
+      }catch(e){ toast(t('tFail')); }
+    }
+    function deny(i){ ui.pending.splice(i,1); ui.view="app"; ui.sel=ui.products[0]?.id||null; render(); }
+    // backend single-account revoke endpoint pending — remove locally for now
+    function revoke(pid,ai){ const p=ui.products.find(x=>x.id===pid); if(!p) return; p.accounts.splice(ai,1); render(); toast(t('tOut')); }
+    async function addAccount(pid){ try{ await window.PandaBridge.call("open_web", { url: `${WEB_URL}?desktop_login=1${pid?'&product='+encodeURIComponent(pid):''}` }); toast(t('tWeb')); }catch(e){} }
+    async function connectNew(){ try{ await window.PandaBridge.call("open_web", { url: `${WEB_URL}?desktop_login=1` }); toast(t('tWeb')); }catch(e){} }
+    async function openWeb(){ try{ await window.PandaBridge.call("open_web", { url: WEB_URL }); }catch(e){} }
+    async function startWorker(){ try{ await window.PandaBridge.call("start_worker"); }catch(e){} }
+
+    async function refresh(){
+      const s = await window.PandaBridge.call("status");
+      buildFromStatus(s);
+      if (ui.view==="app" && !ui.products.find(x=>x.id===ui.sel)) ui.sel = ui.products[0]?.id || null;
+      render(); return s;
+    }
+    function deviceName(){ return `Panda Connector ${navigator.platform||"Desktop"}`; }
+    let tt; function toast(m){ const e=document.getElementById("toast"); e.textContent=m; e.classList.add("on"); clearTimeout(tt); tt=setTimeout(()=>e.classList.remove("on"),1700); }
+
+    // ── boot ──
+    document.documentElement.lang = lang; applyTheme();
+    refresh().then((s)=>{ if(s?.device_id) startWorker(); }).catch(()=>{});
+
+    // ── preview fallback ──
+    if (!window.ipc){
+      document.body.style.background = "radial-gradient(800px 520px at 16% 6%,#ffe2c0,transparent 60%),radial-gradient(720px 600px at 88% 20%,#ccd8ff,transparent 55%),linear-gradient(135deg,#f4c8d8,#bcd0ff 58%,#bfe9d9)";
+      const mock = { account_display:"chaos.realms.ai@gmail.com", device_id:"dev_macbookpro_8f21", device_name:"MacBook Pro",
+        api_base:"https://api.bridge.otherline.cc", cloud_origin:"bridge.otherline.cc", worker_running:true, realtime_connected:true, codex_available:true,
+        authorized_products:[
+          {id:"panda_chat",name:"Panda Chat",accounts:[{email:"chaos.realms.ai@gmail.com"},{email:"panda-final@bridge.otherline.cc"}]},
+          {id:"panda_dev",name:"Panda Dev",accounts:[{email:"dev@otherline.cc"}]},
+          {id:"panda_spec",name:"Panda Spec",accounts:[]} ] };
+      window.ipc = { postMessage(raw){
+        const { id, command } = JSON.parse(raw);
+        const reply = (ok, payload)=> setTimeout(()=>window.PandaBridge.receive({ type:"response", id, ok, result: payload }), 70);
+        if (command==="status") return reply(true, JSON.parse(JSON.stringify(mock)));
+        if (command==="preview_intent") return reply(true, { product_id:"panda_chat", product_name:"Panda Chat", user_display_name:"team-demo@otherline.cc", cloud_origin:"bridge.otherline.cc" });
+        if (command==="claim_intent"){ mock.authorized_products[0].accounts.push({email:"team-demo@otherline.cc"}); return reply(true, { product_id:"panda_chat", product_name:"Panda Chat", account_display:"team-demo@otherline.cc", authorized_products:mock.authorized_products }); }
+        if (command==="open_web"||command==="start_worker"||command==="stop_worker"||command==="disconnect") return reply(true,{ok:true,message:"ok"});
+        return reply(false,"unknown command: "+command);
+      }};
+      refresh();
+      setTimeout(()=>window.PandaBridge.receive({ type:"event", event:"deep_link", url:"panda-bridge://connect?intent=demo123&api=https://api.bridge.otherline.cc" }), 800);
+    }
+  </script>
+</body>
+</html>

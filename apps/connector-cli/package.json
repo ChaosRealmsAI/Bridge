@@ -1,0 +1,14 @@
+{
+  "name": "@panda-bridge/connector-cli",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": {
+    "panda-bridge": "src/cli.mjs"
+  },
+  "scripts": {
+    "test": "node test/connector.test.mjs"
+  },
+  "dependencies": {
+    "@panda-bridge/protocol": "0.1.0"
+  }
+}

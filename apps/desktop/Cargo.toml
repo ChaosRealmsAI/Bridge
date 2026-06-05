@@ -1,0 +1,31 @@
+[package]
+name = "panda-bridge-desktop"
+version = "0.1.0"
+edition = "2021"
+description = "Panda Bridge lightweight desktop app"
+
+[dependencies]
+keyring = { version = "3.6.3", features = ["apple-native", "windows-native"] }
+reqwest = { version = "0.13.4", default-features = false, features = ["blocking", "charset", "http2", "json", "native-tls", "system-proxy"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tao = "0.35.3"
+tungstenite = { version = "0.28", features = ["native-tls"] }
+url = "2"
+urlencoding = "2"
+window-vibrancy = "0.7.1"
+wry = "0.55.1"
+
+[target.'cfg(windows)'.dependencies]
+windows-registry = "0.6.1"
+
+[package.metadata.bundle]
+name = "Panda Bridge"
+identifier = "cc.otherline.panda-bridge"
+icon = []
+version = "0.1.0"
+copyright = "Copyright Panda Bridge"
+category = "Developer Tool"
+short_description = "Local Codex runtime bridge"
+long_description = "Panda Bridge connects SaaS products to the user's local Codex app-server with local authorization."
+osx_url_schemes = ["panda-bridge"]
