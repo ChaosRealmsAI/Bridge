@@ -174,10 +174,17 @@
         language:"言語",appearance:"外観",thAuto:"システムに合わせる",thLight:"ライト",thDark:"ダーク",
         tAuth:"承認済み · {name}",tFail:"承認に失敗",tOut:"アカウントを解除しました",tWeb:"ウェブを開きました — ログインして承認" },
     };
-    let lang="zh-CN"; try{ lang=localStorage.getItem("panda_lang")||"zh-CN"; }catch(e){}
-    function t(k,vars){ let s=(I18N[lang]||I18N["zh-CN"])[k]??I18N["zh-CN"][k]??k; if(vars) for(const x in vars) s=s.split("{"+x+"}").join(vars[x]); return s; }
-    function tag(p){ const key=TAGLINES[p.name]; return key&&TAGS[key]?(TAGS[key][lang]||TAGS[key]["zh-CN"]):""; }
-    function setLang(l){ lang=l; try{localStorage.setItem("panda_lang",l);}catch(e){} document.documentElement.lang=l; render(); }
+    let langMode="auto"; try{ langMode=localStorage.getItem("panda_lang")||"auto"; }catch(e){}
+    function detectSystemLang(){
+      const n=(navigator.language||navigator.userLanguage||"en").toLowerCase();
+      if(n.indexOf("zh")===0) return /tw|hk|hant|mo/.test(n)?"zh-TW":"zh-CN";
+      if(n.indexOf("ja")===0) return "ja";
+      return "en";
+    }
+    function curLang(){ return langMode==="auto" ? detectSystemLang() : langMode; }
+    function t(k,vars){ const lang=curLang(); let s=(I18N[lang]||I18N["zh-CN"])[k]??I18N["zh-CN"][k]??k; if(vars) for(const x in vars) s=s.split("{"+x+"}").join(vars[x]); return s; }
+    function tag(p){ const key=TAGLINES[p.name]; const lang=curLang(); return key&&TAGS[key]?(TAGS[key][lang]||TAGS[key]["zh-CN"]):""; }
+    function setLang(m){ langMode=m; try{localStorage.setItem("panda_lang",m);}catch(e){} document.documentElement.lang=curLang(); render(); }
 
     // ── theme (light / dark / auto) ──
     let theme="auto"; try{ theme=localStorage.getItem("panda_theme")||"auto"; }catch(e){}
@@ -293,8 +300,9 @@
             <div class="thumb ${o.v}"><div class="sb"></div><div class="ct"><i></i><i></i></div></div>
             <div class="nm">${t(o.k)}</div></div>`).join("")}</div>
         <div class="lbl">${t('language')}</div>
-        <div class="listcard">${LANGS.map(l=>`<div class="lrow ${lang===l.code?'on':''}" onclick="setLang('${l.code}')">
-            <span>${l.name}</span>${lang===l.code?'<span class="ck">✓</span>':''}</div>`).join("")}</div>`;
+        <div class="listcard">
+          <div class="lrow ${langMode==='auto'?'on':''}" onclick="setLang('auto')"><span>${t('thAuto')}</span>${langMode==='auto'?'<span class="ck">✓</span>':''}</div>
+          ${LANGS.map(l=>`<div class="lrow ${langMode===l.code?'on':''}" onclick="setLang('${l.code}')"><span>${l.name}</span>${langMode===l.code?'<span class="ck">✓</span>':''}</div>`).join("")}</div>`;
     }
 
     function render(){ renderSide(); renderDetail(); }
@@ -339,7 +347,7 @@
     let tt; function toast(m){ const e=document.getElementById("toast"); e.textContent=m; e.classList.add("on"); clearTimeout(tt); tt=setTimeout(()=>e.classList.remove("on"),1700); }
 
     // ── boot ──
-    document.documentElement.lang = lang; applyTheme();
+    document.documentElement.lang = curLang(); applyTheme();
     refresh().then((s)=>{ if(s?.device_id) startWorker(); }).catch(()=>{});
 
     // ── preview fallback ──
