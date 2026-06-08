@@ -16,6 +16,7 @@
     "check:connector": "node apps/connector-cli/test/connector.test.mjs",
     "check:desktop": "npm --workspace @panda-bridge/desktop run check",
     "verify:local": "node scripts/verify/local-smoke.mjs",
+    "verify:sdk-examples": "node examples/sdk-call-examples/run-local.mjs",
     "verify:cloud": "node scripts/verify/cloud-smoke.mjs",
     "verify:browser": "node scripts/verify/browser-smoke.mjs",
     "verify:mobile-browser": "node scripts/verify/mobile-browser-smoke.mjs",

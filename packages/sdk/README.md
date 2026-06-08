@@ -89,6 +89,21 @@ const queueSummary = await bridge.queue.summary();
 console.log(queueSummary.counts.active, queueSummary.devices[0]?.queue);
 ```
 
+## Runnable Full-Surface Example
+
+From the repository root, run:
+
+```bash
+npm run verify:sdk-examples
+```
+
+The example module lives at `examples/sdk-call-examples/`. It starts a local
+memory Bridge fixture and exercises the current SDK helper surface end to end:
+diagnostics, preflight, auth/session/share/join/logout, devices, connect intent,
+product authorization, codex jobs, job status/events/wait/stream/cancel, and
+queue summary. It also checks account isolation and writes redacted evidence
+under `spec/verification/evidence/v6-sdk-call-examples-account-stability/`.
+
 ## Multi-Product Example
 
 ```js
