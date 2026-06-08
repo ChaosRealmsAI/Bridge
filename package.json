@@ -24,6 +24,7 @@
     "verify:authorization-logout": "node scripts/verify/authorization-logout-boundary.mjs",
     "verify:multi-source-authorization": "node scripts/verify/multi-source-authorization.mjs",
     "verify:multi-account-realtime": "node scripts/verify/multi-account-realtime-fanout.mjs",
+    "verify:fake-source-matrix": "node scripts/verify/fake-source-matrix.mjs",
     "verify:desktop-lite": "node scripts/verify/desktop-lite-smoke.mjs",
     "verify:spec": "node scripts/verify/spec-traceability.mjs",
     "verify:installed-desktop-e2e": "node scripts/verify/installed-desktop-e2e.mjs",
@@ -44,7 +45,8 @@
     "desktop:build": "npm --workspace @panda-bridge/desktop run build",
     "desktop:check": "npm --workspace @panda-bridge/desktop run check",
     "web:serve": "node scripts/serve-web.mjs",
-    "pandart:local": "node scripts/pandart-local-chat.mjs"
+    "pandart:local": "node scripts/pandart-local-chat.mjs",
+    "fake-source:matrix": "node scripts/fake-source-matrix.mjs"
   },
   "dependencies": {
     "pg": "^8.21.0"
