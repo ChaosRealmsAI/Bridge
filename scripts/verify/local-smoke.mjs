@@ -38,8 +38,10 @@ const temp = mkdtempSync(resolve(tmpdir(), "panda-bridge-smoke-"));
 const statePath = resolve(temp, "connector.json");
 const evidenceDir = resolve("spec/verification/evidence/local-smoke");
 const v2EvidenceDir = resolve("spec/verification/evidence/v2-invocation-diagnostics");
+const v3EvidenceDir = resolve("spec/verification/evidence/v3-request-safety-boundaries");
 mkdirSync(evidenceDir, { recursive: true });
 mkdirSync(v2EvidenceDir, { recursive: true });
+mkdirSync(v3EvidenceDir, { recursive: true });
 
 try {
   let cookie = "";
@@ -51,6 +53,45 @@ try {
     if (setCookie) cookie = setCookie.split(";")[0];
     return response;
   };
+
+  const invalidContentType = await fetch(`${apiBase}/v1/sessions/guest`, {
+    method: "POST",
+    headers: { "content-type": "text/plain" },
+    body: JSON.stringify({ display_name: "Bad Type" }),
+  });
+  const invalidContentTypePayload = await invalidContentType.json();
+  assert.equal(invalidContentType.status, 415);
+  assert.equal(invalidContentTypePayload.error, "invalid_content_type");
+
+  const malformedJson = await fetch(`${apiBase}/v1/sessions/guest`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: "{\"display_name\":",
+  });
+  const malformedJsonPayload = await malformedJson.json();
+  assert.equal(malformedJson.status, 400);
+  assert.equal(malformedJsonPayload.error, "invalid_json");
+  assert.equal("message" in malformedJsonPayload, false);
+
+  env.BRIDGE_MAX_JSON_BODY_BYTES = "1024";
+  const oversizedBody = JSON.stringify({ display_name: "x".repeat(1400) });
+  const oversized = await fetch(`${apiBase}/v1/sessions/guest`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: oversizedBody,
+  });
+  const oversizedPayload = await oversized.json();
+  assert.equal(oversized.status, 413);
+  assert.equal(oversizedPayload.error, "request_body_too_large");
+  assert.equal(oversizedPayload.limit_bytes, 1024);
+  delete env.BRIDGE_MAX_JSON_BODY_BYTES;
+
+  writeFileSync(resolve(v3EvidenceDir, "request-safety.json"), JSON.stringify({
+    checked_at: new Date().toISOString(),
+    invalid_content_type: { status: invalidContentType.status, payload: invalidContentTypePayload },
+    malformed_json: { status: malformedJson.status, payload: malformedJsonPayload },
+    oversized_body: { status: oversized.status, payload: oversizedPayload },
+  }, null, 2) + "\n");
 
   const bridge = createBridgeClient({ apiBase, productId: "panda-chat", fetch: fetchJar });
   const diagnostics = await bridge.diagnostics();
@@ -150,6 +191,7 @@ try {
     doctor_ok: doctorPayload.ok,
     diagnostics_evidence: "spec/verification/evidence/v2-invocation-diagnostics/sdk-diagnostics.json",
     doctor_evidence: "spec/verification/evidence/v2-invocation-diagnostics/cli-doctor.json",
+    safety_evidence: "spec/verification/evidence/v3-request-safety-boundaries/request-safety.json",
     checked_at: new Date().toISOString(),
   };
   writeFileSync(resolve(evidenceDir, "summary.json"), JSON.stringify(summary, null, 2) + "\n");

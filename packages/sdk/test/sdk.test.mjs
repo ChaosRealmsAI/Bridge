@@ -122,4 +122,26 @@ assert.deepEqual(JSON.parse(customCalls[0].init.body), {
   },
 });
 
+const errorClient = createBridgeClient({
+  apiBase: "https://api.example.test",
+  productId: "panda-chat",
+  fetch: async () => new Response(JSON.stringify({
+    error: "request_body_too_large",
+    limit_bytes: 64,
+  }), {
+    status: 413,
+    headers: { "content-type": "application/json" },
+  }),
+});
+
+await assert.rejects(
+  () => errorClient.diagnostics(),
+  (error) => {
+    assert.equal(error.message, "request_body_too_large");
+    assert.equal(error.status, 413);
+    assert.deepEqual(error.payload, { error: "request_body_too_large", limit_bytes: 64 });
+    return true;
+  },
+);
+
 console.log("[sdk.test] pass");

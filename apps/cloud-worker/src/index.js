@@ -19,6 +19,8 @@ const ACCOUNT_MAX_ACTIVE_JOBS = 500;
 const PRODUCT_MAX_ACTIVE_JOBS = 300;
 const JOB_ASSIGNMENT_GRACE_MS = 1000 * 30;
 const SUPPORTED_JOB_KINDS = Object.freeze(["codex.chat", "codex.run", "codex.rpc", "saas.custom.run"]);
+const DEFAULT_JSON_BODY_LIMIT_BYTES = 1024 * 512;
+const MAX_JSON_BODY_LIMIT_BYTES = 1024 * 1024 * 2;
 const memory = makeMemoryStore();
 
 export default {
@@ -109,8 +111,8 @@ export default {
       if (request.method === "GET" && !path.startsWith("/v1/")) return await assetResponse(request, env);
       return notFound(env);
     } catch (error) {
-      if (error?.status) return json({ error: error.message || "error" }, env, error.status);
-      return json({ error: "internal_error", message: error.message || String(error) }, env, 500);
+      if (error?.status) return json(publicErrorPayload(error), env, error.status);
+      return json({ error: "internal_error" }, env, 500);
     }
   },
 };
@@ -232,7 +234,7 @@ export class BridgeDeviceRoom {
 }
 
 async function createPasswordSession(request, env) {
-  const body = await readJson(request);
+  const body = await readJson(request, env);
   const email = normalizeEmail(body.email);
   const password = String(body.password || "");
   if (!email || password.length < 8) return json({ error: "invalid_credentials" }, env, 400);
@@ -318,7 +320,7 @@ async function resetPasswordFailures(env, email) {
 }
 
 async function createGuestSession(request, env) {
-  const body = await readJson(request);
+  const body = await readJson(request, env);
   const displayName = clean(body.display_name, 100) || "Panda Account";
   const store = storage(env);
   const user = await store.insert("bridge_users", {
@@ -349,7 +351,7 @@ async function createSessionLink(request, env) {
 }
 
 async function joinSessionLink(request, env) {
-  const body = await readJson(request);
+  const body = await readJson(request, env);
   const tokenHash = await sha256Hex(String(body.token || ""));
   const store = storage(env);
   const link = (await store.select("bridge_session_links", { token_hash: tokenHash }))[0];
@@ -420,7 +422,7 @@ async function revokeDevice(request, env, deviceId) {
 
 async function createPairingCode(request, env) {
   const session = await requireSession(request, env);
-  const body = await readJson(request);
+  const body = await readJson(request, env);
   const code = formatPairingCode(randomToken("").slice(0, 10));
   const row = await storage(env).insert("bridge_pairing_codes", {
     user_id: session.user.id,
@@ -434,7 +436,7 @@ async function createPairingCode(request, env) {
 }
 
 async function claimConnector(request, env) {
-  const body = await readJson(request);
+  const body = await readJson(request, env);
   const codeHash = await sha256Hex(String(body.code || ""));
   const store = storage(env);
   const rows = await store.select("bridge_pairing_codes", { code_hash: codeHash });
@@ -462,7 +464,7 @@ async function claimConnector(request, env) {
 
 async function createConnectIntent(request, env) {
   const session = await requireSession(request, env);
-  const body = await readJson(request);
+  const body = await readJson(request, env);
   const productId = clean(body.product_id || body.productId || "panda-chat", 80) || "panda-chat";
   const product = requireOfficialProduct(productId, env);
   const source_origin = sourceOrigin(env);
@@ -501,7 +503,7 @@ async function getConnectIntent(request, env, token) {
 }
 
 async function claimConnectIntent(request, env, token) {
-  const body = await readJson(request);
+  const body = await readJson(request, env);
   const store = storage(env);
   const intent = await connectIntentByToken(env, token);
   if (!intent || intent.consumed_at || Date.parse(intent.expires_at) < Date.now()) {
@@ -540,7 +542,7 @@ async function claimConnectIntent(request, env, token) {
 
 async function connectorHeartbeat(request, env) {
   const connector = await requireConnector(request, env);
-  const body = await readJson(request);
+  const body = await readJson(request, env);
   const installPatch = await installIdentityPatch(connector.device, connectorInstallId(request) || clean(body.install_id, 200));
   const patch = {
     ...installPatch,
@@ -557,7 +559,7 @@ async function connectorHeartbeat(request, env) {
 
 async function rotateConnectorToken(request, env) {
   const connector = await requireConnector(request, env);
-  const body = await readJson(request);
+  const body = await readJson(request, env);
   const store = storage(env);
   const issuedAt = now();
   const installPatch = await installIdentityPatch(connector.device, connectorInstallId(request) || clean(body.install_id, 200));
@@ -641,7 +643,7 @@ async function productAuthorization(request, env, productId) {
 async function requestAuthorization(request, env, productId) {
   const product = requireOfficialProduct(productId, env);
   const session = await requireSession(request, env);
-  const body = await readJson(request);
+  const body = await readJson(request, env);
   const device = await ownedDevice(env, session.user.id, String(body.device_id || ""));
   if (!device) return json({ error: "device_not_found" }, env, 404);
   const authorization = await activeAuthorization(env, session.user.id, device.id, product.id);
@@ -653,7 +655,7 @@ async function requestAuthorization(request, env, productId) {
 async function createAuthorizationImportProof(request, env, productId) {
   const product = requireOfficialProduct(productId, env);
   const session = await requireSession(request, env);
-  const body = await readJson(request);
+  const body = await readJson(request, env);
   const device = await ownedDevice(env, session.user.id, String(body.device_id || ""));
   if (!device || device.status === "revoked") return json({ error: "device_not_found" }, env, 404);
   const authorization = await activeAuthorization(env, session.user.id, device.id, product.id);
@@ -700,7 +702,7 @@ async function revokeAuthorization(request, env, productId) {
 async function createProductJob(request, env, productId, ctx = {}) {
   const product = requireOfficialProduct(productId, env);
   const session = await requireSession(request, env);
-  const body = await readJson(request);
+  const body = await readJson(request, env);
   return await createAuthorizedProductJob(env, product, session.user.id, sourceOrigin(env), body, ctx, {
     auditAction: "job.create",
   });
@@ -708,9 +710,9 @@ async function createProductJob(request, env, productId, ctx = {}) {
 
 async function createDelegatedProductJob(request, env, productId, ctx = {}) {
   const product = requireOfficialProduct(productId, env);
-  const rawBody = await request.text();
+  const rawBody = await readJsonText(request, env);
   const delegation = await requireProductDelegation(request, env, product, rawBody);
-  const body = rawBody ? JSON.parse(rawBody) : {};
+  const body = rawBody ? parseJsonText(rawBody) : {};
   return await createAuthorizedProductJob(env, product, delegation.userId, delegation.sourceOrigin, body, ctx, {
     auditAction: "job.create.delegated",
     delegatedDeviceId: delegation.deviceId,
@@ -732,9 +734,9 @@ async function delegatedProductAuthorization(request, env, productId) {
 
 async function claimDelegatedProductAuthorization(request, env, productId) {
   const product = requireOfficialProduct(productId, env);
-  const rawBody = await request.text();
+  const rawBody = await readJsonText(request, env);
   const delegation = await requireProductDelegation(request, env, product, rawBody);
-  const body = rawBody ? JSON.parse(rawBody) : {};
+  const body = rawBody ? parseJsonText(rawBody) : {};
   const proofToken = clean(body.proof_token || body.authorization_proof || body.token, 4096);
   if (!proofToken) return json({ error: "authorization_import_proof_required" }, env, 400);
   const proofHash = await sha256Hex(proofToken);
@@ -879,7 +881,7 @@ async function getDelegatedJobEvents(request, env, productId, jobId) {
 
 async function cancelDelegatedJob(request, env, productId, jobId) {
   const product = requireOfficialProduct(productId, env);
-  const rawBody = await request.text();
+  const rawBody = await readJsonText(request, env);
   const delegation = await requireProductDelegation(request, env, product, rawBody);
   const job = await delegatedOwnedJob(env, delegation, product, jobId);
   if (!job) return json({ error: "job_not_found" }, env, 404);
@@ -930,7 +932,7 @@ async function postConnectorEvents(request, env, jobId) {
   if (isTerminalJobStatus(job.status)) {
     return json({ items: [], job: publicJob(job), ignored: true }, env);
   }
-  const body = await readJson(request);
+  const body = await readJson(request, env);
   const incoming = Array.isArray(body.events) ? body.events : [body];
   const events = [];
   let currentJob = job;
@@ -950,7 +952,7 @@ async function acceptConnectorJob(request, env, jobId) {
   const connector = await requireConnector(request, env);
   const job = await jobForDevice(env, connector.device.id, jobId);
   if (!job) return json({ error: "job_not_found" }, env, 404);
-  const body = await readJson(request);
+  const body = await readJson(request, env);
   if (job.status !== "queued") return json({ job: publicJob(job), accepted: false }, env);
   if (!job.pushed_at && await availableDeviceSlots(env, connector.device.id) <= 0) {
     return json({
@@ -985,7 +987,7 @@ async function ackConnectorJob(request, env, jobId) {
   if (isTerminalJobStatus(job.status)) {
     return json({ job: publicJob(job), ignored: true }, env);
   }
-  const body = await readJson(request);
+  const body = await readJson(request, env);
   const status = body.status === "failed" ? "failed" : "succeeded";
   const terminalAt = now();
   const next = await storage(env).update("bridge_jobs", job.id, {
@@ -1949,10 +1951,73 @@ function httpError(message, status) {
   return error;
 }
 
-async function readJson(request) {
-  const text = await request.text();
+function publicErrorPayload(error) {
+  return {
+    error: error.message || "error",
+    ...(error.public || {}),
+  };
+}
+
+async function readJson(request, env) {
+  const text = await readJsonText(request, env);
   if (!text) return {};
-  return JSON.parse(text);
+  return parseJsonText(text);
+}
+
+async function readJsonText(request, env) {
+  if (!request.body) return "";
+  const contentType = request.headers.get("content-type") || "";
+  if (!contentType.toLowerCase().includes("application/json")) {
+    throw httpError("invalid_content_type", 415);
+  }
+  const limit = jsonBodyLimitBytes(env);
+  const contentLength = Number(request.headers.get("content-length") || 0);
+  if (Number.isFinite(contentLength) && contentLength > limit) {
+    throw requestTooLargeError(limit);
+  }
+
+  const reader = request.body.getReader?.();
+  if (!reader) {
+    const text = await request.text();
+    if (new TextEncoder().encode(text).byteLength > limit) throw requestTooLargeError(limit);
+    return text;
+  }
+
+  const chunks = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value) continue;
+    size += value.byteLength;
+    if (size > limit) throw requestTooLargeError(limit);
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(bytes);
+}
+
+function parseJsonText(text) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw httpError("invalid_json", 400);
+  }
+}
+
+function requestTooLargeError(limit) {
+  const error = httpError("request_body_too_large", 413);
+  error.public = { limit_bytes: limit };
+  return error;
+}
+
+function jsonBodyLimitBytes(env) {
+  return boundedInteger(env.BRIDGE_MAX_JSON_BODY_BYTES, DEFAULT_JSON_BODY_LIMIT_BYTES, 1024, MAX_JSON_BODY_LIMIT_BYTES);
 }
 
 function object(value) {

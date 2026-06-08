@@ -26,6 +26,20 @@ async function apiRaw(method, path, body, token = "", extraHeaders = {}) {
   return { response, payload, setCookie };
 }
 
+async function apiRawText(method, path, bodyText, token = "", extraHeaders = {}) {
+  const headers = new Headers({ accept: "application/json" });
+  if (token) headers.set("authorization", `Bearer ${token}`);
+  if (jar.cookie) headers.set("cookie", jar.cookie);
+  for (const [key, value] of Object.entries(extraHeaders)) headers.set(key, value);
+  const response = await worker.fetch(new Request(`http://local.test${path}`, {
+    method,
+    headers,
+    body: bodyText && method !== "GET" && method !== "HEAD" ? bodyText : undefined,
+  }), env);
+  const payload = JSON.parse(await response.text());
+  return { response, payload };
+}
+
 async function api(method, path, body, token = "", extraHeaders = {}) {
   const { response, payload } = await apiRaw(method, path, body, token, extraHeaders);
   assert.ok(response.ok, `${method} ${path}: ${JSON.stringify(payload)}`);
@@ -34,6 +48,10 @@ async function api(method, path, body, token = "", extraHeaders = {}) {
 
 async function delegatedApiRaw(method, path, body, userId, deviceId, nonce = randomUUID()) {
   const bodyText = body ? JSON.stringify(body) : "";
+  return delegatedApiRawText(method, path, bodyText, userId, deviceId, nonce);
+}
+
+async function delegatedApiRawText(method, path, bodyText, userId, deviceId, nonce = randomUUID()) {
   const bodyHash = createHash("sha256").update(bodyText).digest("hex");
   const timestamp = new Date().toISOString();
   const signingPayload = [
@@ -47,7 +65,7 @@ async function delegatedApiRaw(method, path, body, userId, deviceId, nonce = ran
     bodyHash,
   ].join("\n");
   const signature = createHmac("sha256", env.BRIDGE_OTHERLINE_DELEGATION_SECRET).update(signingPayload).digest("hex");
-  return apiRaw(method, path, body, "", {
+  return apiRawText(method, path, bodyText, "", {
     "x-panda-bridge-product-id": "otherline",
     "x-panda-bridge-user-id": userId,
     "x-panda-bridge-device-id": deviceId,
@@ -55,6 +73,7 @@ async function delegatedApiRaw(method, path, body, userId, deviceId, nonce = ran
     "x-panda-bridge-request-nonce": nonce,
     "x-panda-bridge-body-sha256": bodyHash,
     "x-panda-bridge-signature": signature,
+    "content-type": "application/json",
   });
 }
 
@@ -101,6 +120,30 @@ assert.equal(diagnostics.realtime.route_template, "/v1/realtime/devices/{device_
 const diagnosticsText = JSON.stringify(diagnostics);
 assert.doesNotMatch(diagnosticsText, /device_token"\s*:/);
 assert.doesNotMatch(diagnosticsText, /session_cookie/i);
+
+const invalidContentType = await apiRawText("POST", "/v1/sessions/guest", JSON.stringify({ display_name: "Plain Text" }), "", {
+  "content-type": "text/plain",
+});
+assert.equal(invalidContentType.response.status, 415);
+assert.equal(invalidContentType.payload.error, "invalid_content_type");
+
+const malformedJson = await apiRawText("POST", "/v1/sessions/guest", "{\"display_name\":", "", {
+  "content-type": "application/json",
+});
+assert.equal(malformedJson.response.status, 400);
+assert.equal(malformedJson.payload.error, "invalid_json");
+assert.equal("message" in malformedJson.payload, false);
+
+env.BRIDGE_MAX_JSON_BODY_BYTES = "64";
+const oversizedBody = JSON.stringify({ display_name: "x".repeat(1400) });
+const oversized = await apiRawText("POST", "/v1/sessions/guest", oversizedBody, "", {
+  "content-type": "application/json",
+  "content-length": String(oversizedBody.length),
+});
+assert.equal(oversized.response.status, 413);
+assert.equal(oversized.payload.error, "request_body_too_large");
+assert.equal(oversized.payload.limit_bytes, 1024);
+delete env.BRIDGE_MAX_JSON_BODY_BYTES;
 
 env.BRIDGE_ALLOWED_ORIGINS = "http://chat.local.test http://dev.local.test";
 const allowedOriginRaw = await apiRaw("POST", "/v1/sessions/guest", { display_name: "Allowed Origin" }, "", { origin: "http://chat.local.test" });
@@ -312,6 +355,9 @@ const otherlineClaim = await api("POST", `/v1/connect-intents/${encodeURICompone
 }, intentClaim.device_token);
 assert.equal(otherlineClaim.device.id, intentClaim.device.id);
 assert.equal(otherlineClaim.authorization.product_id, "otherline");
+const delegatedMalformedJson = await delegatedApiRawText("POST", "/v1/products/otherline/delegated/jobs", "{", otherlineClaim.account.id, otherlineClaim.device.id);
+assert.equal(delegatedMalformedJson.response.status, 400);
+assert.equal(delegatedMalformedJson.payload.error, "invalid_json");
 const delegatedAuthorization = await delegatedApi("GET", `/v1/products/otherline/delegated/authorization?device_id=${encodeURIComponent(otherlineClaim.device.id)}`, null, otherlineClaim.account.id, otherlineClaim.device.id);
 assert.equal(delegatedAuthorization.authorization.product_id, "otherline");
 assert.equal(delegatedAuthorization.device.status, "online");

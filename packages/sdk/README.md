@@ -122,6 +122,9 @@ Recommended product behavior:
 - Cancel jobs when the user navigates away from work that should not continue.
 - Handle `device_offline`, `product_not_authorized`, `device_not_found`, and
   `too_many_login_attempts`.
+- Handle request safety errors such as `request_body_too_large`,
+  `invalid_json`, and `invalid_content_type`; SDK errors include `status` and
+  `payload`.
 
 ## Security Rules
 
