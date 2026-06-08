@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir, platform } from "node:os";
-import { dirname, resolve } from "node:path";
+import { delimiter, dirname, resolve } from "node:path";
 import readline from "node:readline";
 
 const VERSION = "panda-bridge-connector-v0.1";
@@ -209,7 +209,7 @@ async function runCodexOrFixture({ job, apiBase, token }) {
     job,
     apiBase,
     token,
-    codexBin: args["codex-bin"] || process.env.PANDA_BRIDGE_CODEX_BIN || "codex",
+    codexBin: codexBin(),
     cwd: workspacePath(job.workspace_ref),
     timeoutMs: Number(job.policy?.timeout_ms || 240000),
   });
@@ -220,11 +220,16 @@ async function runCodexAppServer({ job, apiBase, token, codexBin, cwd, timeoutMs
   if (!prompt) return { ok: false, error: "missing prompt" };
   const proc = spawn(codexBin, ["app-server", "--stdio"], {
     cwd,
+    env: codexSpawnEnv(codexBin),
     stdio: ["pipe", "pipe", "pipe"],
   });
+  let processError = null;
   const rl = readline.createInterface({ input: proc.stdout });
   const stderr = [];
   proc.stderr.on("data", (chunk) => stderr.push(String(chunk)));
+  proc.stdin.on("error", (error) => {
+    processError = error;
+  });
 
   let nextId = 0;
   const pending = new Map();
@@ -240,17 +245,28 @@ async function runCodexAppServer({ job, apiBase, token, codexBin, cwd, timeoutMs
   };
 
   const send = (method, params) => {
+    if (processError) {
+      return Promise.reject(new Error(`failed to start codex app-server at ${codexBin}: ${processError.message}`));
+    }
     const id = ++nextId;
-    proc.stdin.write(`${JSON.stringify({ method, id, params })}\n`);
     return new Promise((resolvePromise, reject) => {
       const timer = setTimeout(() => {
         pending.delete(id);
         reject(new Error(`codex app-server timeout waiting for ${method}`));
       }, timeoutMs);
       pending.set(id, { resolve: resolvePromise, reject, timer });
+      proc.stdin.write(`${JSON.stringify({ method, id, params })}\n`, (error) => {
+        if (!error) return;
+        clearTimeout(timer);
+        pending.delete(id);
+        processError = error;
+        reject(new Error(`failed to write to codex app-server at ${codexBin}: ${error.message}`));
+      });
     });
   };
-  const notify = (method, params) => proc.stdin.write(`${JSON.stringify({ method, params })}\n`);
+  const notify = (method, params) => {
+    if (!processError) proc.stdin.write(`${JSON.stringify({ method, params })}\n`);
+  };
 
   rl.on("line", async (line) => {
     let msg;
@@ -280,6 +296,15 @@ async function runCodexAppServer({ job, apiBase, token, codexBin, cwd, timeoutMs
   });
   proc.on("exit", () => {
     closed = true;
+  });
+  proc.on("error", (error) => {
+    processError = error;
+    closed = true;
+    for (const [id, item] of pending) {
+      clearTimeout(item.timer);
+      pending.delete(id);
+      item.reject(new Error(`failed to start codex app-server at ${codexBin}: ${error.message}`));
+    }
   });
 
   try {
@@ -322,7 +347,7 @@ async function runCodexAppServer({ job, apiBase, token, codexBin, cwd, timeoutMs
   } catch (error) {
     return {
       ok: false,
-      error: `${error instanceof Error ? error.message : String(error)}; ${stderr.join("").slice(-800)}`,
+      error: `${error instanceof Error ? error.message : String(error)}; codex_bin=${codexBin}; ${stderr.join("").slice(-800)}`,
       cloud_openai_credentials: false,
     };
   } finally {
@@ -397,9 +422,10 @@ function capabilities() {
 }
 
 function localState() {
+  const bin = codexBin();
   return {
     platform: platform(),
-    commands: { codex: commandExists(args["codex-bin"] || "codex") },
+    commands: { codex: commandExists(bin) },
     workspaces: { default: workspacePath("default") },
   };
 }
@@ -538,9 +564,69 @@ function required(name) {
   return String(value);
 }
 
+function codexBin() {
+  const explicit = args["codex-bin"] || process.env.PANDA_BRIDGE_CODEX_BIN;
+  if (explicit && String(explicit).trim()) return String(explicit).trim();
+  return resolveCommand("codex") || "codex";
+}
+
+function resolveCommand(command) {
+  if (String(command).includes("/") || String(command).includes("\\")) {
+    return executableExists(command) ? command : null;
+  }
+  for (const entry of String(process.env.PATH || "").split(delimiter)) {
+    if (!entry) continue;
+    const candidate = resolve(entry, command);
+    if (executableExists(candidate)) return candidate;
+  }
+  for (const candidate of commonCodexPaths()) {
+    if (executableExists(candidate)) return candidate;
+  }
+  return null;
+}
+
+function commonCodexPaths() {
+  return [
+    "/opt/homebrew/bin/codex",
+    "/usr/local/bin/codex",
+    resolve(homedir(), ".local/bin/codex"),
+    resolve(homedir(), ".cargo/bin/codex"),
+    resolve(homedir(), ".npm-global/bin/codex"),
+  ];
+}
+
+function codexSpawnEnv(bin) {
+  const env = { ...process.env };
+  if (String(bin).includes("/") || String(bin).includes("\\")) {
+    const dir = dirname(bin);
+    env.PATH = prependPath(dir, env.PATH || "");
+  }
+  return env;
+}
+
+function prependPath(dir, path) {
+  const entries = String(path || "").split(delimiter).filter(Boolean);
+  if (entries.includes(dir)) return path;
+  return [dir, ...entries].join(delimiter);
+}
+
 function commandExists(command) {
-  const paths = String(process.env.PATH || "").split(":");
-  return paths.some((path) => existsSync(resolve(path, command)));
+  if (String(command).includes("/") || String(command).includes("\\")) {
+    return executableExists(command);
+  }
+  return Boolean(resolveCommand(command));
+}
+
+function executableExists(path) {
+  if (!existsSync(path)) return false;
+  try {
+    const stat = statSync(path);
+    if (!stat.isFile()) return false;
+    if (platform() === "win32") return true;
+    return Boolean(stat.mode & 0o111);
+  } catch {
+    return false;
+  }
 }
 
 function sleep(ms) {

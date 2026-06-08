@@ -2,6 +2,8 @@ use keyring::Entry;
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::{
     env, fs,
     io::{BufRead, BufReader, Read, Write},
@@ -1752,14 +1754,18 @@ fn spawn_codex_app_server(
     ),
     String,
 > {
-    let mut child = Command::new(codex_bin())
+    let bin = codex_bin();
+    let mut command = Command::new(&bin);
+    command
         .args(["app-server", "--stdio"])
         .current_dir(cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    add_resolved_command_dir_to_path(&mut command, &bin);
+    let mut child = command
         .spawn()
-        .map_err(|error| format!("failed to start codex app-server: {error}"))?;
+        .map_err(|error| format!("failed to start codex app-server at {bin}: {error}"))?;
     let stdin = child.stdin.take().ok_or("codex stdin unavailable")?;
     let stdout = child.stdout.take().ok_or("codex stdout unavailable")?;
     let stderr = child.stderr.take().ok_or("codex stderr unavailable")?;
@@ -2353,7 +2359,7 @@ fn policy_string(policy: &Value, key: &str) -> Option<String> {
 
 fn command_exists(command: &str) -> bool {
     if command.contains('/') || command.contains('\\') {
-        return Path::new(command).exists();
+        return executable_exists(Path::new(command));
     }
     let paths = env::var("PATH").unwrap_or_default();
     #[cfg(windows)]
@@ -2366,13 +2372,30 @@ fn command_exists(command: &str) -> bool {
     {
         paths
             .split(':')
-            .any(|path| Path::new(path).join(command).exists())
+            .any(|path| executable_exists(&Path::new(path).join(command)))
+    }
+}
+
+fn executable_exists(path: &Path) -> bool {
+    let Ok(metadata) = fs::metadata(path) else {
+        return false;
+    };
+    if !metadata.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        true
     }
 }
 
 #[cfg(windows)]
 fn windows_command_candidate_exists(dir: &Path, command: &str) -> bool {
-    if dir.join(command).exists() {
+    if executable_exists(&dir.join(command)) {
         return true;
     }
     if Path::new(command).extension().is_some() {
@@ -2383,11 +2406,105 @@ fn windows_command_candidate_exists(dir: &Path, command: &str) -> bool {
         .split(';')
         .map(str::trim)
         .filter(|ext| !ext.is_empty())
-        .any(|ext| dir.join(format!("{command}{ext}")).exists())
+        .any(|ext| executable_exists(&dir.join(format!("{command}{ext}"))))
 }
 
 fn codex_bin() -> String {
-    env::var("PANDA_BRIDGE_CODEX_BIN").unwrap_or_else(|_| "codex".to_string())
+    if let Ok(explicit) = env::var("PANDA_BRIDGE_CODEX_BIN") {
+        let trimmed = explicit.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+    }
+    resolve_codex_bin().unwrap_or_else(|| "codex".to_string())
+}
+
+fn resolve_codex_bin() -> Option<String> {
+    resolve_command_on_path("codex").or_else(|| {
+        common_codex_paths()
+            .into_iter()
+            .find(|path| executable_exists(path))
+            .map(|path| path.to_string_lossy().to_string())
+    })
+}
+
+fn resolve_command_on_path(command: &str) -> Option<String> {
+    if command.contains('/') || command.contains('\\') {
+        let path = Path::new(command);
+        return executable_exists(path).then(|| path.to_string_lossy().to_string());
+    }
+    #[cfg(windows)]
+    {
+        env::var("PATH")
+            .unwrap_or_default()
+            .split(';')
+            .find_map(|path| windows_command_candidate_path(Path::new(path), command))
+    }
+    #[cfg(not(windows))]
+    {
+        env::var("PATH")
+            .unwrap_or_default()
+            .split(':')
+            .map(|path| Path::new(path).join(command))
+            .find(|path| executable_exists(path))
+            .map(|path| path.to_string_lossy().to_string())
+    }
+}
+
+#[cfg(windows)]
+fn windows_command_candidate_path(dir: &Path, command: &str) -> Option<String> {
+    let direct = dir.join(command);
+    if executable_exists(&direct) {
+        return Some(direct.to_string_lossy().to_string());
+    }
+    if Path::new(command).extension().is_some() {
+        return None;
+    }
+    env::var("PATHEXT")
+        .unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string())
+        .split(';')
+        .map(str::trim)
+        .filter(|ext| !ext.is_empty())
+        .map(|ext| dir.join(format!("{command}{ext}")))
+        .find(|path| executable_exists(path))
+        .map(|path| path.to_string_lossy().to_string())
+}
+
+fn common_codex_paths() -> Vec<PathBuf> {
+    let mut paths = vec![
+        PathBuf::from("/opt/homebrew/bin/codex"),
+        PathBuf::from("/usr/local/bin/codex"),
+    ];
+    if let Ok(home) = home_dir() {
+        paths.push(home.join(".local/bin/codex"));
+        paths.push(home.join(".cargo/bin/codex"));
+        paths.push(home.join(".npm-global/bin/codex"));
+    }
+    paths
+}
+
+fn add_resolved_command_dir_to_path(command: &mut Command, bin: &str) {
+    let path = Path::new(bin);
+    let Some(parent) = path.parent() else {
+        return;
+    };
+    if parent.as_os_str().is_empty() {
+        return;
+    }
+    let Some(parent_text) = parent.to_str() else {
+        return;
+    };
+    let separator = if cfg!(windows) { ';' } else { ':' };
+    let current = env::var("PATH").unwrap_or_default();
+    if current.split(separator).any(|item| item == parent_text) {
+        return;
+    }
+    let next_path = if current.is_empty() {
+        parent_text.to_string()
+    } else {
+        format!("{parent_text}{separator}{current}")
+    };
+    command.env("PATH", next_path);
 }
 
 fn fake_codex_enabled() -> bool {
