@@ -330,8 +330,14 @@
       }catch(e){ toast(t('tFail')); }
     }
     function deny(i){ ui.pending.splice(i,1); ui.view="app"; ui.sel=ui.products[0]?.id||null; render(); }
-    // backend single-account revoke endpoint pending — remove locally for now
-    function revoke(pid,ai){ const p=ui.products.find(x=>x.id===pid); if(!p) return; p.accounts.splice(ai,1); render(); toast(t('tOut')); }
+    async function revoke(pid,ai){
+      const p=ui.products.find(x=>x.id===pid); if(!p || !p.accounts[ai]) return;
+      try{
+        await window.PandaBridge.call("revoke_authorization", { product_id: pid });
+        await refresh();
+        toast(t('tOut'));
+      }catch(e){ toast(t('tFail')); }
+    }
     async function addAccount(pid){ try{ await window.PandaBridge.call("open_web", { url: `${WEB_URL}?desktop_login=1${pid?'&product='+encodeURIComponent(pid):''}` }); toast(t('tWeb')); }catch(e){} }
     async function connectNew(){ try{ await window.PandaBridge.call("open_web", { url: `${WEB_URL}?desktop_login=1` }); toast(t('tWeb')); }catch(e){} }
     async function openWeb(){ try{ await window.PandaBridge.call("open_web", { url: WEB_URL }); }catch(e){} }
@@ -365,6 +371,11 @@
         if (command==="status") return reply(true, JSON.parse(JSON.stringify(mock)));
         if (command==="preview_intent") return reply(true, { product_id:"panda_chat", product_name:"Panda Chat", user_display_name:"team-demo@otherline.cc", cloud_origin:"bridge.otherline.cc" });
         if (command==="claim_intent"){ mock.authorized_products[0].accounts.push({email:"team-demo@otherline.cc"}); return reply(true, { product_id:"panda_chat", product_name:"Panda Chat", account_display:"team-demo@otherline.cc", authorized_products:mock.authorized_products }); }
+        if (command==="revoke_authorization"){
+          const { params } = JSON.parse(raw);
+          mock.authorized_products = mock.authorized_products.filter(p=>p.id!==params.product_id);
+          return reply(true,{ok:true,product_id:params.product_id,authorized_products:mock.authorized_products});
+        }
         if (command==="open_web"||command==="start_worker"||command==="stop_worker"||command==="disconnect") return reply(true,{ok:true,message:"ok"});
         return reply(false,"unknown command: "+command);
       }};

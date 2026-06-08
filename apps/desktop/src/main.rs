@@ -715,6 +715,10 @@ fn run_verify_action(
             let _ = start_worker(state, proxy);
             serde_json::to_value(claim).map_err(|error| error.to_string())?
         }
+        "revoke_authorization" => {
+            let product_id = required_param(params, "product_id")?;
+            revoke_authorization(&product_id)?
+        }
         "refresh_status" => {
             serde_json::to_value(status(state)).map_err(|error| error.to_string())?
         }
@@ -827,6 +831,10 @@ fn run_command(
             let claimed = claim_intent(&api, &intent, &device_name)?;
             let _ = start_worker(state, proxy);
             serde_json::to_value(claimed).map_err(|error| error.to_string())
+        }
+        "revoke_authorization" => {
+            let product_id = required_param(params, "product_id")?;
+            revoke_authorization(&product_id)
         }
         "start_worker" => start_worker(state, proxy),
         "stop_worker" => {
@@ -999,6 +1007,43 @@ fn claim_intent(api: &str, intent: &str, device_name: &str) -> Result<ClaimResul
         cloud_origin,
         authorized_products,
     })
+}
+
+fn revoke_authorization(product_id: &str) -> Result<Value, String> {
+    let product_id = product_id.trim();
+    if product_id.is_empty() {
+        return Err("missing product_id".to_string());
+    }
+    let credentials = ensure_credentials_install_id(load_credentials()?)?;
+    let url = format!(
+        "{}/v1/connectors/products/{}/authorization",
+        credentials.api_base,
+        urlencoding::encode(product_id)
+    );
+    let payload: Value = delete_json_with_install(
+        &url,
+        Some(&credentials.device_token),
+        credentials.install_id.as_deref(),
+    )?;
+    let mut next = credentials.clone();
+    next.authorized_products = credentials_products(&credentials)
+        .into_iter()
+        .filter(|item| item.id != product_id)
+        .collect();
+    if next.product_id.as_deref() == Some(product_id) {
+        next.product_id = None;
+        next.product_name = None;
+        next.cloud_origin = None;
+    }
+    save_credentials(&next)?;
+    write_connector_state(&next)?;
+    Ok(json!({
+        "ok": true,
+        "product_id": product_id,
+        "authorization": payload.get("authorization").cloned().unwrap_or(Value::Null),
+        "cancelled_jobs": payload.get("cancelled_jobs").cloned().unwrap_or(Value::Null),
+        "authorized_products": next.authorized_products
+    }))
 }
 
 fn start_worker(state: &AppState, proxy: EventLoopProxy<UserEvent>) -> Result<Value, String> {
@@ -2151,6 +2196,21 @@ fn post_json_with_install<T: for<'de> Deserialize<'de>>(
     parse_response(request.send().map_err(|error| error.to_string())?)
 }
 
+fn delete_json_with_install<T: for<'de> Deserialize<'de>>(
+    url: &str,
+    bearer: Option<&str>,
+    install_id: Option<&str>,
+) -> Result<T, String> {
+    let mut request = http_client().delete(url);
+    if let Some(token) = bearer {
+        request = request.bearer_auth(token);
+    }
+    if let Some(id) = install_id.filter(|value| !value.trim().is_empty()) {
+        request = request.header("x-panda-bridge-install-id", id);
+    }
+    parse_response(request.send().map_err(|error| error.to_string())?)
+}
+
 fn http_client() -> &'static Client {
     static CLIENT: OnceLock<Client> = OnceLock::new();
     CLIENT.get_or_init(|| {
@@ -2633,6 +2693,14 @@ fn run_headless_if_requested() -> Option<i32> {
             let device_name = map.get("device-name").cloned().unwrap_or_else(device_name);
             claim_intent(&api, &intent, &device_name)
                 .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string()))
+        }
+        "headless-revoke-authorization" => {
+            let map = arg_map(args.collect());
+            let product_id = match map.get("product-id") {
+                Some(value) => value.clone(),
+                None => return Some(print_error("missing --product-id")),
+            };
+            revoke_authorization(&product_id)
         }
         "headless-poll" => load_credentials()
             .and_then(|credentials| heartbeat(&credentials).and_then(|_| poll_once(&credentials)))

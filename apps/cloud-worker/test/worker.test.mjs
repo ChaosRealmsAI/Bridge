@@ -325,6 +325,50 @@ const finalCancelled = await api("GET", `/v1/jobs/${intentJob.job.id}`);
 assert.equal(finalCancelled.job.status, "cancelled");
 assert.equal(finalCancelled.job.result.reply, undefined);
 
+const queuedBeforeConnectorRevoke = await api("POST", "/v1/products/panda-chat/jobs", {
+  kind: "codex.chat",
+  device_id: intentClaim.device.id,
+  product_id: "panda-chat",
+  workspace_ref: "default",
+  input: { prompt: "queued before connector revoke" },
+  request_key: "queued-before-connector-revoke",
+  policy: { token_budget: 1000, timeout_ms: 60000 },
+});
+assert.equal(queuedBeforeConnectorRevoke.job.status, "queued");
+const connectorRevokedChat = await api("DELETE", "/v1/connectors/products/panda-chat/authorization", null, intentClaim.device_token);
+assert.equal(connectorRevokedChat.authorization.status, "revoked");
+assert.equal(connectorRevokedChat.authorization.product_id, "panda-chat");
+assert.equal(connectorRevokedChat.cancelled_jobs, 1);
+const cancelledAfterConnectorRevoke = await api("GET", `/v1/jobs/${queuedBeforeConnectorRevoke.job.id}`);
+assert.equal(cancelledAfterConnectorRevoke.job.status, "cancelled");
+assert.equal(cancelledAfterConnectorRevoke.job.result.error, "product_not_authorized");
+await api("POST", "/v1/connectors/heartbeat", {}, intentClaim.device_token);
+const authAfterConnectorRevoke = await api("GET", `/v1/products/panda-chat/authorization?device_id=${encodeURIComponent(intentClaim.device.id)}`);
+assert.equal(authAfterConnectorRevoke.authorization, null);
+const jobAfterConnectorRevoke = await apiRaw("POST", "/v1/products/panda-chat/jobs", {
+  kind: "codex.chat",
+  device_id: intentClaim.device.id,
+  product_id: "panda-chat",
+  workspace_ref: "default",
+  input: { prompt: "chat after connector revoke" },
+  request_key: "chat-after-connector-revoke",
+  policy: { token_budget: 1000, timeout_ms: 60000 },
+});
+assert.equal(jobAfterConnectorRevoke.response.status, 403);
+assert.equal(jobAfterConnectorRevoke.payload.error, "product_not_authorized");
+const connectorJobsAfterRevoke = await api("GET", "/v1/connectors/jobs", null, intentClaim.device_token);
+assert.equal(connectorJobsAfterRevoke.items.length, 0);
+const reconnectIntent = await api("POST", "/v1/connect-intents", { product_id: "panda-chat", device_name: "Intent Test Device" }, "", { origin: "http://chat.local.test" });
+const reconnectClaim = await api("POST", `/v1/connect-intents/${encodeURIComponent(reconnectIntent.token)}/claim`, {
+  device_name: "Intent Test Device",
+  capabilities: { codex: ["codex.chat", "codex.run"] },
+}, intentClaim.device_token);
+assert.equal(reconnectClaim.device.id, intentClaim.device.id);
+assert.equal(reconnectClaim.authorization.status, "active");
+intentClaim.device_token = reconnectClaim.device_token;
+const authAfterExplicitReconnect = await api("GET", `/v1/products/panda-chat/authorization?device_id=${encodeURIComponent(intentClaim.device.id)}`);
+assert.equal(authAfterExplicitReconnect.authorization.status, "active");
+
 const chatRpc = await apiRaw("POST", "/v1/products/panda-chat/jobs", {
   kind: "codex.rpc",
   device_id: intentClaim.device.id,

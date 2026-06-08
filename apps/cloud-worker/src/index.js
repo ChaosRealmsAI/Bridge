@@ -62,6 +62,8 @@ export default {
       if (path === "/v1/connectors/claim" && request.method === "POST") return await claimConnector(request, env);
       if (path === "/v1/connectors/heartbeat" && request.method === "POST") return await connectorHeartbeat(request, env);
       if (path === "/v1/connectors/token/rotate" && request.method === "POST") return await rotateConnectorToken(request, env);
+      const connectorAuthMatch = path.match(/^\/v1\/connectors\/products\/([^/]+)\/authorization$/);
+      if (connectorAuthMatch && request.method === "DELETE") return await revokeConnectorAuthorization(request, env, decodeURIComponent(connectorAuthMatch[1]));
       if (path === "/v1/connectors/jobs" && request.method === "GET") return await connectorJobs(request, env);
       const realtimeDeviceMatch = path.match(/^\/v1\/realtime\/devices\/([^/]+)$/);
       if (realtimeDeviceMatch && request.method === "GET") return await realtimeDevice(request, env, decodeURIComponent(realtimeDeviceMatch[1]));
@@ -632,11 +634,19 @@ async function rotateConnectorToken(request, env) {
 async function connectorJobs(request, env) {
   const connector = await requireConnector(request, env);
   const store = storage(env);
+  const rows = await store.select("bridge_jobs", { device_id: connector.device.id, status: "queued" }, { order: "created_at" });
+  const authorizedRows = [];
+  for (const row of rows) {
+    if (await activeAuthorization(env, row.user_id, row.device_id, row.product_id)) {
+      authorizedRows.push(row);
+    } else {
+      await cancelAuthorizationRevokedJob(env, row);
+    }
+  }
   const available = await availableDeviceSlots(env, connector.device.id);
   if (available <= 0) return json({ items: [], queue: await publicDeviceQueue(env, connector.device.id) }, env);
-  const rows = await store.select("bridge_jobs", { device_id: connector.device.id, status: "queued" }, { order: "created_at" });
   const jobs = [];
-  for (const row of rows.slice(0, available)) {
+  for (const row of authorizedRows.slice(0, available)) {
     const acceptedAt = now();
     const job = await store.update("bridge_jobs", row.id, {
       status: "running",
@@ -721,8 +731,26 @@ async function revokeAuthorization(request, env, productId) {
   }))[0];
   if (!authorization) return json({ authorization: null, product }, env);
   const revoked = await storage(env).update("bridge_authorizations", authorization.id, { status: "revoked", updated_at: now() });
+  const cancelled_jobs = await cancelQueuedJobsForAuthorization(env, session.user.id, device.id, product.id);
   await audit(env, session.user.id, device.id, product.id, "authorization.revoke", authorization.id, { source_origin: sourceOrigin(env) });
-  return json({ authorization: revoked, product }, env);
+  return json({ authorization: revoked, product, cancelled_jobs }, env);
+}
+
+async function revokeConnectorAuthorization(request, env, productId) {
+  const product = requireOfficialProduct(productId, env);
+  const connector = await requireConnector(request, env);
+  const authorization = (await storage(env).select("bridge_authorizations", {
+    user_id: connector.device.user_id,
+    device_id: connector.device.id,
+    product_id: product.id,
+  }))[0];
+  if (!authorization) return json({ authorization: null, product, cancelled_jobs: 0 }, env);
+  const revoked = await storage(env).update("bridge_authorizations", authorization.id, { status: "revoked", updated_at: now() });
+  const cancelled_jobs = await cancelQueuedJobsForAuthorization(env, connector.device.user_id, connector.device.id, product.id);
+  await audit(env, connector.device.user_id, connector.device.id, product.id, "authorization.revoke.connector", authorization.id, {
+    source_origin: sourceOrigin(env),
+  });
+  return json({ authorization: revoked, product, cancelled_jobs }, env);
 }
 
 async function createProductJob(request, env, productId, ctx = {}) {
@@ -980,6 +1008,14 @@ async function acceptConnectorJob(request, env, jobId) {
   if (!job) return json({ error: "job_not_found" }, env, 404);
   const body = await readJson(request, env);
   if (job.status !== "queued") return json({ job: publicJob(job), accepted: false }, env);
+  if (!await activeAuthorization(env, job.user_id, job.device_id, job.product_id)) {
+    const cancelled = await cancelAuthorizationRevokedJob(env, job);
+    return json({
+      job: publicJob(cancelled),
+      accepted: false,
+      reason: "product_not_authorized",
+    }, env);
+  }
   if (!job.pushed_at && await availableDeviceSlots(env, connector.device.id) <= 0) {
     return json({
       job: publicJob(job),
@@ -1363,10 +1399,18 @@ async function dispatchQueuedJobs(env, deviceId) {
   if (!realtimeEnabled(env)) return [];
   const limits = jobQueueLimits(env);
   const active = await activeJobsForDevice(env, deviceId);
-  const assigned = active.filter((job) => isAssignedDeviceJob(job, env)).length;
+  const stillAuthorized = [];
+  for (const job of active) {
+    if (job.status === "queued" && !await activeAuthorization(env, job.user_id, job.device_id, job.product_id)) {
+      await cancelAuthorizationRevokedJob(env, job);
+    } else {
+      stillAuthorized.push(job);
+    }
+  }
+  const assigned = stillAuthorized.filter((job) => isAssignedDeviceJob(job, env)).length;
   const available = Math.max(0, limits.deviceMaxRunning - assigned);
   if (available <= 0) return [];
-  const candidates = active
+  const candidates = stillAuthorized
     .filter((job) => job.status === "queued" && !isAssignedDeviceJob(job, env))
     .sort(compareJobsByQueueOrder)
     .slice(0, available);
@@ -1388,6 +1432,43 @@ async function dispatchQueuedJobs(env, deviceId) {
     }
   }
   return dispatched;
+}
+
+async function cancelQueuedJobsForAuthorization(env, userId, deviceId, productId) {
+  const rows = await storage(env).select("bridge_jobs", {
+    user_id: userId,
+    device_id: deviceId,
+    product_id: productId,
+    status: "queued",
+  });
+  let count = 0;
+  for (const row of rows) {
+    await cancelAuthorizationRevokedJob(env, row);
+    count += 1;
+  }
+  return count;
+}
+
+async function cancelAuthorizationRevokedJob(env, job) {
+  if (job.status !== "queued") return job;
+  const cancelledAt = now();
+  const next = await storage(env).update("bridge_jobs", job.id, {
+    status: "cancelled",
+    result: {
+      ok: false,
+      error: "product_not_authorized",
+      reason: "authorization_revoked",
+    },
+    completed_at: job.completed_at || cancelledAt,
+    updated_at: cancelledAt,
+  });
+  const event = await appendEvent(env, job.id, "cancelled", {
+    error: "product_not_authorized",
+    reason: "authorization_revoked",
+    completed_at: next.completed_at,
+  });
+  await notifyJobEvent(env, job.device_id, next, event);
+  return next;
 }
 
 async function publicDeviceQueue(env, deviceId) {
