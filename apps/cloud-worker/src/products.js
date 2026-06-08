@@ -3,7 +3,7 @@ export const PRODUCT_REGISTRY = {
     id: "panda-chat",
     name: "Panda Chat",
     official_origin: "https://bridge.otherline.cc",
-    official_origins: ["https://bridge.otherline.cc", "https://panda.otherline.cc"],
+    official_origins: ["https://bridge.otherline.cc", "https://panda.otherline.cc", "https://pandart.cc", "https://www.pandart.cc"],
     capabilities: ["codex.chat", "codex.run"],
     default_policy: {},
     requires_desktop_authorization: true,

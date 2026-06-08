@@ -2,24 +2,25 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Panda Chat</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Pandart Local Chat</title>
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
   <main class="shell">
     <aside class="sidebar">
       <div class="brand">
-        <div class="brand-mark">PB</div>
-        <div>
-          <h1>Panda Chat</h1>
-          <p>使用你电脑上的 Codex</p>
+        <div class="brand-mark">PT</div>
+        <div class="brand-copy">
+          <span class="eyebrow" data-domain-badge>pandart.cc</span>
+          <h1>Pandart</h1>
+          <p>本机 Codex 对话台</p>
         </div>
       </div>
 
-      <section class="panel">
+      <section class="panel status-panel">
         <div class="row">
-          <span>Panda 账号</span>
+          <span>Pandart 账号</span>
           <strong data-session-status>检查中</strong>
         </div>
         <div class="row">
@@ -27,22 +28,26 @@
           <strong data-device-status>未连接</strong>
         </div>
         <div class="row">
-          <span>本机 AI</span>
-          <strong>Codex</strong>
+          <span>就绪状态</span>
+          <strong data-readiness-status>检查中</strong>
+        </div>
+        <div class="row">
+          <span>API</span>
+          <strong data-api-base>local</strong>
         </div>
       </section>
 
       <section class="panel login" data-login-panel>
         <form data-login-form>
           <label class="label" for="login-email">邮箱</label>
-          <input id="login-email" data-login-email type="email" autocomplete="email" placeholder="panda-test@example.com">
+          <input id="login-email" data-login-email type="email" autocomplete="email" placeholder="chaos@pandart.cc">
           <label class="label" for="login-password">密码</label>
           <input id="login-password" data-login-password type="password" autocomplete="current-password" placeholder="输入密码">
           <button type="submit" class="primary">登录 / 创建测试账号</button>
         </form>
       </section>
 
-      <div class="actions">
+      <div class="actions" aria-label="Pandart account actions">
         <button data-action="login">登录账号</button>
         <button data-action="logout">退出账号</button>
         <button data-action="refresh">刷新</button>
@@ -58,14 +63,14 @@
 
       <section class="panel mobile" data-mobile hidden>
         <h2>手机同步链接</h2>
-        <p>手机打开后，会进入同一个 Panda 账号。</p>
-        <a class="install-link" href="https://bridge.otherline.cc" data-mobile-link>打开手机链接</a>
+        <p>手机打开后，会进入同一个 Pandart 账号。</p>
+        <a class="install-link" href="/" data-mobile-link>打开手机链接</a>
       </section>
 
       <section class="panel install" data-install hidden>
-        <h2 data-install-title>Panda Connector</h2>
+        <h2 data-install-title>Pandart Connector</h2>
         <p data-install-text>正在打开本机应用。</p>
-        <a class="install-link" href="https://bridge.otherline.cc" data-install-link>打开桌面端</a>
+        <a class="install-link" href="/" data-install-link>打开桌面端</a>
         <details>
           <summary>开发者诊断</summary>
           <pre><code data-install-command></code></pre>
@@ -76,21 +81,27 @@
     <section class="chat">
       <header class="chat-head">
         <div>
-          <h2>Chat</h2>
-          <p>网页和手机都可以使用同一个 Panda 账号下的本机 Codex。</p>
+          <span class="route-label">local / mobile / pandart.cc</span>
+          <h2>Local Chat</h2>
+          <p>打开本地地址，连接这台电脑，把消息交给本机 Codex。</p>
         </div>
-        <span class="pill" data-runtime-pill>Panda Connector</span>
+        <div class="runtime-stack">
+          <span class="pill" data-runtime-pill>local bridge</span>
+          <span class="origin" data-public-origin>localhost</span>
+        </div>
       </header>
 
       <div class="messages" data-messages>
         <article class="message assistant">
-          <div class="avatar">PB</div>
-          <div class="bubble">登录 Panda 账号并连接本机后，就可以开始聊天。</div>
+          <div class="avatar">PT</div>
+          <div class="bubble">
+            <div class="bubble-text">登录 Pandart 账号并连接本机后，就可以开始和本地 Codex 对话。</div>
+          </div>
         </article>
       </div>
 
       <form class="composer" data-composer>
-        <textarea data-input rows="1" placeholder="发一条消息..."></textarea>
+        <textarea data-input rows="1" placeholder="问本机 Codex 一件事..."></textarea>
         <button type="button" class="cancel" data-cancel hidden>停止</button>
         <button type="submit" class="send" data-send>发送</button>
       </form>

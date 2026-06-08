@@ -39,7 +39,8 @@
     "desktop:dev": "npm --workspace @panda-bridge/desktop run run",
     "desktop:build": "npm --workspace @panda-bridge/desktop run build",
     "desktop:check": "npm --workspace @panda-bridge/desktop run check",
-    "web:serve": "node scripts/serve-web.mjs"
+    "web:serve": "node scripts/serve-web.mjs",
+    "pandart:local": "node scripts/pandart-local-chat.mjs"
   },
   "dependencies": {
     "pg": "^8.21.0"

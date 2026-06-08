@@ -1,11 +1,14 @@
 import { createBridgeClient } from "/sdk/index.js";
 
-const API_BASE = new URLSearchParams(location.search).get("api") || location.origin;
+const params = new URLSearchParams(location.search);
+const API_BASE = params.get("api") || location.origin;
+const BRAND_DOMAIN = params.get("domain") || "pandart.cc";
 const bridge = createBridgeClient({ apiBase: API_BASE, productId: "panda-chat" });
 
 const state = {
   session: null,
   devices: [],
+  preflight: null,
   selectedDeviceId: "",
   busy: false,
   activeJobId: "",
@@ -23,6 +26,11 @@ const nodes = {
   installText: document.querySelector("[data-install-text]"),
   installLink: document.querySelector("[data-install-link]"),
   installCommand: document.querySelector("[data-install-command]"),
+  readiness: document.querySelector("[data-readiness-status]"),
+  runtimePill: document.querySelector("[data-runtime-pill]"),
+  domainBadge: document.querySelector("[data-domain-badge]"),
+  apiBase: document.querySelector("[data-api-base]"),
+  publicOrigin: document.querySelector("[data-public-origin]"),
   mobile: document.querySelector("[data-mobile]"),
   mobileLink: document.querySelector("[data-mobile-link]"),
   loginPanel: document.querySelector("[data-login-panel]"),
@@ -50,6 +58,9 @@ document.addEventListener("click", async (event) => {
 nodes.select.addEventListener("change", async () => {
   state.selectedDeviceId = nodes.select.value;
   await checkAuthorization().catch(() => {});
+  state.preflight = state.session?.authenticated
+    ? await bridge.preflight({ deviceId: state.selectedDeviceId }).catch(() => state.preflight)
+    : null;
   render();
 });
 
@@ -61,16 +72,16 @@ nodes.input.addEventListener("input", () => {
   nodes.input.style.height = `${Math.min(nodes.input.scrollHeight, 140)}px`;
 });
 
+renderRuntime();
 await bootstrap();
 
 async function bootstrap() {
-  const params = new URLSearchParams(location.search);
   const join = params.get("join");
   if (join) {
     try {
       state.session = await bridge.auth.join(join);
       history.replaceState(null, "", location.pathname);
-      addMessage("assistant", "手机已同步到同一个 Panda 账号，可以使用已连接的本机 Codex。");
+      addMessage("assistant", "手机已同步到同一个 Pandart 账号，可以使用已连接的本机 Codex。");
       await refresh();
       return;
     } catch (error) {
@@ -90,7 +101,7 @@ async function onLogin(event) {
   const email = nodes.loginEmail.value.trim();
   const password = nodes.loginPassword.value;
   if (!email || !password) {
-    addMessage("assistant", "请输入 Panda 账号邮箱和密码。", "error");
+    addMessage("assistant", "请输入 Pandart 账号邮箱和密码。", "error");
     return;
   }
   try {
@@ -112,13 +123,14 @@ async function logout() {
   }
   state.session = null;
   state.devices = [];
+  state.preflight = null;
   state.selectedDeviceId = "";
   state.busy = false;
   state.activeJobId = "";
   state.activeBubble = null;
   state.cancelRequested = false;
   nodes.loginPanel.hidden = false;
-  addMessage("assistant", "已退出 Panda 账号。");
+  addMessage("assistant", "已退出 Pandart 账号。");
   render();
 }
 
@@ -133,8 +145,14 @@ async function refresh() {
     state.devices = visibleDevices(devices.items || []);
     const selected = state.devices.find((item) => item.id === state.selectedDeviceId);
     state.selectedDeviceId = selected?.id || state.devices.find((item) => item.status === "online")?.id || state.devices[0]?.id || "";
+    state.preflight = await bridge.preflight({ deviceId: state.selectedDeviceId }).catch((error) => ({
+      ready: false,
+      issues: [{ code: error?.payload?.error || error?.message || "preflight_failed" }],
+      actions: [{ code: "retry_bridge", label: "Retry Bridge diagnostics or check the API base." }],
+    }));
   } else {
     state.devices = [];
+    state.preflight = null;
     state.selectedDeviceId = "";
   }
   render();
@@ -143,11 +161,11 @@ async function refresh() {
 async function connectDesktop() {
   if (!state.session?.authenticated) {
     showLogin();
-    addMessage("assistant", "先登录 Panda 账号，再连接本机。", "error");
+    addMessage("assistant", "先登录 Pandart 账号，再连接本机。", "error");
     return;
   }
   const payload = await bridge.connect.createIntent({
-    deviceName: `Panda Connector ${navigator.platform || "Desktop"}`,
+    deviceName: `Pandart Connector ${navigator.platform || "Desktop"}`,
   });
   const deepLink = payload.deep_link || `panda-bridge://connect?intent=${encodeURIComponent(payload.token)}&api=${encodeURIComponent(API_BASE)}`;
   const fallback = [
@@ -155,12 +173,12 @@ async function connectDesktop() {
     `cargo run --manifest-path apps/desktop/Cargo.toml -- --intent '${payload.token}'`,
   ].join("\n");
   nodes.install.hidden = false;
-  nodes.installTitle.textContent = "正在打开 Panda Connector";
-  nodes.installText.textContent = "请在本机应用里允许 Panda Chat 使用这台电脑上的 Codex。";
+  nodes.installTitle.textContent = "正在打开 Pandart Connector";
+  nodes.installText.textContent = "请在本机应用里允许 Pandart 使用这台电脑上的 Codex。";
   nodes.installLink.href = deepLink;
   nodes.installLink.textContent = "重新打开桌面端";
   nodes.installCommand.textContent = fallback;
-  addMessage("assistant", "正在打开 Panda Connector。请在本机应用里点“允许”。");
+  addMessage("assistant", "正在打开 Pandart Connector。请在本机应用里点“允许”。");
   openDesktop(deepLink);
   startRefreshLoop();
 }
@@ -168,7 +186,7 @@ async function connectDesktop() {
 async function createMobileLink() {
   if (!state.session?.authenticated) {
     showLogin();
-    addMessage("assistant", "先登录 Panda 账号。", "error");
+    addMessage("assistant", "先登录 Pandart 账号。", "error");
     return;
   }
   const payload = await bridge.auth.share();
@@ -185,7 +203,7 @@ async function revokeCurrentDevice() {
     addMessage("assistant", "当前没有可断开的本机。", "error");
     return;
   }
-  const confirmed = confirm(`断开 ${device.device_name}？\n\n断开后，这个 Panda 账号将不能再使用这台电脑上的 Codex，除非重新连接本机。`);
+  const confirmed = confirm(`断开 ${device.device_name}？\n\n断开后，这个 Pandart 账号将不能再使用这台电脑上的 Codex，除非重新连接本机。`);
   if (!confirmed) return;
   try {
     await bridge.devices.revoke(device.id);
@@ -221,12 +239,12 @@ async function onSubmit(event) {
   const prompt = nodes.input.value.trim();
   if (!prompt) return;
   if (!state.session?.authenticated) {
-    addMessage("assistant", "先登录 Panda 账号。", "error");
+    addMessage("assistant", "先登录 Pandart 账号。", "error");
     return;
   }
   const device = currentDevice();
   if (!device) {
-    addMessage("assistant", "先连接本机 Panda Connector。", "error");
+    addMessage("assistant", "先连接本机 Pandart Connector。", "error");
     return;
   }
   await ensureAuthorization();
@@ -240,7 +258,7 @@ async function onSubmit(event) {
   state.activeBubble = pending;
   const traceStartedAt = Date.now();
   pending.dataset.traceStartedAt = String(traceStartedAt);
-  addTrace(pending, "已发送到 Panda Cloud", traceStartedAt);
+  addTrace(pending, "已发送到 Pandart Bridge", traceStartedAt);
   pending.dataset.jobStatus = "queued";
   setEnabled(false);
   try {
@@ -336,11 +354,13 @@ async function cancelActiveJob() {
 }
 
 function render() {
-  const account = state.session?.user?.email || state.session?.user?.display_name || "Panda Account";
+  const account = state.session?.user?.email || state.session?.user?.display_name || "Pandart Account";
   nodes.session.textContent = state.session?.authenticated ? account : "未登录";
   if (state.session?.authenticated) nodes.loginPanel.hidden = true;
   const device = currentDevice();
   nodes.deviceStatus.textContent = device ? deviceOptionLabel(device) : "未连接";
+  if (nodes.readiness) nodes.readiness.textContent = readinessText();
+  if (nodes.runtimePill) nodes.runtimePill.textContent = state.preflight?.ready ? "local ready" : "setup required";
   nodes.select.innerHTML = "";
   if (!state.devices.length) {
     nodes.select.append(new Option("未连接本机", ""));
@@ -349,6 +369,41 @@ function render() {
       nodes.select.append(new Option(deviceOptionLabel(item), item.id));
     }
     nodes.select.value = state.selectedDeviceId;
+  }
+}
+
+function renderRuntime() {
+  document.title = "Pandart Local Chat";
+  if (nodes.domainBadge) nodes.domainBadge.textContent = BRAND_DOMAIN;
+  if (nodes.publicOrigin) nodes.publicOrigin.textContent = compactUrl(location.origin);
+  if (nodes.apiBase) nodes.apiBase.textContent = compactUrl(API_BASE);
+  if (nodes.runtimePill) nodes.runtimePill.textContent = "local bridge";
+}
+
+function readinessText() {
+  if (!state.session?.authenticated) return "需要登录";
+  if (!state.preflight) return currentDevice() ? "检查中" : "需要连接本机";
+  if (state.preflight.ready) return "ready";
+  const issue = state.preflight.issues?.[0]?.code || "setup_required";
+  const labels = {
+    not_authenticated: "需要登录",
+    no_devices: "需要连接本机",
+    no_online_devices: "桌面端离线",
+    device_not_found: "设备不可见",
+    product_not_authorized: "需要授权",
+    bridge_unreachable: "Bridge 不可达",
+    queue_unavailable: "队列待检查",
+    preflight_failed: "检查失败",
+  };
+  return labels[issue] || issue;
+}
+
+function compactUrl(value) {
+  try {
+    const url = new URL(value);
+    return url.host;
+  } catch {
+    return value || "local";
   }
 }
 
@@ -368,13 +423,13 @@ function startRefreshLoop() {
       clearInterval(state.refreshTimer);
       state.refreshTimer = null;
       nodes.install.hidden = true;
-      addMessage("assistant", "本机 Panda Connector 已连接，可以直接发送消息。");
+      addMessage("assistant", "本机 Pandart Connector 已连接，可以直接发送消息。");
     }
   }, 1800);
   setTimeout(() => {
     if (!state.refreshTimer) return;
     nodes.installTitle.textContent = "没有检测到桌面端";
-    nodes.installText.textContent = "请先安装或打开 Panda Connector。开发者可展开诊断命令。";
+    nodes.installText.textContent = "请先安装或打开 Pandart Connector。开发者可展开诊断命令。";
   }, 5000);
 }
 
@@ -419,7 +474,7 @@ function addMessage(role, text, tone = "") {
   article.dataset.messageRole = role;
   const avatar = document.createElement("div");
   avatar.className = "avatar";
-  avatar.textContent = role === "user" ? "你" : "PB";
+  avatar.textContent = role === "user" ? "你" : "PT";
   const bubble = document.createElement("div");
   bubble.className = `bubble ${tone}`.trim();
   bubble.dataset.messageRole = role;
@@ -531,12 +586,12 @@ function updateCancelState() {
 
 function formatError(error) {
   const code = error?.payload?.error || error?.message || String(error);
-  if (code === "device_offline") return "本机 Panda Connector 暂时离线，请确认桌面端正在运行后刷新。";
-  if (code === "device_not_found") return "这个 Panda 账号还没有连接本机。";
-  if (code === "product_not_authorized" || code === "desktop_authorization_required") return "请点击“连接本机”，并在 Panda Connector 里允许 Panda Chat。";
+  if (code === "device_offline") return "本机 Pandart Connector 暂时离线，请确认桌面端正在运行后刷新。";
+  if (code === "device_not_found") return "这个 Pandart 账号还没有连接本机。";
+  if (code === "product_not_authorized" || code === "desktop_authorization_required") return "请点击“连接本机”，并在 Pandart Connector 里允许 Pandart。";
   if (code === "device_queue_full") return "这台电脑的任务队列已满，请稍后再发送。";
   if (code === "account_queue_full") return "这个账号当前任务太多，请稍后再发送。";
-  if (code === "product_queue_full") return "Panda Chat 当前任务太多，请稍后再发送。";
+  if (code === "product_queue_full") return "Pandart 当前任务太多，请稍后再发送。";
   if (code === "invalid_credentials") return "账号或密码不正确。";
   if (code === "too_many_login_attempts") return "登录失败次数过多，请稍后再试。";
   if (code === "password_login_not_enabled") return "这个账号还没有启用密码登录，请换一个测试账号。";
