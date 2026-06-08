@@ -692,7 +692,7 @@ fn run_verify_action(
 ) -> Result<Value, String> {
     let action = required_param(params, "action")?;
     let result = match action.as_str() {
-        "start_worker" => start_worker(state, proxy)?,
+        "start_worker" => start_worker(state, proxy.clone())?,
         "stop_worker" => {
             state.worker_running.store(false, Ordering::SeqCst);
             json!({ "ok": true, "message": "worker stopped" })
@@ -712,12 +712,12 @@ fn run_verify_action(
             let intent = required_param(params, "intent")?;
             let device_name = string_param(params, "device_name").unwrap_or_else(device_name);
             let claim = claim_intent(&api, &intent, &device_name)?;
-            let _ = start_worker(state, proxy);
+            let _ = start_worker(state, proxy.clone());
             serde_json::to_value(claim).map_err(|error| error.to_string())?
         }
         "revoke_authorization" => {
             let product_id = required_param(params, "product_id")?;
-            revoke_authorization(&product_id)?
+            revoke_authorization_for_state(state, &product_id)?
         }
         "refresh_status" => {
             serde_json::to_value(status(state)).map_err(|error| error.to_string())?
@@ -725,6 +725,9 @@ fn run_verify_action(
         other => return Err(format!("unknown verify action: {other}")),
     };
     push_event(state, "verify_action", json!({ "action": action }));
+    let _ = proxy.send_event(UserEvent::UiEvent(
+        json!({ "type": "event", "event": "refresh" }),
+    ));
     Ok(result)
 }
 
@@ -834,7 +837,7 @@ fn run_command(
         }
         "revoke_authorization" => {
             let product_id = required_param(params, "product_id")?;
-            revoke_authorization(&product_id)
+            revoke_authorization_for_state(state, &product_id)
         }
         "start_worker" => start_worker(state, proxy),
         "stop_worker" => {
@@ -1020,11 +1023,11 @@ fn revoke_authorization(product_id: &str) -> Result<Value, String> {
         credentials.api_base,
         urlencoding::encode(product_id)
     );
-    let payload: Value = delete_json_with_install(
+    let remote_revoke: Result<Value, String> = delete_json_with_install(
         &url,
         Some(&credentials.device_token),
         credentials.install_id.as_deref(),
-    )?;
+    );
     let mut next = credentials.clone();
     next.authorized_products = credentials_products(&credentials)
         .into_iter()
@@ -1037,13 +1040,45 @@ fn revoke_authorization(product_id: &str) -> Result<Value, String> {
     }
     save_credentials(&next)?;
     write_connector_state(&next)?;
+    let (remote_revoke_ok, payload, remote_revoke_error) = match remote_revoke {
+        Ok(payload) => (true, payload, Value::Null),
+        Err(error) => (false, Value::Null, Value::String(redact_error_text(&error))),
+    };
     Ok(json!({
         "ok": true,
+        "remote_revoke_ok": remote_revoke_ok,
         "product_id": product_id,
         "authorization": payload.get("authorization").cloned().unwrap_or(Value::Null),
         "cancelled_jobs": payload.get("cancelled_jobs").cloned().unwrap_or(Value::Null),
+        "remote_revoke_error": remote_revoke_error,
         "authorized_products": next.authorized_products
     }))
+}
+
+fn revoke_authorization_for_state(state: &AppState, product_id: &str) -> Result<Value, String> {
+    let payload = revoke_authorization(product_id)?;
+    let empty_products = payload
+        .get("authorized_products")
+        .and_then(Value::as_array)
+        .map(|items| items.is_empty())
+        .unwrap_or(false);
+    if empty_products {
+        state.worker_running.store(false, Ordering::SeqCst);
+        state.realtime_connected.store(false, Ordering::SeqCst);
+    }
+    Ok(payload)
+}
+
+fn redact_error_text(error: &str) -> String {
+    let mut text = error.replace('\n', " ").replace('\r', " ");
+    if let Some(index) = text.find("Bearer ") {
+        text.truncate(index + "Bearer ".len());
+        text.push_str("[redacted]");
+    }
+    if text.len() > 300 {
+        text.truncate(300);
+    }
+    text
 }
 
 fn start_worker(state: &AppState, proxy: EventLoopProxy<UserEvent>) -> Result<Value, String> {
@@ -1243,6 +1278,11 @@ fn prepare_credentials_for_worker(
     proxy: &EventLoopProxy<UserEvent>,
 ) -> Result<Credentials, String> {
     let credentials = ensure_credentials_install_id(load_credentials()?)?;
+    if credentials_products(&credentials).is_empty() {
+        state.worker_running.store(false, Ordering::SeqCst);
+        state.realtime_connected.store(false, Ordering::SeqCst);
+        return Err("no_authorized_products".to_string());
+    }
     if !device_token_rotation_due(&credentials) {
         return Ok(credentials);
     }
@@ -2260,16 +2300,16 @@ fn save_credentials(credentials: &Credentials) -> Result<(), String> {
         write_file(Path::new(&path), &text)?;
         return Ok(());
     }
-    match keychain_entry()?.set_password(&text) {
-        Ok(()) => {
-            write_file(&fallback_credentials_path()?, &text)?;
-            Ok(())
-        }
-        Err(_error) => {
-            write_file(&fallback_credentials_path()?, &text)?;
-            Ok(())
-        }
-    }
+    write_file(&fallback_credentials_path()?, &text)?;
+    let keychain_text = text.clone();
+    thread::spawn(move || {
+        let _ = keychain_entry().and_then(|entry| {
+            entry
+                .set_password(&keychain_text)
+                .map_err(|error| error.to_string())
+        });
+    });
+    Ok(())
 }
 
 fn load_credentials() -> Result<Credentials, String> {
@@ -2281,15 +2321,21 @@ fn load_credentials_text() -> Result<String, String> {
     if let Ok(path) = env::var("PANDA_BRIDGE_DESKTOP_STATE") {
         return fs::read_to_string(path).map_err(|error| error.to_string());
     }
-    match keychain_entry().and_then(|entry| entry.get_password().map_err(|error| error.to_string()))
-    {
-        Ok(text) => Ok(text),
-        Err(keychain_error) => {
-            fs::read_to_string(fallback_credentials_path()?).map_err(|file_error| {
-                format!("keychain: {keychain_error}; fallback state: {file_error}")
-            })
-        }
+    let fallback_path = fallback_credentials_path()?;
+    if let Ok(text) = fs::read_to_string(&fallback_path) {
+        return Ok(text);
     }
+    if env::var("PANDA_BRIDGE_READ_KEYCHAIN")
+        .map(|value| value == "1")
+        .unwrap_or(false)
+    {
+        return keychain_entry()
+            .and_then(|entry| entry.get_password().map_err(|error| error.to_string()));
+    }
+    Err(format!(
+        "fallback state unavailable: {}",
+        fallback_path.display()
+    ))
 }
 
 fn delete_credentials() -> Result<(), String> {
@@ -2298,10 +2344,11 @@ fn delete_credentials() -> Result<(), String> {
         return Ok(());
     }
     let _ = fs::remove_file(fallback_credentials_path()?);
-    match keychain_entry()?.delete_credential() {
-        Ok(()) => Ok(()),
-        Err(error) => Err(error.to_string()),
-    }
+    thread::spawn(move || {
+        let _ = keychain_entry()
+            .and_then(|entry| entry.delete_credential().map_err(|error| error.to_string()));
+    });
+    Ok(())
 }
 
 fn keychain_entry() -> Result<Entry, String> {

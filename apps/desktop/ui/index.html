@@ -227,9 +227,10 @@
     function colorFor(id){ let h=0; for(const ch of (id||"x")) h=(h*31+ch.charCodeAt(0))>>>0; return COLORS[h%COLORS.length]; }
 
     function buildFromStatus(s){
-      ui.ready = !!(s.device_id && s.codex_available);
-      ui.connected = !!s.device_id;
       const list = Array.isArray(s.authorized_products) ? s.authorized_products : [];
+      const hasAuthorizedProduct = list.length > 0;
+      ui.ready = !!(s.device_id && s.codex_available && hasAuthorizedProduct);
+      ui.connected = !!(s.device_id && hasAuthorizedProduct);
       ui.products = list.map(p=>({ id:p.id, name:p.name||p.id,
         accounts: Array.isArray(p.accounts) ? p.accounts.map(a=>({email:a.email||a}))
           : (s.account_display ? [{ email:s.account_display }] : []) }));
@@ -336,7 +337,7 @@
         await window.PandaBridge.call("revoke_authorization", { product_id: pid });
         await refresh();
         toast(t('tOut'));
-      }catch(e){ toast(t('tFail')); }
+      }catch(e){ toast(`${t('tFail')} · ${safeErr(e)}`); }
     }
     async function addAccount(pid){ try{ await window.PandaBridge.call("open_web", { url: `${WEB_URL}?desktop_login=1${pid?'&product='+encodeURIComponent(pid):''}` }); toast(t('tWeb')); }catch(e){} }
     async function connectNew(){ try{ await window.PandaBridge.call("open_web", { url: `${WEB_URL}?desktop_login=1` }); toast(t('tWeb')); }catch(e){} }
@@ -351,10 +352,11 @@
     }
     function deviceName(){ return `Panda Connector ${navigator.platform||"Desktop"}`; }
     let tt; function toast(m){ const e=document.getElementById("toast"); e.textContent=m; e.classList.add("on"); clearTimeout(tt); tt=setTimeout(()=>e.classList.remove("on"),1700); }
+    function safeErr(e){ return String(e?.message||e||"failed").replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/g,"Bearer [redacted]").replace(/(device_token|pb_session|token)[^\\s\"']*/ig,"$1=[redacted]").slice(0,160); }
 
     // ── boot ──
     document.documentElement.lang = curLang(); applyTheme();
-    refresh().then((s)=>{ if(s?.device_id) startWorker(); }).catch(()=>{});
+    refresh().then((s)=>{ if((s?.authorized_products||[]).length) startWorker(); }).catch(()=>{});
 
     // ── preview fallback ──
     if (!window.ipc){
