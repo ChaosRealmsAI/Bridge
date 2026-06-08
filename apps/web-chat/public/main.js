@@ -3,6 +3,10 @@ import { createBridgeClient } from "/sdk/index.js";
 const params = new URLSearchParams(location.search);
 const API_BASE = params.get("api") || location.origin;
 const BRAND_DOMAIN = params.get("domain") || "pandart.cc";
+const DEMO_ACCOUNT = Object.freeze({
+  email: "chaos@pandart.cc",
+  password: "Pandart-Local-2026!",
+});
 const bridge = createBridgeClient({ apiBase: API_BASE, productId: "panda-chat" });
 
 const state = {
@@ -73,6 +77,7 @@ nodes.input.addEventListener("input", () => {
 });
 
 renderRuntime();
+prefillDemoAccount();
 await bootstrap();
 
 async function bootstrap() {
@@ -93,6 +98,7 @@ async function bootstrap() {
 
 function showLogin() {
   nodes.loginPanel.hidden = false;
+  prefillDemoAccount();
   nodes.loginEmail.focus();
 }
 
@@ -130,6 +136,7 @@ async function logout() {
   state.activeBubble = null;
   state.cancelRequested = false;
   nodes.loginPanel.hidden = false;
+  prefillDemoAccount();
   addMessage("assistant", "已退出 Pandart 账号。");
   render();
 }
@@ -378,6 +385,22 @@ function renderRuntime() {
   if (nodes.publicOrigin) nodes.publicOrigin.textContent = compactUrl(location.origin);
   if (nodes.apiBase) nodes.apiBase.textContent = compactUrl(API_BASE);
   if (nodes.runtimePill) nodes.runtimePill.textContent = "local bridge";
+}
+
+function prefillDemoAccount() {
+  if (!shouldPrefillDemoAccount()) return;
+  if (nodes.loginEmail && !nodes.loginEmail.value) nodes.loginEmail.value = DEMO_ACCOUNT.email;
+  if (nodes.loginPassword && !nodes.loginPassword.value) nodes.loginPassword.value = DEMO_ACCOUNT.password;
+}
+
+function shouldPrefillDemoAccount() {
+  if (params.get("demo_account") === "0") return false;
+  if (params.get("demo_account") === "1") return true;
+  const host = location.hostname.toLowerCase();
+  if (host === "localhost" || host === "127.0.0.1" || host === "0.0.0.0") return true;
+  if (/^192\.168\./.test(host) || /^10\./.test(host) || /^172\.(1[6-9]|2\d|3[0-1])\./.test(host)) return true;
+  if (host.endsWith(".local")) return true;
+  return host === BRAND_DOMAIN && Boolean(location.port);
 }
 
 function readinessText() {
