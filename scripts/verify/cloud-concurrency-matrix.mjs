@@ -7,7 +7,7 @@ const apiBase = (process.env.PANDA_BRIDGE_API_BASE || "https://api.bridge.otherl
 const jobCount = boundedInteger(process.env.PANDA_BRIDGE_CLOUD_CONCURRENCY_JOBS, 100, 50, 140);
 const crossAccountCount = boundedInteger(process.env.PANDA_BRIDGE_CLOUD_CROSS_ACCOUNT_JOBS, 30, 10, 100);
 const duplicateCount = boundedInteger(process.env.PANDA_BRIDGE_CLOUD_DUPLICATE_JOBS, 20, 5, 100);
-const evidenceDir = resolve("spec/evidence/cloud-concurrency-matrix");
+const evidenceDir = resolve("spec/verification/evidence/cloud-concurrency-matrix");
 mkdirSync(evidenceDir, { recursive: true });
 
 const owner = jar();

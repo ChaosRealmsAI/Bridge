@@ -38,7 +38,7 @@ await new Promise((resolveListen) => server.listen(0, "127.0.0.1", resolveListen
 const apiBase = `http://127.0.0.1:${server.address().port}`;
 const temp = mkdtempSync(resolve(tmpdir(), "panda-bridge-desktop-lite-"));
 const statePath = resolve(temp, "desktop.json");
-const evidenceDir = resolve("spec/evidence/desktop-lite-smoke");
+const evidenceDir = resolve("spec/verification/evidence/desktop-lite-smoke");
 mkdirSync(evidenceDir, { recursive: true });
 
 try {

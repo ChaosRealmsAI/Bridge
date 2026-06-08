@@ -7,7 +7,7 @@ import worker from "../../apps/cloud-worker/src/index.js";
 const jobCount = boundedInteger(process.env.PANDA_BRIDGE_CONCURRENCY_JOBS, 100, 50, 1000);
 const crossAccountCount = boundedInteger(process.env.PANDA_BRIDGE_CROSS_ACCOUNT_JOBS, 40, 10, 500);
 const duplicateCount = boundedInteger(process.env.PANDA_BRIDGE_DUPLICATE_JOBS, 20, 5, 200);
-const evidenceDir = resolve("spec/evidence/concurrency-matrix");
+const evidenceDir = resolve("spec/verification/evidence/concurrency-matrix");
 mkdirSync(evidenceDir, { recursive: true });
 
 const env = {

@@ -20,6 +20,7 @@
     "verify:browser": "node scripts/verify/browser-smoke.mjs",
     "verify:mobile-browser": "node scripts/verify/mobile-browser-smoke.mjs",
     "verify:desktop-lite": "node scripts/verify/desktop-lite-smoke.mjs",
+    "verify:spec": "node scripts/verify/spec-traceability.mjs",
     "verify:installed-desktop-e2e": "node scripts/verify/installed-desktop-e2e.mjs",
     "verify:account-e2e": "node scripts/verify/account-password-e2e.mjs",
     "verify:concurrency:matrix": "node scripts/verify/concurrency-matrix.mjs",

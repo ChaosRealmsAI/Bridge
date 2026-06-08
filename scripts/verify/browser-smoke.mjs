@@ -9,7 +9,7 @@ import { chromium } from "playwright";
 const appUrl = (process.env.PANDA_BRIDGE_APP_URL || "https://bridge.otherline.cc").replace(/\/$/, "");
 const temp = mkdtempSync(resolve(tmpdir(), "panda-bridge-browser-smoke-"));
 const statePath = resolve(temp, "desktop.json");
-const evidenceDir = resolve("spec/evidence/browser-smoke");
+const evidenceDir = resolve("spec/verification/evidence/browser-smoke");
 const testEmail = `browser-smoke-${Date.now()}@bridge.otherline.cc`;
 const testPassword = "PandaTest-2026-0604!";
 mkdirSync(evidenceDir, { recursive: true });

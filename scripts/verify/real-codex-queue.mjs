@@ -6,7 +6,7 @@ import { homedir, tmpdir } from "node:os";
 import { resolve } from "node:path";
 
 const appUrl = (process.env.PANDA_BRIDGE_APP_URL || "https://bridge.otherline.cc").replace(/\/$/, "");
-const evidenceDir = resolve("spec/evidence/real-codex-queue");
+const evidenceDir = resolve("spec/verification/evidence/real-codex-queue");
 const productId = process.env.PANDA_BRIDGE_REAL_QUEUE_PRODUCT_ID || process.env.PANDA_BRIDGE_PRODUCT_ID || "panda-chat";
 const productOrigin = process.env.PANDA_BRIDGE_REAL_QUEUE_ORIGIN || (productId === "otherline" ? "https://test.otherline.cc" : "https://bridge.otherline.cc");
 const temp = mkdtempSync(resolve(tmpdir(), "panda-bridge-real-queue-"));

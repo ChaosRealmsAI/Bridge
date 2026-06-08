@@ -7,7 +7,7 @@ import { resolve } from "node:path";
 import { chromium } from "playwright";
 
 const appUrl = (process.env.PANDA_BRIDGE_APP_URL || "https://bridge.otherline.cc").replace(/\/$/, "");
-const evidenceDir = resolve("spec/evidence/installed-desktop-e2e");
+const evidenceDir = resolve("spec/verification/evidence/installed-desktop-e2e");
 const temp = mkdtempSync(resolve(tmpdir(), "panda-bridge-installed-e2e-"));
 const desktopState = resolve(temp, "desktop-state.json");
 const controlState = resolve(temp, "verify-control.json");

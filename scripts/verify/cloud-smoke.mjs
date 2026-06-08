@@ -10,7 +10,7 @@ const apiBase = (process.env.PANDA_BRIDGE_API_BASE || "https://api.bridge.otherl
 const productId = process.env.PANDA_BRIDGE_PRODUCT_ID || "panda-chat";
 const temp = mkdtempSync(resolve(tmpdir(), "panda-bridge-cloud-smoke-"));
 const statePath = resolve(temp, "connector.json");
-const evidenceDir = resolve("spec/evidence/cloud-smoke");
+const evidenceDir = resolve("spec/verification/evidence/cloud-smoke");
 mkdirSync(evidenceDir, { recursive: true });
 
 let cookie = "";

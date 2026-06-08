@@ -36,7 +36,7 @@ await new Promise((resolveListen) => server.listen(0, "127.0.0.1", resolveListen
 const apiBase = `http://127.0.0.1:${server.address().port}`;
 const temp = mkdtempSync(resolve(tmpdir(), "panda-bridge-smoke-"));
 const statePath = resolve(temp, "connector.json");
-const evidenceDir = resolve("spec/evidence/local-smoke");
+const evidenceDir = resolve("spec/verification/evidence/local-smoke");
 mkdirSync(evidenceDir, { recursive: true });
 
 try {

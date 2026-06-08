@@ -4,7 +4,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from
 import { resolve } from "node:path";
 
 const runs = boundedInteger(process.env.PANDA_BRIDGE_PERFORMANCE_RUNS, 5, 5, 20);
-const evidenceDir = resolve("spec/evidence/performance-matrix");
+const evidenceDir = resolve("spec/verification/evidence/performance-matrix");
 const realCodex = process.env.PANDA_BRIDGE_REAL_CODEX === "1";
 
 mkdirSync(evidenceDir, { recursive: true });
