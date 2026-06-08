@@ -121,6 +121,10 @@ const diagnosticsText = JSON.stringify(diagnostics);
 assert.doesNotMatch(diagnosticsText, /device_token"\s*:/);
 assert.doesNotMatch(diagnosticsText, /session_cookie/i);
 
+const unauthenticatedQueueSummary = await apiRaw("GET", "/v1/queue/summary");
+assert.equal(unauthenticatedQueueSummary.response.status, 401);
+assert.equal(unauthenticatedQueueSummary.payload.error, "unauthorized");
+
 const invalidContentType = await apiRawText("POST", "/v1/sessions/guest", JSON.stringify({ display_name: "Plain Text" }), "", {
   "content-type": "text/plain",
 });
@@ -224,6 +228,23 @@ assert.ok(Number.isFinite(final.job.timing.queued_to_claimed_ms));
 assert.ok(Number.isFinite(final.job.timing.total_job_ms));
 const events = await api("GET", `/v1/jobs/${created.job.id}/events`);
 assert.ok(events.items.length >= 3);
+const queueSummary = await api("GET", "/v1/queue/summary");
+assert.equal(queueSummary.limits.device_max_running, 1);
+assert.equal(queueSummary.counts.total, 2);
+assert.equal(queueSummary.counts.succeeded, 2);
+assert.equal(queueSummary.counts.active, 0);
+assert.equal(queueSummary.products["panda-chat"].succeeded, 2);
+assert.ok(queueSummary.devices.some((item) => item.device.id === localIntentClaim.device.id));
+const localDeviceQueue = queueSummary.devices.find((item) => item.device.id === localIntentClaim.device.id).queue;
+assert.equal(localDeviceQueue.max_running, 1);
+assert.equal(localDeviceQueue.max_queued, 150);
+assert.equal(localDeviceQueue.active, 0);
+assert.equal(queueSummary.timing.completed_count, 2);
+assert.ok(Number.isFinite(queueSummary.timing.average_ms.queued_to_claimed_ms));
+assert.ok(Number.isFinite(queueSummary.timing.average_ms.total_job_ms));
+const queueSummaryText = JSON.stringify(queueSummary);
+assert.doesNotMatch(queueSummaryText, /device_token"\s*:/);
+assert.doesNotMatch(queueSummaryText, /pb_session/i);
 
 const intent = await api("POST", "/v1/connect-intents", { product_id: "panda-chat", device_name: "Intent Test Device" }, "", { origin: "http://chat.local.test" });
 assert.ok(intent.token);
@@ -530,6 +551,9 @@ assert.equal(crossEvents.payload.error, "job_not_found");
 const crossCancel = await apiRaw("POST", `/v1/jobs/${encodeURIComponent(ownerJobId)}/cancel`, {}, "", { cookie: otherConcurrencyCookie });
 assert.equal(crossCancel.response.status, 404);
 assert.equal(crossCancel.payload.error, "job_not_found");
+const crossQueueSummary = await api("GET", "/v1/queue/summary");
+assert.equal(crossQueueSummary.counts.total, 0);
+assert.equal(crossQueueSummary.devices.some((item) => item.device.id === intentClaim.device.id), false);
 jar.cookie = ownerConcurrencyCookie;
 
 const installBoundIntent = await api("POST", "/v1/connect-intents", { product_id: "panda-chat", device_name: "Install Bound Device" });
@@ -640,6 +664,9 @@ const queueLimitFirst = await api("POST", "/v1/products/panda-chat/jobs", {
   policy: { token_budget: 1000, timeout_ms: 60000 },
 });
 assert.equal(queueLimitFirst.queue.max_queued, 1);
+const queueLimitSummary = await api("GET", "/v1/queue/summary");
+assert.equal(queueLimitSummary.limits.device_max_queued, 1);
+assert.equal(queueLimitSummary.devices.find((item) => item.device.id === queueLimitClaim.device.id).queue.max_queued, 1);
 const queueLimitSecond = await apiRaw("POST", "/v1/products/panda-chat/jobs", {
   kind: "codex.chat",
   device_id: queueLimitClaim.device.id,

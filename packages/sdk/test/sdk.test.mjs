@@ -46,6 +46,10 @@ await client.diagnostics();
 assert.equal(calls[7].url, "https://api.example.test/v1/diagnostics");
 assert.equal(calls[7].init.method, "GET");
 
+await client.queue.summary();
+assert.equal(calls[8].url, "https://api.example.test/v1/queue/summary");
+assert.equal(calls[8].init.method, "GET");
+
 const devCalls = [];
 const devClient = createBridgeClient({
   apiBase: "https://api.example.test",

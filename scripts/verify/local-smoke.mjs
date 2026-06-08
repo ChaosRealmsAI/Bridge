@@ -39,9 +39,11 @@ const statePath = resolve(temp, "connector.json");
 const evidenceDir = resolve("spec/verification/evidence/local-smoke");
 const v2EvidenceDir = resolve("spec/verification/evidence/v2-invocation-diagnostics");
 const v3EvidenceDir = resolve("spec/verification/evidence/v3-request-safety-boundaries");
+const v4EvidenceDir = resolve("spec/verification/evidence/v4-queue-performance-observability");
 mkdirSync(evidenceDir, { recursive: true });
 mkdirSync(v2EvidenceDir, { recursive: true });
 mkdirSync(v3EvidenceDir, { recursive: true });
+mkdirSync(v4EvidenceDir, { recursive: true });
 
 try {
   let cookie = "";
@@ -178,6 +180,43 @@ try {
   assert.match(final.job.result.reply, /hello local smoke/);
   const events = await bridge.jobs.events(created.job.id);
   assert.ok(events.items.length >= 3);
+  const queueSummary = await bridge.queue.summary();
+  assert.equal(queueSummary.counts.total, 1);
+  assert.equal(queueSummary.counts.succeeded, 1);
+  assert.equal(queueSummary.counts.active, 0);
+  assert.equal(queueSummary.products["panda-chat"].succeeded, 1);
+  assert.equal(queueSummary.devices.length, 1);
+  assert.equal(queueSummary.devices[0].device.id, device.id);
+  assert.equal(queueSummary.devices[0].queue.max_running, 1);
+  assert.equal(queueSummary.devices[0].queue.max_queued, 150);
+  assert.equal(queueSummary.timing.completed_count, 1);
+  assert.ok(Number.isFinite(queueSummary.timing.average_ms.queued_to_claimed_ms));
+  assert.ok(Number.isFinite(queueSummary.timing.average_ms.total_job_ms));
+
+  let otherCookie = "";
+  const otherFetchJar = async (url, init = {}) => {
+    const headers = new Headers(init.headers || {});
+    if (otherCookie) headers.set("cookie", otherCookie);
+    const response = await fetch(url, { ...init, headers });
+    const setCookie = response.headers.get("set-cookie");
+    if (setCookie) otherCookie = setCookie.split(";")[0];
+    return response;
+  };
+  const otherBridge = createBridgeClient({ apiBase, productId: "panda-chat", fetch: otherFetchJar });
+  await otherBridge.auth.guest("Local Smoke Other");
+  const otherQueueSummary = await otherBridge.queue.summary();
+  assert.equal(otherQueueSummary.counts.total, 0);
+  assert.equal(otherQueueSummary.devices.some((item) => item.device.id === device.id), false);
+  const queueSummaryEvidence = {
+    checked_at: new Date().toISOString(),
+    summary: queueSummary,
+    cross_account_summary: otherQueueSummary,
+    source_access: "API-as-user and SDK-as-user local operation",
+  };
+  const queueSummaryText = JSON.stringify(queueSummaryEvidence);
+  assert.equal(queueSummaryText.includes("device_token"), false);
+  assert.equal(queueSummaryText.includes("pb_session"), false);
+  writeFileSync(resolve(v4EvidenceDir, "queue-summary.json"), JSON.stringify(queueSummaryEvidence, null, 2) + "\n");
 
   const summary = {
     ok: true,
@@ -192,6 +231,7 @@ try {
     diagnostics_evidence: "spec/verification/evidence/v2-invocation-diagnostics/sdk-diagnostics.json",
     doctor_evidence: "spec/verification/evidence/v2-invocation-diagnostics/cli-doctor.json",
     safety_evidence: "spec/verification/evidence/v3-request-safety-boundaries/request-safety.json",
+    queue_summary_evidence: "spec/verification/evidence/v4-queue-performance-observability/queue-summary.json",
     checked_at: new Date().toISOString(),
   };
   writeFileSync(resolve(evidenceDir, "summary.json"), JSON.stringify(summary, null, 2) + "\n");

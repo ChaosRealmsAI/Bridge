@@ -78,6 +78,9 @@ for await (const event of bridge.jobs.stream(created.job.id, {
 
 const final = await bridge.jobs.get(created.job.id);
 console.log(final.job.result.reply);
+
+const queueSummary = await bridge.queue.summary();
+console.log(queueSummary.counts.active, queueSummary.devices[0]?.queue);
 ```
 
 ## Multi-Product Example
@@ -117,6 +120,9 @@ Recommended product behavior:
 
 - Use a unique `requestKey` per logical user action.
 - Stream events with `jobs.stream()` and fall back to polling automatically.
+- Use `queue.summary()` before or after job creation when the product needs
+  account queue pressure, per-device queue state, limits, or completed-job
+  timing aggregates.
 - Show queued/running/cancelled/failed states from job events, not only final
   text.
 - Cancel jobs when the user navigates away from work that should not continue.

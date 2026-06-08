@@ -46,6 +46,8 @@ export default {
         return json(diagnosticsPayload(env), env);
       }
 
+      if (path === "/v1/queue/summary" && request.method === "GET") return await queueSummary(request, env);
+
       if (path === "/v1/sessions/password" && request.method === "POST") return await createPasswordSession(request, env);
       if (path === "/v1/sessions/guest" && request.method === "POST") return await createGuestSession(request, env);
       if (path === "/v1/sessions/share" && request.method === "POST") return await createSessionLink(request, env);
@@ -388,6 +390,30 @@ async function listDevices(request, env) {
   const session = await requireSession(request, env);
   const rows = await storage(env).select("bridge_devices", { user_id: session.user.id }, { order: "last_seen_at", desc: true });
   return json({ items: rows.map((row) => publicDevice(row, env)) }, env);
+}
+
+async function queueSummary(request, env) {
+  const session = await requireSession(request, env);
+  const store = storage(env);
+  const devices = await store.select("bridge_devices", { user_id: session.user.id }, { order: "last_seen_at", desc: true });
+  const jobs = await store.select("bridge_jobs", { user_id: session.user.id }, { order: "created_at" });
+  const limits = jobQueueLimits(env);
+  return json({
+    generated_at: now(),
+    limits: {
+      device_max_running: limits.deviceMaxRunning,
+      device_max_queued: limits.deviceMaxQueued,
+      account_max_active: limits.accountMaxActive,
+      product_max_active: limits.productMaxActive,
+    },
+    counts: jobCounts(jobs),
+    products: productJobCounts(jobs),
+    devices: await Promise.all(devices.map(async (device) => ({
+      device: publicDevice(device, env),
+      queue: await publicDeviceQueue(env, device.id),
+    }))),
+    timing: jobTimingSummary(jobs),
+  }, env);
 }
 
 async function revokeDevice(request, env, deviceId) {
@@ -1377,6 +1403,66 @@ async function publicDeviceQueue(env, deviceId) {
     max_running: limits.deviceMaxRunning,
     max_queued: limits.deviceMaxQueued,
   };
+}
+
+function jobCounts(jobs) {
+  const counts = {
+    total: jobs.length,
+    active: 0,
+    queued: 0,
+    running: 0,
+    succeeded: 0,
+    failed: 0,
+    cancelled: 0,
+    other: 0,
+  };
+  for (const job of jobs) {
+    if (isActiveJobStatus(job.status)) counts.active += 1;
+    if (job.status && Object.prototype.hasOwnProperty.call(counts, job.status)) counts[job.status] += 1;
+    else counts.other += 1;
+  }
+  return counts;
+}
+
+function productJobCounts(jobs) {
+  const buckets = {};
+  for (const job of jobs) {
+    const productId = clean(job.product_id, 80) || "unknown";
+    buckets[productId] = buckets[productId] || [];
+    buckets[productId].push(job);
+  }
+  return Object.fromEntries(Object.entries(buckets).map(([productId, rows]) => [productId, jobCounts(rows)]));
+}
+
+function jobTimingSummary(jobs) {
+  const terminal = jobs.filter((job) => isTerminalJobStatus(job.status));
+  const fields = [
+    "queued_to_claimed_ms",
+    "pushed_to_claimed_ms",
+    "claimed_to_started_ms",
+    "started_to_first_delta_ms",
+    "first_delta_to_completed_ms",
+    "total_job_ms",
+  ];
+  const averages = {};
+  const max = {};
+  for (const field of fields) {
+    const values = terminal
+      .map((job) => Number(jobTiming(job)[field]))
+      .filter(Number.isFinite);
+    averages[field] = averageNumber(values);
+    max[field] = values.length ? Math.max(...values) : null;
+  }
+  return {
+    completed_count: terminal.length,
+    average_ms: averages,
+    max_ms: max,
+  };
+}
+
+function averageNumber(values) {
+  if (!values.length) return null;
+  return Math.round(values.reduce((sum, value) => sum + value, 0) / values.length);
 }
 
 function jobQueueLimits(env) {
