@@ -5,6 +5,7 @@ use serde_json::{json, Value};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::{
+    collections::HashSet,
     env, fs,
     io::{BufRead, BufReader, Read, Write},
     net::{TcpListener, TcpStream},
@@ -44,6 +45,7 @@ const WINDOWS_SINGLE_INSTANCE_STATE_FILE: &str = "windows-single-instance.json";
 struct AppState {
     worker_running: Arc<AtomicBool>,
     realtime_connected: Arc<AtomicBool>,
+    realtime_connection_keys: Arc<Mutex<HashSet<String>>>,
     events: Arc<Mutex<Vec<Value>>>,
 }
 
@@ -279,6 +281,7 @@ fn new_app_state() -> AppState {
     AppState {
         worker_running: Arc::new(AtomicBool::new(false)),
         realtime_connected: Arc::new(AtomicBool::new(false)),
+        realtime_connection_keys: Arc::new(Mutex::new(HashSet::new())),
         events: Arc::new(Mutex::new(Vec::new())),
     }
 }
@@ -1201,18 +1204,26 @@ fn redact_error_text(error: &str) -> String {
 
 fn start_worker(state: &AppState, proxy: EventLoopProxy<UserEvent>) -> Result<Value, String> {
     prepare_connections_for_worker(state, &proxy)?;
-    if state.worker_running.swap(true, Ordering::SeqCst) {
-        return Ok(json!({ "ok": true, "message": "worker already running" }));
+    let already_running = state.worker_running.swap(true, Ordering::SeqCst);
+    if !already_running {
+        if let Ok(mut keys) = state.realtime_connection_keys.lock() {
+            keys.clear();
+        }
+    }
+    let spawned_realtime_connections = spawn_missing_realtime_workers(state, &proxy)?;
+    if already_running {
+        return Ok(json!({
+            "ok": true,
+            "message": "worker already running",
+            "spawned_realtime_connections": spawned_realtime_connections
+        }));
     }
     let running = state.worker_running.clone();
-    let realtime_running = state.worker_running.clone();
-    let realtime_connected = state.realtime_connected.clone();
-    let realtime_state = state.clone();
     let fallback_state = state.clone();
-    let realtime_proxy = proxy.clone();
     let fallback_proxy = proxy.clone();
     thread::spawn(move || {
         while running.load(Ordering::SeqCst) {
+            let _ = spawn_missing_realtime_workers(&fallback_state, &fallback_proxy);
             let event_payload = match load_credentials()
                 .and_then(|credentials| poll_all_connections(&credentials))
             {
@@ -1244,41 +1255,19 @@ fn start_worker(state: &AppState, proxy: EventLoopProxy<UserEvent>) -> Result<Va
             thread::sleep(Duration::from_millis(1800));
         }
     });
-    thread::spawn(move || {
-        while realtime_running.load(Ordering::SeqCst) {
-            let result = load_credentials().and_then(|credentials| {
-                let connection = primary_realtime_connection(&credentials)
-                    .ok_or_else(|| "no_authorized_products".to_string())?;
-                run_realtime_worker(
-                    &connection,
-                    &realtime_running,
-                    &realtime_connected,
-                    &realtime_state,
-                    &realtime_proxy,
-                )
-            });
-            realtime_connected.store(false, Ordering::SeqCst);
-            if let Err(error) = result {
-                push_event(
-                    &realtime_state,
-                    "realtime_disconnected",
-                    json!({ "error": error }),
-                );
-                let _ = realtime_proxy.send_event(UserEvent::UiEvent(json!({
-                    "type": "event",
-                    "event": "log",
-                    "message": "realtime disconnected; polling fallback active"
-                })));
-            }
-            thread::sleep(Duration::from_millis(2000));
-        }
-    });
     push_event(
         state,
         "worker_started",
-        json!({ "message": "worker started" }),
+        json!({
+            "message": "worker started",
+            "spawned_realtime_connections": spawned_realtime_connections
+        }),
     );
-    Ok(json!({ "ok": true, "message": "worker started" }))
+    Ok(json!({
+        "ok": true,
+        "message": "worker started",
+        "spawned_realtime_connections": spawned_realtime_connections
+    }))
 }
 
 fn credentials_products(credentials: &Credentials) -> Vec<ProductGrant> {
@@ -1713,6 +1702,103 @@ fn token_rotation_interval_seconds() -> u64 {
         .unwrap_or(60 * 60 * 24)
 }
 
+fn spawn_missing_realtime_workers(
+    state: &AppState,
+    proxy: &EventLoopProxy<UserEvent>,
+) -> Result<usize, String> {
+    let connections = authorized_connections(&load_credentials()?);
+    let mut spawned = 0_usize;
+    for connection in connections {
+        let key = realtime_connection_key(&connection);
+        let should_spawn = {
+            let mut keys = state
+                .realtime_connection_keys
+                .lock()
+                .map_err(|_| "realtime connection registry unavailable".to_string())?;
+            if keys.contains(&key) {
+                false
+            } else {
+                keys.insert(key.clone());
+                true
+            }
+        };
+        if !should_spawn {
+            continue;
+        }
+        spawned += 1;
+        let running = state.worker_running.clone();
+        let realtime_connected = state.realtime_connected.clone();
+        let thread_state = state.clone();
+        let thread_proxy = proxy.clone();
+        thread::spawn(move || {
+            push_event(
+                &thread_state,
+                "realtime_worker_started",
+                realtime_connection_payload(&connection),
+            );
+            while running.load(Ordering::SeqCst) {
+                let result = run_realtime_worker(
+                    &connection,
+                    &running,
+                    &realtime_connected,
+                    &thread_state,
+                    &thread_proxy,
+                );
+                if let Err(error) = result {
+                    push_event(
+                        &thread_state,
+                        "realtime_disconnected",
+                        json!({
+                            "error": redact_error_text(&error),
+                            "connection": realtime_connection_payload(&connection)
+                        }),
+                    );
+                    let _ = thread_proxy.send_event(UserEvent::UiEvent(json!({
+                        "type": "event",
+                        "event": "log",
+                        "message": "realtime disconnected; polling fallback active"
+                    })));
+                }
+                if running.load(Ordering::SeqCst) {
+                    thread::sleep(Duration::from_millis(2000));
+                }
+            }
+            if let Ok(mut keys) = thread_state.realtime_connection_keys.lock() {
+                keys.remove(&key);
+                if keys.is_empty() {
+                    realtime_connected.store(false, Ordering::SeqCst);
+                }
+            }
+        });
+    }
+    Ok(spawned)
+}
+
+fn realtime_connection_key(credentials: &Credentials) -> String {
+    format!(
+        "{}|{}|{}",
+        credentials.api_base,
+        credentials.device_id,
+        credentials
+            .account_id
+            .as_deref()
+            .unwrap_or("unknown-account")
+    )
+}
+
+fn realtime_connection_payload(credentials: &Credentials) -> Value {
+    json!({
+        "api_base": credentials.api_base,
+        "device_id": credentials.device_id,
+        "account_id": credentials.account_id,
+        "account_display": credentials.account_display,
+        "product_ids": connection_products(credentials)
+            .into_iter()
+            .map(|product| product.id)
+            .collect::<Vec<_>>()
+    })
+}
+
 fn run_realtime_worker(
     credentials: &Credentials,
     running: &Arc<AtomicBool>,
@@ -1741,7 +1827,16 @@ fn run_realtime_worker(
     push_event(
         state,
         "realtime_connected",
-        json!({ "device_id": credentials.device_id, "transport": "websocket" }),
+        json!({
+            "device_id": credentials.device_id,
+            "account_id": credentials.account_id,
+            "account_display": credentials.account_display,
+            "product_ids": connection_products(credentials)
+                .into_iter()
+                .map(|product| product.id)
+                .collect::<Vec<_>>(),
+            "transport": "websocket"
+        }),
     );
     let _ = proxy.send_event(UserEvent::UiEvent(json!({
         "type": "event",
@@ -1772,7 +1867,14 @@ fn run_realtime_worker(
                             push_event(
                                 state,
                                 "realtime_job",
-                                json!({ "job_id": job.id, "kind": job.kind }),
+                                json!({
+                                    "job_id": job.id,
+                                    "kind": job.kind,
+                                    "product_id": job.product_id,
+                                    "device_id": credentials.device_id,
+                                    "account_id": credentials.account_id,
+                                    "transport": "websocket"
+                                }),
                             );
                             let _ = proxy.send_event(UserEvent::UiEvent(
                                 json!({ "type": "event", "event": "refresh" }),
@@ -1853,10 +1955,6 @@ fn realtime_url(credentials: &Credentials) -> Result<String, String> {
     ));
     base.set_query(Some("role=desktop"));
     Ok(base.to_string())
-}
-
-fn primary_realtime_connection(credentials: &Credentials) -> Option<Credentials> {
-    authorized_connections(credentials).into_iter().next()
 }
 
 fn poll_all_connections(credentials: &Credentials) -> Result<Value, String> {
@@ -3130,12 +3228,9 @@ fn run_headless_if_requested() -> Option<i32> {
         return None;
     }
     let result = match command.as_str() {
-        "headless-status" => serde_json::to_value(status(&AppState {
-            worker_running: Arc::new(AtomicBool::new(false)),
-            realtime_connected: Arc::new(AtomicBool::new(false)),
-            events: Arc::new(Mutex::new(Vec::new())),
-        }))
-        .map_err(|error| error.to_string()),
+        "headless-status" => {
+            serde_json::to_value(status(&new_app_state())).map_err(|error| error.to_string())
+        }
         "headless-connect" => {
             let map = arg_map(args.collect());
             let api = map
