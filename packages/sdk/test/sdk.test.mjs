@@ -42,6 +42,10 @@ await client.products.revokeAuthorization("dev_1");
 assert.equal(calls[6].url, "https://api.example.test/v1/products/panda-chat/authorization?device_id=dev_1");
 assert.equal(calls[6].init.method, "DELETE");
 
+await client.diagnostics();
+assert.equal(calls[7].url, "https://api.example.test/v1/diagnostics");
+assert.equal(calls[7].init.method, "GET");
+
 const devCalls = [];
 const devClient = createBridgeClient({
   apiBase: "https://api.example.test",

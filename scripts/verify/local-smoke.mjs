@@ -37,7 +37,9 @@ const apiBase = `http://127.0.0.1:${server.address().port}`;
 const temp = mkdtempSync(resolve(tmpdir(), "panda-bridge-smoke-"));
 const statePath = resolve(temp, "connector.json");
 const evidenceDir = resolve("spec/verification/evidence/local-smoke");
+const v2EvidenceDir = resolve("spec/verification/evidence/v2-invocation-diagnostics");
 mkdirSync(evidenceDir, { recursive: true });
+mkdirSync(v2EvidenceDir, { recursive: true });
 
 try {
   let cookie = "";
@@ -51,6 +53,15 @@ try {
   };
 
   const bridge = createBridgeClient({ apiBase, productId: "panda-chat", fetch: fetchJar });
+  const diagnostics = await bridge.diagnostics();
+  assert.equal(diagnostics.ok, true);
+  assert.ok(diagnostics.products.some((item) => item.id === "panda-chat"));
+  assert.ok(diagnostics.jobs.supported_kinds.includes("codex.chat"));
+  writeFileSync(resolve(v2EvidenceDir, "sdk-diagnostics.json"), JSON.stringify({
+    checked_at: new Date().toISOString(),
+    diagnostics,
+  }, null, 2) + "\n");
+
   const session = await bridge.auth.guest("Local Smoke");
   assert.equal(session.authenticated, true);
 
@@ -70,9 +81,35 @@ try {
   ]);
   assert.equal(claim.status, 0, childMessage(claim));
 
+  const doctor = await runCli([
+    "apps/connector-cli/src/cli.mjs",
+    "doctor",
+    "--api",
+    apiBase,
+    "--state",
+    statePath,
+    "--fake-codex",
+  ], {
+    env: { ...process.env, PANDA_BRIDGE_FAKE_CODEX: "1" },
+  });
+  assert.equal(doctor.status, 0, childMessage(doctor));
+  const doctorPayload = JSON.parse(doctor.stdout);
+  assert.equal(doctorPayload.ok, true);
+  assert.equal(doctorPayload.cloud.health_ok, true);
+  assert.equal(doctorPayload.cloud.diagnostics_ok, true);
+  assert.equal(doctorPayload.state.token_present, true);
+  assert.equal(doctorPayload.local.fixture_mode, true);
+  assert.equal(doctorPayload.local.codex_ready, true);
+  assert.equal(JSON.stringify(doctorPayload).includes("device_token"), false);
+  writeFileSync(resolve(v2EvidenceDir, "cli-doctor.json"), JSON.stringify({
+    checked_at: new Date().toISOString(),
+    doctor: doctorPayload,
+  }, null, 2) + "\n");
+
   const devices = await bridge.devices.list();
   assert.equal(devices.items.length, 1);
   const device = devices.items[0];
+  assert.equal(doctorPayload.state.device_id, device.id);
   await bridge.products.requestAuthorization(device.id);
 
   const created = await bridge.codex.run({
@@ -109,6 +146,10 @@ try {
     job_id: created.job.id,
     final_status: final.job.status,
     event_count: events.items.length,
+    diagnostics_ok: diagnostics.ok,
+    doctor_ok: doctorPayload.ok,
+    diagnostics_evidence: "spec/verification/evidence/v2-invocation-diagnostics/sdk-diagnostics.json",
+    doctor_evidence: "spec/verification/evidence/v2-invocation-diagnostics/cli-doctor.json",
     checked_at: new Date().toISOString(),
   };
   writeFileSync(resolve(evidenceDir, "summary.json"), JSON.stringify(summary, null, 2) + "\n");

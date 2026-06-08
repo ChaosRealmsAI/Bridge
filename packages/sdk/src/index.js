@@ -28,6 +28,7 @@ export function createBridgeClient(options = {}) {
 
   return {
     productId,
+    diagnostics: () => request("GET", "/v1/diagnostics"),
     auth: {
       session: () => request("GET", "/v1/session"),
       password: (email, password, displayName = "") =>

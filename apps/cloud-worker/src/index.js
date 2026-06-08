@@ -1,4 +1,4 @@
-import { BRIDGE_PROTOCOL_VERSION, bridgeEvent, validateBridgeJob } from "@panda-bridge/protocol";
+import { BRIDGE_PROTOCOL_VERSION, EVENT_TYPES, bridgeEvent, validateBridgeJob } from "@panda-bridge/protocol";
 import { allProducts, officialProductOrigins, productById } from "./products.js";
 
 const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 30;
@@ -18,6 +18,7 @@ const DEVICE_MAX_QUEUED_JOBS = 150;
 const ACCOUNT_MAX_ACTIVE_JOBS = 500;
 const PRODUCT_MAX_ACTIVE_JOBS = 300;
 const JOB_ASSIGNMENT_GRACE_MS = 1000 * 30;
+const SUPPORTED_JOB_KINDS = Object.freeze(["codex.chat", "codex.run", "codex.rpc", "saas.custom.run"]);
 const memory = makeMemoryStore();
 
 export default {
@@ -37,6 +38,10 @@ export default {
           env: env.BRIDGE_ENV || "local",
           storage: hasSupabase(env) && !env.BRIDGE_LOCAL_MEMORY ? "supabase" : "memory",
         }, env);
+      }
+
+      if (path === "/v1/diagnostics" && request.method === "GET") {
+        return json(diagnosticsPayload(env), env);
       }
 
       if (path === "/v1/sessions/password" && request.method === "POST") return await createPasswordSession(request, env);
@@ -1387,6 +1392,50 @@ function queueLimitPayload(active, max, maxRunning) {
     max_queued: max,
     max_running: maxRunning,
     retry_after_ms: 3000,
+  };
+}
+
+function diagnosticsPayload(env) {
+  const limits = jobQueueLimits(env);
+  return {
+    ok: true,
+    protocol: BRIDGE_PROTOCOL_VERSION,
+    env: env.BRIDGE_ENV || "local",
+    storage: hasSupabase(env) && !env.BRIDGE_LOCAL_MEMORY ? "supabase" : "memory",
+    api_base: publicApiBase(env),
+    web_origin: webOrigin(env),
+    realtime: {
+      enabled: realtimeEnabled(env),
+      route_template: "/v1/realtime/devices/{device_id}",
+    },
+    products: allProducts(sourceOrigin(env)).map((product) => ({
+      id: product.id,
+      name: product.name,
+      origin: product.origin,
+      official_origin: product.official_origin,
+      official_origins: product.official_origins,
+      capabilities: product.capabilities,
+      requires_desktop_authorization: product.requires_desktop_authorization,
+    })),
+    jobs: {
+      supported_kinds: [...SUPPORTED_JOB_KINDS],
+      event_types: [...EVENT_TYPES],
+      queue_limits: {
+        device_max_running: limits.deviceMaxRunning,
+        device_max_queued: limits.deviceMaxQueued,
+        account_max_active: limits.accountMaxActive,
+        product_max_active: limits.productMaxActive,
+      },
+      assignment_grace_ms: boundedInteger(env.BRIDGE_JOB_ASSIGNMENT_GRACE_MS, JOB_ASSIGNMENT_GRACE_MS, 1000, 1000 * 60 * 10),
+    },
+    connector: {
+      device_token_prefix: DEVICE_TOKEN_PREFIX,
+      device_token_ttl_ms: DEVICE_TOKEN_TTL_MS,
+      device_token_rotation_grace_ms: deviceTokenRotationGraceMs(env),
+      device_online_grace_ms: boundedInteger(env.BRIDGE_DEVICE_ONLINE_GRACE_MS, DEVICE_ONLINE_GRACE_MS, 1000, 1000 * 60 * 60),
+      connect_intent_ttl_ms: connectIntentTtlMs(env),
+      session_link_ttl_ms: sessionLinkTtlMs(env),
+    },
   };
 }
 

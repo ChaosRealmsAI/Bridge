@@ -88,6 +88,20 @@ assert.ok(secureHealthRaw.ok);
 assert.match(secureHealthRaw.headers.get("strict-transport-security"), /max-age=31536000/);
 assert.match(secureHealthRaw.headers.get("content-security-policy"), /wss:\/\/api\.bridge\.otherline\.cc/);
 
+const diagnostics = await api("GET", "/v1/diagnostics");
+assert.equal(diagnostics.ok, true);
+assert.equal(diagnostics.protocol, "panda-bridge-protocol-v0.1");
+assert.equal(diagnostics.storage, "memory");
+assert.ok(diagnostics.products.some((item) => item.id === "panda-chat" && item.capabilities.includes("codex.chat")));
+assert.ok(diagnostics.jobs.supported_kinds.includes("saas.custom.run"));
+assert.ok(diagnostics.jobs.event_types.includes("queued"));
+assert.equal(diagnostics.jobs.queue_limits.device_max_running, 1);
+assert.equal(diagnostics.connector.device_token_prefix, "pbd_");
+assert.equal(diagnostics.realtime.route_template, "/v1/realtime/devices/{device_id}");
+const diagnosticsText = JSON.stringify(diagnostics);
+assert.doesNotMatch(diagnosticsText, /device_token"\s*:/);
+assert.doesNotMatch(diagnosticsText, /session_cookie/i);
+
 env.BRIDGE_ALLOWED_ORIGINS = "http://chat.local.test http://dev.local.test";
 const allowedOriginRaw = await apiRaw("POST", "/v1/sessions/guest", { display_name: "Allowed Origin" }, "", { origin: "http://chat.local.test" });
 assert.equal(allowedOriginRaw.response.status, 201);

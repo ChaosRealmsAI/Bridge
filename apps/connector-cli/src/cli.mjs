@@ -22,6 +22,7 @@ try {
     oneShot = false;
     await watch();
   }
+  else if (command === "doctor") await doctor();
   else if (command === "run-fixture") await runFixture();
   else throw new Error(`unknown command: ${command}`);
   if (oneShot) process.exit(0);
@@ -131,6 +132,58 @@ async function runFixture() {
   console.log(JSON.stringify(result, null, 2));
 }
 
+async function doctor() {
+  const path = statePath();
+  const stateRead = readConnectorState(path);
+  const api = String(stateRead.state?.api_base || apiBase()).replace(/\/$/, "");
+  const health = await tryGetJson(`${api}/v1/health`);
+  const diagnostics = await tryGetJson(`${api}/v1/diagnostics`);
+  const local = localState();
+  const fixtureMode = fakeCodexEnabled();
+  const codexReady = fixtureMode || Boolean(local.commands?.codex);
+  const ready = Boolean(
+    health.ok
+    && diagnostics.ok
+    && stateRead.exists
+    && stateRead.state?.device_id
+    && stateRead.state?.device_token
+    && codexReady
+  );
+  const output = {
+    ok: ready,
+    version: VERSION,
+    api_base: api,
+    state: {
+      path: redactLocalPath(path),
+      exists: stateRead.exists,
+      readable: Boolean(stateRead.state),
+      error: stateRead.error,
+      device_id: stateRead.state?.device_id || null,
+      claimed_at: stateRead.state?.claimed_at || null,
+      token_present: Boolean(stateRead.state?.device_token),
+    },
+    cloud: {
+      health_ok: Boolean(health.ok),
+      diagnostics_ok: Boolean(diagnostics.ok),
+      protocol: diagnostics.payload?.protocol || health.payload?.protocol || null,
+      storage: diagnostics.payload?.storage || health.payload?.storage || null,
+      products_count: Array.isArray(diagnostics.payload?.products) ? diagnostics.payload.products.length : 0,
+      realtime_enabled: Boolean(diagnostics.payload?.realtime?.enabled),
+      supported_kinds: diagnostics.payload?.jobs?.supported_kinds || [],
+      queue_limits: diagnostics.payload?.jobs?.queue_limits || null,
+      error: health.error || diagnostics.error || null,
+    },
+    local: {
+      platform: local.platform,
+      commands: local.commands,
+      fixture_mode: fixtureMode,
+      codex_ready: codexReady,
+      workspace_configured: Boolean(local.workspaces?.default),
+    },
+  };
+  console.log(JSON.stringify(output, null, 2));
+}
+
 async function executeJob(state, job) {
   await postEvent(state, job.id, "started", { kind: job.kind, workspace_ref: job.workspace_ref });
   if (job.kind === "codex.chat" || job.kind === "codex.run") {
@@ -146,7 +199,7 @@ async function executeJob(state, job) {
 }
 
 async function runCodexOrFixture({ job, apiBase, token }) {
-  if (process.env.PANDA_BRIDGE_FAKE_CODEX === "1" || args["fake-codex"]) {
+  if (fakeCodexEnabled()) {
     const prompt = String(job.input?.prompt || "").trim();
     const reply = `Panda Bridge fixture reply: ${prompt || "ok"}`;
     if (apiBase) await postEvent({ api_base: apiBase, device_token: token }, job.id, "text_delta", { delta: reply });
@@ -351,6 +404,10 @@ function localState() {
   };
 }
 
+function fakeCodexEnabled() {
+  return process.env.PANDA_BRIDGE_FAKE_CODEX === "1" || Boolean(args["fake-codex"]);
+}
+
 function summarizeCodexAccount(result) {
   const account = result?.account || null;
   return { authenticated: Boolean(account), type: account?.type || null, plan_type: account?.planType || null };
@@ -394,6 +451,15 @@ function loadState() {
   return JSON.parse(readFileSync(statePath(), "utf8"));
 }
 
+function readConnectorState(path) {
+  if (!existsSync(path)) return { exists: false, state: null, error: null };
+  try {
+    return { exists: true, state: JSON.parse(readFileSync(path, "utf8")), error: null };
+  } catch (error) {
+    return { exists: true, state: null, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 function writeJson(path, value) {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, JSON.stringify(value, null, 2) + "\n");
@@ -402,6 +468,14 @@ function writeJson(path, value) {
 async function getJson(url, token = "") {
   const response = await fetch(url, { headers: authHeaders(token) });
   return parseResponse(response);
+}
+
+async function tryGetJson(url, token = "") {
+  try {
+    return { ok: true, payload: await getJson(url, token), error: null };
+  } catch (error) {
+    return { ok: false, payload: null, error: error instanceof Error ? error.message : String(error) };
+  }
 }
 
 async function postJson(url, body, token = "") {
@@ -426,6 +500,15 @@ function authHeaders(token) {
 
 function redactState(state) {
   return { ...state, device_token: state.device_token ? `${state.device_token.slice(0, 8)}...` : "" };
+}
+
+function redactLocalPath(path) {
+  const value = String(path || "");
+  if (!value) return "";
+  const home = homedir();
+  if (value === home) return "~";
+  if (value.startsWith(`${home}/`)) return `~/${value.slice(home.length + 1)}`;
+  return "[custom-state-path]";
 }
 
 function deviceName() {
@@ -470,6 +553,7 @@ function printHelp() {
 Usage:
   panda-bridge connect --api https://api.bridge.otherline.cc --intent TOKEN [--device-name NAME]
   panda-bridge claim --api https://api.bridge.otherline.cc --code XXXX-XXXX [--device-name NAME]  # legacy
+  panda-bridge doctor [--api https://api.bridge.otherline.cc] [--state PATH] [--fake-codex]
   panda-bridge heartbeat
   panda-bridge poll [--fake-codex] [--codex-cwd PATH]
   panda-bridge watch [--interval-ms 1800] [--workspace default=/path/to/workspace]

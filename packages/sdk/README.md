@@ -39,9 +39,12 @@ authorization.
 import { createBridgeClient } from "@panda-bridge/sdk";
 
 const bridge = createBridgeClient({
-  apiBase: "https://bridge.otherline.cc/v1",
+  apiBase: "https://bridge.otherline.cc",
   productId: "panda-chat",
 });
+
+const diagnostics = await bridge.diagnostics();
+if (!diagnostics.ok) throw new Error("Panda Bridge is not ready");
 
 await bridge.auth.password("user@example.com", "account-password");
 
@@ -81,7 +84,7 @@ console.log(final.job.result.reply);
 
 ```js
 const devBridge = createBridgeClient({
-  apiBase: "https://bridge.otherline.cc/v1",
+  apiBase: "https://bridge.otherline.cc",
   productId: "panda-dev",
 });
 
