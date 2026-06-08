@@ -232,8 +232,12 @@
       ui.ready = !!(s.device_id && s.codex_available && hasAuthorizedProduct);
       ui.connected = !!(s.device_id && hasAuthorizedProduct);
       ui.products = list.map(p=>({ id:p.id, name:p.name||p.id,
-        accounts: Array.isArray(p.accounts) ? p.accounts.map(a=>({email:a.email||a}))
-          : (s.account_display ? [{ email:s.account_display }] : []) }));
+        accounts: Array.isArray(p.accounts) ? p.accounts.map(a=>({
+            id:a.id||a.account_id||null,
+            email:a.email||a.display_name||a,
+            device_id:a.device_id||null
+          }))
+          : (s.account_display ? [{ id:s.account_id||null, email:s.account_display, device_id:s.device_id||null }] : []) }));
     }
 
     function renderSide(){
@@ -333,8 +337,9 @@
     function deny(i){ ui.pending.splice(i,1); ui.view="app"; ui.sel=ui.products[0]?.id||null; render(); }
     async function revoke(pid,ai){
       const p=ui.products.find(x=>x.id===pid); if(!p || !p.accounts[ai]) return;
+      const account=p.accounts[ai];
       try{
-        await window.PandaBridge.call("revoke_authorization", { product_id: pid });
+        await window.PandaBridge.call("revoke_authorization", { product_id: pid, account_id: account.id, device_id: account.device_id });
         await refresh();
         toast(t('tOut'));
       }catch(e){ toast(`${t('tFail')} · ${safeErr(e)}`); }

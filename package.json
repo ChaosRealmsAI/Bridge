@@ -22,6 +22,7 @@
     "verify:mobile-browser": "node scripts/verify/mobile-browser-smoke.mjs",
     "verify:pandart-real-codex": "node scripts/verify/pandart-real-codex-browser.mjs",
     "verify:authorization-logout": "node scripts/verify/authorization-logout-boundary.mjs",
+    "verify:multi-source-authorization": "node scripts/verify/multi-source-authorization.mjs",
     "verify:desktop-lite": "node scripts/verify/desktop-lite-smoke.mjs",
     "verify:spec": "node scripts/verify/spec-traceability.mjs",
     "verify:installed-desktop-e2e": "node scripts/verify/installed-desktop-e2e.mjs",

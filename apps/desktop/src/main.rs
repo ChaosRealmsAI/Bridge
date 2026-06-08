@@ -84,6 +84,8 @@ struct Credentials {
     device_token_rotated_at_unix: Option<u64>,
     #[serde(default)]
     install_identity_bound: Option<bool>,
+    #[serde(default)]
+    connections: Vec<Credentials>,
     claimed_at: String,
 }
 
@@ -95,6 +97,24 @@ struct ProductGrant {
     origin: Option<String>,
     #[serde(default)]
     capabilities: Vec<String>,
+    #[serde(default)]
+    accounts: Vec<ProductGrantAccount>,
+    authorized_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct ProductGrantAccount {
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    email: Option<String>,
+    #[serde(default)]
+    display_name: Option<String>,
+    #[serde(default)]
+    device_id: Option<String>,
+    #[serde(default)]
+    origin: Option<String>,
+    #[serde(default)]
     authorized_at: String,
 }
 
@@ -717,7 +737,14 @@ fn run_verify_action(
         }
         "revoke_authorization" => {
             let product_id = required_param(params, "product_id")?;
-            revoke_authorization_for_state(state, &product_id)?
+            let account_id = string_param(params, "account_id");
+            let device_id = string_param(params, "device_id");
+            revoke_authorization_for_state(
+                state,
+                &product_id,
+                account_id.as_deref(),
+                device_id.as_deref(),
+            )?
         }
         "refresh_status" => {
             serde_json::to_value(status(state)).map_err(|error| error.to_string())?
@@ -837,7 +864,14 @@ fn run_command(
         }
         "revoke_authorization" => {
             let product_id = required_param(params, "product_id")?;
-            revoke_authorization_for_state(state, &product_id)
+            let account_id = string_param(params, "account_id");
+            let device_id = string_param(params, "device_id");
+            revoke_authorization_for_state(
+                state,
+                &product_id,
+                account_id.as_deref(),
+                device_id.as_deref(),
+            )
         }
         "start_worker" => start_worker(state, proxy),
         "stop_worker" => {
@@ -936,7 +970,22 @@ fn preview_intent(api: &str, intent: &str) -> Result<IntentPreview, String> {
 fn claim_intent(api: &str, intent: &str, device_name: &str) -> Result<ClaimResult, String> {
     let api_base = clean_api(api)?;
     let existing = load_credentials().ok();
+    let intent_preview = preview_intent(&api_base, intent).ok();
     let install_id = credentials_install_id(existing.as_ref());
+    let existing_connections = existing
+        .as_ref()
+        .map(credentials_connections)
+        .unwrap_or_default();
+    let bearer_connection = intent_preview
+        .as_ref()
+        .and_then(|preview| preview.user_id.as_deref())
+        .and_then(|user_id| {
+            existing_connections.iter().find(|connection| {
+                connection.api_base == api_base
+                    && connection.account_id.as_deref() == Some(user_id)
+                    && !connection.device_token.trim().is_empty()
+            })
+        });
     let body = json!({
         "device_name": if device_name.trim().is_empty() { "Panda Bridge Desktop" } else { device_name.trim() },
         "app_version": VERSION,
@@ -949,20 +998,19 @@ fn claim_intent(api: &str, intent: &str, device_name: &str) -> Result<ClaimResul
         api_base,
         urlencoding::encode(intent)
     );
-    let bearer = existing
-        .as_ref()
-        .map(|credentials| credentials.device_token.as_str());
+    let bearer = bearer_connection.map(|credentials| credentials.device_token.as_str());
     let payload: ClaimResponse = post_json_with_install(&url, &body, bearer, Some(&install_id))?;
-    let account_display = payload.account.as_ref().map(display_account).or_else(|| {
-        existing
-            .as_ref()
-            .and_then(|item| item.account_display.clone())
-    });
+    let account_display = payload
+        .account
+        .as_ref()
+        .map(display_account)
+        .or_else(|| bearer_connection.and_then(|item| item.account_display.clone()));
     let account_id = payload
         .account
         .as_ref()
         .and_then(|account| account.id.clone())
-        .or_else(|| existing.as_ref().and_then(|item| item.account_id.clone()));
+        .or_else(|| bearer_connection.and_then(|item| item.account_id.clone()))
+        .or_else(|| intent_preview.and_then(|preview| preview.user_id));
     let product_id = payload.product.as_ref().map(|product| product.id.clone());
     let product_name = payload.product.as_ref().map(|product| product.name.clone());
     let cloud_origin = payload
@@ -974,15 +1022,23 @@ fn claim_intent(api: &str, intent: &str, device_name: &str) -> Result<ClaimResul
         .as_ref()
         .map(|product| product.capabilities.clone())
         .unwrap_or_default();
+    let existing_connection = existing_connections.iter().find(|connection| {
+        connection.device_id == payload.device.id
+            || (connection.api_base == api_base
+                && account_id
+                    .as_deref()
+                    .map(|id| connection.account_id.as_deref() == Some(id))
+                    .unwrap_or(false))
+    });
     let authorized_products = merge_authorized_products(
-        existing.as_ref(),
+        existing_connection,
         product_id.clone(),
         product_name.clone(),
         cloud_origin.clone(),
         product_capabilities,
     );
-    let credentials = Credentials {
-        api_base,
+    let connection = Credentials {
+        api_base: api_base.clone(),
         device_id: payload.device.id.clone(),
         device_name: payload.device.device_name.clone(),
         device_token: payload.device_token,
@@ -996,8 +1052,13 @@ fn claim_intent(api: &str, intent: &str, device_name: &str) -> Result<ClaimResul
         device_token_expires_at: payload.token_expires_at,
         device_token_rotated_at_unix: Some(unix_seconds()),
         install_identity_bound: payload.install_identity_bound,
+        connections: Vec::new(),
         claimed_at: now_string(),
     };
+    let mut connections = existing_connections;
+    upsert_connection(&mut connections, connection.clone());
+    let credentials =
+        credentials_from_connections(connections, Some(&connection), existing.as_ref());
     save_credentials(&credentials)?;
     write_connector_state(&credentials)?;
     Ok(ClaimResult {
@@ -1012,51 +1073,108 @@ fn claim_intent(api: &str, intent: &str, device_name: &str) -> Result<ClaimResul
     })
 }
 
-fn revoke_authorization(product_id: &str) -> Result<Value, String> {
+fn revoke_authorization(
+    product_id: &str,
+    account_id: Option<&str>,
+    device_id: Option<&str>,
+) -> Result<Value, String> {
     let product_id = product_id.trim();
     if product_id.is_empty() {
         return Err("missing product_id".to_string());
     }
     let credentials = ensure_credentials_install_id(load_credentials()?)?;
-    let url = format!(
-        "{}/v1/connectors/products/{}/authorization",
-        credentials.api_base,
-        urlencoding::encode(product_id)
-    );
-    let remote_revoke: Result<Value, String> = delete_json_with_install(
-        &url,
-        Some(&credentials.device_token),
-        credentials.install_id.as_deref(),
-    );
-    let mut next = credentials.clone();
-    next.authorized_products = credentials_products(&credentials)
-        .into_iter()
-        .filter(|item| item.id != product_id)
+    let mut connections = credentials_connections(&credentials);
+    let matching: Vec<usize> = connections
+        .iter()
+        .enumerate()
+        .filter(|(_, connection)| {
+            connection_products(connection)
+                .iter()
+                .any(|item| item.id == product_id)
+                && account_id
+                    .map(|id| connection.account_id.as_deref() == Some(id))
+                    .unwrap_or(true)
+                && device_id
+                    .map(|id| connection.device_id == id)
+                    .unwrap_or(true)
+        })
+        .map(|(index, _)| index)
         .collect();
-    if next.product_id.as_deref() == Some(product_id) {
-        next.product_id = None;
-        next.product_name = None;
-        next.cloud_origin = None;
+    if matching.is_empty() {
+        return Err("authorization_not_found".to_string());
     }
+    if account_id.is_none() && device_id.is_none() && matching.len() > 1 {
+        return Err("ambiguous_authorization_target".to_string());
+    }
+
+    let mut remote_results = Vec::new();
+    for index in matching {
+        let connection = connections[index].clone();
+        let url = format!(
+            "{}/v1/connectors/products/{}/authorization",
+            connection.api_base,
+            urlencoding::encode(product_id)
+        );
+        let remote_revoke: Result<Value, String> = delete_json_with_install(
+            &url,
+            Some(&connection.device_token),
+            connection.install_id.as_deref(),
+        );
+        connections[index].authorized_products = connection_products(&connection)
+            .into_iter()
+            .filter(|item| item.id != product_id)
+            .collect();
+        if connections[index].product_id.as_deref() == Some(product_id) {
+            connections[index].product_id = None;
+            connections[index].product_name = None;
+            connections[index].cloud_origin = None;
+        }
+        let (remote_revoke_ok, payload, remote_revoke_error) = match remote_revoke {
+            Ok(payload) => (true, payload, Value::Null),
+            Err(error) => (false, Value::Null, Value::String(redact_error_text(&error))),
+        };
+        remote_results.push(json!({
+            "remote_revoke_ok": remote_revoke_ok,
+            "account_id": connection.account_id,
+            "account_display": connection.account_display,
+            "device_id": connection.device_id,
+            "authorization": payload.get("authorization").cloned().unwrap_or(Value::Null),
+            "cancelled_jobs": payload.get("cancelled_jobs").cloned().unwrap_or(Value::Null),
+            "remote_revoke_error": remote_revoke_error
+        }));
+    }
+    let next = credentials_from_connections(connections, None, Some(&credentials));
     save_credentials(&next)?;
     write_connector_state(&next)?;
-    let (remote_revoke_ok, payload, remote_revoke_error) = match remote_revoke {
-        Ok(payload) => (true, payload, Value::Null),
-        Err(error) => (false, Value::Null, Value::String(redact_error_text(&error))),
-    };
+    let total_cancelled = remote_results
+        .iter()
+        .filter_map(|item| item.get("cancelled_jobs").and_then(Value::as_i64))
+        .sum::<i64>();
+    let remote_revoke_ok = remote_results
+        .iter()
+        .all(|item| item.get("remote_revoke_ok").and_then(Value::as_bool) == Some(true));
+    let first = remote_results.first().cloned().unwrap_or(Value::Null);
     Ok(json!({
         "ok": true,
         "remote_revoke_ok": remote_revoke_ok,
         "product_id": product_id,
-        "authorization": payload.get("authorization").cloned().unwrap_or(Value::Null),
-        "cancelled_jobs": payload.get("cancelled_jobs").cloned().unwrap_or(Value::Null),
-        "remote_revoke_error": remote_revoke_error,
+        "account_id": account_id,
+        "device_id": device_id,
+        "authorization": first.get("authorization").cloned().unwrap_or(Value::Null),
+        "cancelled_jobs": total_cancelled,
+        "remote_revoke_error": if remote_revoke_ok { Value::Null } else { first.get("remote_revoke_error").cloned().unwrap_or(Value::Null) },
+        "revoked": remote_results,
         "authorized_products": next.authorized_products
     }))
 }
 
-fn revoke_authorization_for_state(state: &AppState, product_id: &str) -> Result<Value, String> {
-    let payload = revoke_authorization(product_id)?;
+fn revoke_authorization_for_state(
+    state: &AppState,
+    product_id: &str,
+    account_id: Option<&str>,
+    device_id: Option<&str>,
+) -> Result<Value, String> {
+    let payload = revoke_authorization(product_id, account_id, device_id)?;
     let empty_products = payload
         .get("authorized_products")
         .and_then(Value::as_array)
@@ -1082,32 +1200,23 @@ fn redact_error_text(error: &str) -> String {
 }
 
 fn start_worker(state: &AppState, proxy: EventLoopProxy<UserEvent>) -> Result<Value, String> {
-    prepare_credentials_for_worker(state, &proxy)?;
+    prepare_connections_for_worker(state, &proxy)?;
     if state.worker_running.swap(true, Ordering::SeqCst) {
         return Ok(json!({ "ok": true, "message": "worker already running" }));
     }
     let running = state.worker_running.clone();
     let realtime_running = state.worker_running.clone();
     let realtime_connected = state.realtime_connected.clone();
-    let fallback_connected = state.realtime_connected.clone();
     let realtime_state = state.clone();
     let fallback_state = state.clone();
     let realtime_proxy = proxy.clone();
     let fallback_proxy = proxy.clone();
     thread::spawn(move || {
         while running.load(Ordering::SeqCst) {
-            let event_payload = match load_credentials().and_then(|credentials| {
-                heartbeat(&credentials).and_then(|_| {
-                    if fallback_connected.load(Ordering::SeqCst) {
-                        Ok(0)
-                    } else {
-                        poll_once(&credentials)
-                    }
-                })
-            }) {
-                Ok(count) => {
-                    json!({ "message": format!("worker tick ok, jobs={count}"), "job_count": count })
-                }
+            let event_payload = match load_credentials()
+                .and_then(|credentials| poll_all_connections(&credentials))
+            {
+                Ok(payload) => payload,
                 Err(error) => {
                     json!({ "message": format!("worker tick failed: {error}"), "error": error })
                 }
@@ -1115,6 +1224,12 @@ fn start_worker(state: &AppState, proxy: EventLoopProxy<UserEvent>) -> Result<Va
             let message = event_payload
                 .get("message")
                 .and_then(Value::as_str)
+                .or_else(|| {
+                    event_payload
+                        .get("count")
+                        .and_then(Value::as_i64)
+                        .map(|_| "worker tick ok")
+                })
                 .unwrap_or("worker tick")
                 .to_string();
             push_event(&fallback_state, "worker_tick", event_payload.clone());
@@ -1132,8 +1247,10 @@ fn start_worker(state: &AppState, proxy: EventLoopProxy<UserEvent>) -> Result<Va
     thread::spawn(move || {
         while realtime_running.load(Ordering::SeqCst) {
             let result = load_credentials().and_then(|credentials| {
+                let connection = primary_realtime_connection(&credentials)
+                    .ok_or_else(|| "no_authorized_products".to_string())?;
                 run_realtime_worker(
-                    &credentials,
+                    &connection,
                     &realtime_running,
                     &realtime_connected,
                     &realtime_state,
@@ -1165,8 +1282,17 @@ fn start_worker(state: &AppState, proxy: EventLoopProxy<UserEvent>) -> Result<Va
 }
 
 fn credentials_products(credentials: &Credentials) -> Vec<ProductGrant> {
+    aggregate_authorized_products(&credentials_connections(credentials))
+}
+
+fn connection_products(credentials: &Credentials) -> Vec<ProductGrant> {
     if !credentials.authorized_products.is_empty() {
-        return credentials.authorized_products.clone();
+        return credentials
+            .authorized_products
+            .iter()
+            .cloned()
+            .map(product_without_accounts)
+            .collect();
     }
     match (&credentials.product_id, &credentials.product_name) {
         (Some(id), Some(name)) => vec![ProductGrant {
@@ -1174,9 +1300,190 @@ fn credentials_products(credentials: &Credentials) -> Vec<ProductGrant> {
             name: name.clone(),
             origin: credentials.cloud_origin.clone(),
             capabilities: Vec::new(),
+            accounts: Vec::new(),
             authorized_at: credentials.claimed_at.clone(),
         }],
         _ => Vec::new(),
+    }
+}
+
+fn product_without_accounts(mut product: ProductGrant) -> ProductGrant {
+    product.accounts.clear();
+    product
+}
+
+fn connection_without_nested(mut credentials: Credentials) -> Credentials {
+    credentials.connections.clear();
+    credentials.authorized_products = connection_products(&credentials);
+    credentials
+}
+
+fn credentials_connections(credentials: &Credentials) -> Vec<Credentials> {
+    if !credentials.connections.is_empty() {
+        return credentials
+            .connections
+            .iter()
+            .cloned()
+            .map(connection_without_nested)
+            .filter(|item| {
+                !item.device_id.trim().is_empty() && !item.device_token.trim().is_empty()
+            })
+            .collect();
+    }
+    if credentials.device_id.trim().is_empty() || credentials.device_token.trim().is_empty() {
+        return Vec::new();
+    }
+    vec![connection_without_nested(credentials.clone())]
+}
+
+fn authorized_connections(credentials: &Credentials) -> Vec<Credentials> {
+    credentials_connections(credentials)
+        .into_iter()
+        .filter(|item| !connection_products(item).is_empty())
+        .collect()
+}
+
+fn aggregate_authorized_products(connections: &[Credentials]) -> Vec<ProductGrant> {
+    let mut products: Vec<ProductGrant> = Vec::new();
+    for connection in connections {
+        for product in connection_products(connection) {
+            let account = ProductGrantAccount {
+                id: connection.account_id.clone(),
+                email: connection.account_display.clone(),
+                display_name: connection.account_display.clone(),
+                device_id: Some(connection.device_id.clone()),
+                origin: product
+                    .origin
+                    .clone()
+                    .or_else(|| connection.cloud_origin.clone()),
+                authorized_at: product.authorized_at.clone(),
+            };
+            if let Some(existing) = products.iter_mut().find(|item| item.id == product.id) {
+                existing.name = product.name.clone();
+                existing.origin = product.origin.clone().or_else(|| existing.origin.clone());
+                existing.capabilities = product.capabilities.clone();
+                existing.authorized_at = product.authorized_at.clone();
+                let duplicate = existing.accounts.iter().any(|item| {
+                    item.device_id.as_deref() == Some(connection.device_id.as_str())
+                        && item.id.as_deref() == connection.account_id.as_deref()
+                });
+                if !duplicate {
+                    existing.accounts.push(account);
+                }
+            } else {
+                let mut next = product_without_accounts(product);
+                next.accounts.push(account);
+                products.push(next);
+            }
+        }
+    }
+    products
+}
+
+fn credentials_from_connections(
+    connections: Vec<Credentials>,
+    preferred: Option<&Credentials>,
+    fallback: Option<&Credentials>,
+) -> Credentials {
+    let mut sanitized: Vec<Credentials> = connections
+        .into_iter()
+        .map(connection_without_nested)
+        .collect();
+    sanitized.sort_by(|a, b| {
+        let left = format!(
+            "{}:{}:{}",
+            a.api_base,
+            a.account_id.clone().unwrap_or_default(),
+            a.device_id
+        );
+        let right = format!(
+            "{}:{}:{}",
+            b.api_base,
+            b.account_id.clone().unwrap_or_default(),
+            b.device_id
+        );
+        left.cmp(&right)
+    });
+    let preferred_key = preferred.map(connection_key);
+    let authorized = authorized_connections_from_slice(&sanitized);
+    let primary = preferred_key
+        .as_ref()
+        .and_then(|key| sanitized.iter().find(|item| connection_key(item) == *key))
+        .or_else(|| authorized.first())
+        .or_else(|| sanitized.first())
+        .or(fallback)
+        .cloned()
+        .unwrap_or_else(empty_credentials);
+    let active_products = aggregate_authorized_products(&sanitized);
+    let primary_direct_products = connection_products(&primary);
+    let primary_product = primary_direct_products.first();
+    Credentials {
+        api_base: primary.api_base.clone(),
+        device_id: primary.device_id.clone(),
+        device_name: primary.device_name.clone(),
+        device_token: primary.device_token.clone(),
+        install_id: primary.install_id.clone(),
+        account_id: primary.account_id.clone(),
+        account_display: primary.account_display.clone(),
+        product_id: primary_product.map(|item| item.id.clone()),
+        product_name: primary_product.map(|item| item.name.clone()),
+        cloud_origin: primary_product
+            .and_then(|item| item.origin.clone())
+            .or_else(|| primary.cloud_origin.clone()),
+        authorized_products: active_products,
+        device_token_expires_at: primary.device_token_expires_at.clone(),
+        device_token_rotated_at_unix: primary.device_token_rotated_at_unix,
+        install_identity_bound: primary.install_identity_bound,
+        connections: sanitized,
+        claimed_at: primary.claimed_at.clone(),
+    }
+}
+
+fn authorized_connections_from_slice(connections: &[Credentials]) -> Vec<Credentials> {
+    connections
+        .iter()
+        .filter(|item| !connection_products(item).is_empty())
+        .cloned()
+        .collect()
+}
+
+fn empty_credentials() -> Credentials {
+    Credentials {
+        api_base: DEFAULT_API.to_string(),
+        device_id: String::new(),
+        device_name: device_name(),
+        device_token: String::new(),
+        install_id: None,
+        account_id: None,
+        account_display: None,
+        product_id: None,
+        product_name: None,
+        cloud_origin: None,
+        authorized_products: Vec::new(),
+        device_token_expires_at: None,
+        device_token_rotated_at_unix: None,
+        install_identity_bound: None,
+        connections: Vec::new(),
+        claimed_at: now_string(),
+    }
+}
+
+fn connection_key(credentials: &Credentials) -> String {
+    if let Some(account_id) = credentials.account_id.as_deref() {
+        return format!("account:{}:{}", credentials.api_base, account_id);
+    }
+    format!("device:{}:{}", credentials.api_base, credentials.device_id)
+}
+
+fn upsert_connection(connections: &mut Vec<Credentials>, next: Credentials) {
+    let key = connection_key(&next);
+    if let Some(index) = connections
+        .iter()
+        .position(|item| connection_key(item) == key || item.device_id == next.device_id)
+    {
+        connections[index] = connection_without_nested(next);
+    } else {
+        connections.push(connection_without_nested(next));
     }
 }
 
@@ -1187,7 +1494,7 @@ fn merge_authorized_products(
     cloud_origin: Option<String>,
     capabilities: Vec<String>,
 ) -> Vec<ProductGrant> {
-    let mut products = existing.map(credentials_products).unwrap_or_default();
+    let mut products = existing.map(connection_products).unwrap_or_default();
     if let Some(id) = product_id {
         let name = product_name.unwrap_or_else(|| id.clone());
         let grant = ProductGrant {
@@ -1195,6 +1502,7 @@ fn merge_authorized_products(
             name,
             origin: cloud_origin,
             capabilities,
+            accounts: Vec::new(),
             authorized_at: now_string(),
         };
         if let Some(index) = products.iter().position(|item| item.id == id) {
@@ -1207,23 +1515,56 @@ fn merge_authorized_products(
 }
 
 fn ensure_credentials_install_id(mut credentials: Credentials) -> Result<Credentials, String> {
-    if credentials
+    let mut changed = false;
+    let install_id = credentials_install_id(Some(&credentials));
+    if !credentials
         .install_id
         .as_deref()
         .map(|value| !value.trim().is_empty())
         .unwrap_or(false)
     {
+        credentials.install_id = Some(install_id.clone());
+        changed = true;
+    }
+    for connection in credentials.connections.iter_mut() {
+        if !connection
+            .install_id
+            .as_deref()
+            .map(|value| !value.trim().is_empty())
+            .unwrap_or(false)
+        {
+            connection.install_id = Some(install_id.clone());
+            changed = true;
+        }
+    }
+    if !changed {
         return Ok(credentials);
     }
-    credentials.install_id = Some(credentials_install_id(None));
-    save_credentials(&credentials)?;
-    write_connector_state(&credentials)?;
-    Ok(credentials)
+    let normalized = if credentials.connections.is_empty() {
+        credentials
+    } else {
+        let connections = credentials_connections(&credentials);
+        credentials_from_connections(connections, None, Some(&credentials))
+    };
+    save_credentials(&normalized)?;
+    write_connector_state(&normalized)?;
+    Ok(normalized)
 }
 
 fn credentials_install_id(existing: Option<&Credentials>) -> String {
     if let Some(value) = existing
         .and_then(|credentials| credentials.install_id.clone())
+        .filter(|value| !value.trim().is_empty())
+    {
+        return value;
+    }
+    if let Some(value) = existing
+        .and_then(|credentials| {
+            credentials
+                .connections
+                .iter()
+                .find_map(|connection| connection.install_id.clone())
+        })
         .filter(|value| !value.trim().is_empty())
     {
         return value;
@@ -1273,48 +1614,64 @@ fn heartbeat(credentials: &Credentials) -> Result<(), String> {
     Ok(())
 }
 
-fn prepare_credentials_for_worker(
+fn prepare_connections_for_worker(
     state: &AppState,
     proxy: &EventLoopProxy<UserEvent>,
-) -> Result<Credentials, String> {
+) -> Result<Vec<Credentials>, String> {
     let credentials = ensure_credentials_install_id(load_credentials()?)?;
-    if credentials_products(&credentials).is_empty() {
+    let mut connections = credentials_connections(&credentials);
+    if connections
+        .iter()
+        .all(|item| connection_products(item).is_empty())
+    {
         state.worker_running.store(false, Ordering::SeqCst);
         state.realtime_connected.store(false, Ordering::SeqCst);
         return Err("no_authorized_products".to_string());
     }
-    if !device_token_rotation_due(&credentials) {
-        return Ok(credentials);
-    }
-    match rotate_device_token(&credentials) {
-        Ok(next) => {
-            push_event(
-                state,
-                "device_token_rotated",
-                json!({
-                    "device_id": next.device_id,
-                    "token_expires_at": next.device_token_expires_at,
-                    "install_identity_bound": next.install_identity_bound
-                }),
-            );
-            let _ = proxy.send_event(UserEvent::UiEvent(json!({
-                "type": "event",
-                "event": "refresh"
-            })));
-            Ok(next)
+    let mut changed = false;
+    for connection in connections.iter_mut() {
+        if connection_products(connection).is_empty() || !device_token_rotation_due(connection) {
+            continue;
         }
-        Err(error) => {
-            push_event(
-                state,
-                "device_token_rotation_failed",
-                json!({
-                    "device_id": credentials.device_id,
-                    "error": error
-                }),
-            );
-            Ok(credentials)
+        match rotate_device_token(connection) {
+            Ok(next) => {
+                *connection = next.clone();
+                changed = true;
+                push_event(
+                    state,
+                    "device_token_rotated",
+                    json!({
+                        "device_id": next.device_id,
+                        "account_id": next.account_id,
+                        "token_expires_at": next.device_token_expires_at,
+                        "install_identity_bound": next.install_identity_bound
+                    }),
+                );
+                let _ = proxy.send_event(UserEvent::UiEvent(json!({
+                    "type": "event",
+                    "event": "refresh"
+                })));
+            }
+            Err(error) => {
+                push_event(
+                    state,
+                    "device_token_rotation_failed",
+                    json!({
+                        "device_id": connection.device_id,
+                        "account_id": connection.account_id,
+                        "error": error
+                    }),
+                );
+            }
         }
     }
+    if changed {
+        let next = credentials_from_connections(connections.clone(), None, Some(&credentials));
+        save_credentials(&next)?;
+        write_connector_state(&next)?;
+        return Ok(authorized_connections(&next));
+    }
+    Ok(authorized_connections(&credentials))
 }
 
 fn rotate_device_token(credentials: &Credentials) -> Result<Credentials, String> {
@@ -1337,9 +1694,7 @@ fn rotate_device_token(credentials: &Credentials) -> Result<Credentials, String>
     next.device_token_expires_at = payload.token_expires_at;
     next.device_token_rotated_at_unix = Some(unix_seconds());
     next.install_identity_bound = payload.install_identity_bound;
-    save_credentials(&next)?;
-    write_connector_state(&next)?;
-    Ok(next)
+    Ok(connection_without_nested(next))
 }
 
 fn device_token_rotation_due(credentials: &Credentials) -> bool {
@@ -1498,6 +1853,60 @@ fn realtime_url(credentials: &Credentials) -> Result<String, String> {
     ));
     base.set_query(Some("role=desktop"));
     Ok(base.to_string())
+}
+
+fn primary_realtime_connection(credentials: &Credentials) -> Option<Credentials> {
+    authorized_connections(credentials).into_iter().next()
+}
+
+fn poll_all_connections(credentials: &Credentials) -> Result<Value, String> {
+    let connections = authorized_connections(credentials);
+    if connections.is_empty() {
+        return Ok(json!({
+            "ok": true,
+            "count": 0,
+            "connections": [],
+            "errors": [],
+            "message": "worker tick ok, jobs=0"
+        }));
+    }
+    let mut total = 0_usize;
+    let mut results = Vec::new();
+    let mut errors = Vec::new();
+    for connection in connections.iter() {
+        match heartbeat(connection).and_then(|_| poll_once(connection)) {
+            Ok(count) => {
+                total += count;
+                results.push(json!({
+                    "ok": true,
+                    "account_id": connection.account_id.clone(),
+                    "account_display": connection.account_display.clone(),
+                    "device_id": connection.device_id.clone(),
+                    "products": connection_products(connection).into_iter().map(|item| item.id).collect::<Vec<_>>(),
+                    "count": count
+                }));
+            }
+            Err(error) => {
+                let redacted = redact_error_text(&error);
+                errors.push(json!({
+                    "account_id": connection.account_id.clone(),
+                    "account_display": connection.account_display.clone(),
+                    "device_id": connection.device_id.clone(),
+                    "error": redacted
+                }));
+            }
+        }
+    }
+    if results.is_empty() && !errors.is_empty() {
+        return Err(format!("all connection polls failed: {}", errors.len()));
+    }
+    Ok(json!({
+        "ok": true,
+        "count": total,
+        "connections": results,
+        "errors": errors,
+        "message": format!("worker tick ok, jobs={total}")
+    }))
 }
 
 fn poll_once(credentials: &Credentials) -> Result<usize, String> {
@@ -2747,11 +3156,15 @@ fn run_headless_if_requested() -> Option<i32> {
                 Some(value) => value.clone(),
                 None => return Some(print_error("missing --product-id")),
             };
-            revoke_authorization(&product_id)
+            revoke_authorization(
+                &product_id,
+                map.get("account-id").map(String::as_str),
+                map.get("device-id").map(String::as_str),
+            )
         }
-        "headless-poll" => load_credentials()
-            .and_then(|credentials| heartbeat(&credentials).and_then(|_| poll_once(&credentials)))
-            .map(|count| json!({ "ok": true, "count": count })),
+        "headless-poll" => {
+            load_credentials().and_then(|credentials| poll_all_connections(&credentials))
+        }
         _ => Err(format!("unknown command: {command}")),
     };
     match result {
