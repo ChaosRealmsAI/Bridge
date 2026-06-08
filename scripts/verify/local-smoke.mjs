@@ -40,10 +40,12 @@ const evidenceDir = resolve("spec/verification/evidence/local-smoke");
 const v2EvidenceDir = resolve("spec/verification/evidence/v2-invocation-diagnostics");
 const v3EvidenceDir = resolve("spec/verification/evidence/v3-request-safety-boundaries");
 const v4EvidenceDir = resolve("spec/verification/evidence/v4-queue-performance-observability");
+const v5EvidenceDir = resolve("spec/verification/evidence/v5-sdk-readiness-preflight");
 mkdirSync(evidenceDir, { recursive: true });
 mkdirSync(v2EvidenceDir, { recursive: true });
 mkdirSync(v3EvidenceDir, { recursive: true });
 mkdirSync(v4EvidenceDir, { recursive: true });
+mkdirSync(v5EvidenceDir, { recursive: true });
 
 try {
   let cookie = "";
@@ -96,6 +98,12 @@ try {
   }, null, 2) + "\n");
 
   const bridge = createBridgeClient({ apiBase, productId: "panda-chat", fetch: fetchJar });
+  const unauthenticatedPreflight = await bridge.preflight();
+  assert.equal(unauthenticatedPreflight.ready, false);
+  assert.equal(unauthenticatedPreflight.authenticated, false);
+  assert.equal(unauthenticatedPreflight.issues.some((item) => item.code === "not_authenticated"), true);
+  assert.equal(unauthenticatedPreflight.actions.some((item) => item.code === "login"), true);
+
   const diagnostics = await bridge.diagnostics();
   assert.equal(diagnostics.ok, true);
   assert.ok(diagnostics.products.some((item) => item.id === "panda-chat"));
@@ -217,6 +225,23 @@ try {
   assert.equal(queueSummaryText.includes("device_token"), false);
   assert.equal(queueSummaryText.includes("pb_session"), false);
   writeFileSync(resolve(v4EvidenceDir, "queue-summary.json"), JSON.stringify(queueSummaryEvidence, null, 2) + "\n");
+  const readyPreflight = await bridge.preflight({ deviceId: device.id });
+  assert.equal(readyPreflight.ready, true);
+  assert.equal(readyPreflight.authenticated, true);
+  assert.equal(readyPreflight.selected_device.id, device.id);
+  assert.equal(readyPreflight.authorized_devices.some((item) => item.id === device.id), true);
+  assert.equal(readyPreflight.queue.counts.succeeded, 1);
+  assert.deepEqual(readyPreflight.issues, []);
+  const preflightEvidence = {
+    checked_at: new Date().toISOString(),
+    unauthenticated: unauthenticatedPreflight,
+    ready: readyPreflight,
+    source_access: "SDK-as-user local operation",
+  };
+  const preflightText = JSON.stringify(preflightEvidence);
+  assert.equal(/"device_token"\s*:/.test(preflightText), false);
+  assert.equal(preflightText.includes("pb_session"), false);
+  writeFileSync(resolve(v5EvidenceDir, "preflight.json"), JSON.stringify(preflightEvidence, null, 2) + "\n");
 
   const summary = {
     ok: true,
@@ -232,6 +257,7 @@ try {
     doctor_evidence: "spec/verification/evidence/v2-invocation-diagnostics/cli-doctor.json",
     safety_evidence: "spec/verification/evidence/v3-request-safety-boundaries/request-safety.json",
     queue_summary_evidence: "spec/verification/evidence/v4-queue-performance-observability/queue-summary.json",
+    preflight_evidence: "spec/verification/evidence/v5-sdk-readiness-preflight/preflight.json",
     checked_at: new Date().toISOString(),
   };
   writeFileSync(resolve(evidenceDir, "summary.json"), JSON.stringify(summary, null, 2) + "\n");

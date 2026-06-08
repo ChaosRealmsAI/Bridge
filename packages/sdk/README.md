@@ -57,6 +57,12 @@ const intent = await bridge.connect.createIntent({
 const devices = await bridge.devices.list();
 const device = devices.items.find((item) => item.status === "online");
 
+const preflight = await bridge.preflight({ deviceId: device?.id });
+if (!preflight.ready) {
+  console.log(preflight.issues, preflight.actions);
+  throw new Error("Panda Bridge is not ready for this product");
+}
+
 const created = await bridge.codex.chat({
   deviceId: device.id,
   prompt: "只回复 OK",
@@ -123,6 +129,9 @@ Recommended product behavior:
 - Use `queue.summary()` before or after job creation when the product needs
   account queue pressure, per-device queue state, limits, or completed-job
   timing aggregates.
+- Use `preflight()` before creating jobs when the product needs one structured
+  readiness result with diagnostics, session, devices, product authorization,
+  queue context, issues, and next actions.
 - Show queued/running/cancelled/failed states from job events, not only final
   text.
 - Cancel jobs when the user navigates away from work that should not continue.

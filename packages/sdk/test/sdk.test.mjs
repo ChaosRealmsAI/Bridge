@@ -126,6 +126,62 @@ assert.deepEqual(JSON.parse(customCalls[0].init.body), {
   },
 });
 
+const unauthPreflight = mockClient([
+  { body: { ok: true, protocol: "panda-bridge-protocol-v0.1" } },
+  { status: 401, body: { authenticated: false, error: "unauthorized" } },
+]);
+const unauthPreflightResult = await unauthPreflight.client.preflight();
+assert.equal(unauthPreflightResult.ready, false);
+assert.equal(unauthPreflightResult.authenticated, false);
+assert.equal(unauthPreflightResult.issues[0].code, "not_authenticated");
+assert.equal(unauthPreflightResult.actions[0].code, "login");
+assert.deepEqual(unauthPreflight.calls.map((call) => call.path), ["/v1/diagnostics", "/v1/session"]);
+assert.ok(unauthPreflight.calls.every((call) => call.method === "GET"));
+
+const readyPreflight = mockClient([
+  { body: { ok: true, protocol: "panda-bridge-protocol-v0.1" } },
+  { body: { authenticated: true, user: { id: "user_1" } } },
+  { body: { items: [{ id: "dev_1", status: "online", device_name: "Mac" }] } },
+  { body: { authorization: { device_id: "dev_1", product_id: "panda-chat", status: "active" } } },
+  { body: { counts: { total: 1, active: 0 }, devices: [{ device: { id: "dev_1" }, queue: { active: 0 } }] } },
+]);
+const readyPreflightResult = await readyPreflight.client.preflight();
+assert.equal(readyPreflightResult.ready, true);
+assert.equal(readyPreflightResult.selected_device.id, "dev_1");
+assert.equal(readyPreflightResult.authorized_devices.length, 1);
+assert.equal(readyPreflightResult.queue.counts.total, 1);
+assert.deepEqual(readyPreflightResult.issues, []);
+assert.deepEqual(readyPreflight.calls.map((call) => call.path), [
+  "/v1/diagnostics",
+  "/v1/session",
+  "/v1/devices",
+  "/v1/products/panda-chat/authorization?device_id=dev_1",
+  "/v1/queue/summary",
+]);
+
+const missingAuthorizationPreflight = mockClient([
+  { body: { ok: true } },
+  { body: { authenticated: true, user: { id: "user_1" } } },
+  { body: { items: [{ id: "dev_1", status: "online" }] } },
+  { body: { authorization: null } },
+  { body: { counts: { total: 0 }, devices: [] } },
+]);
+const missingAuthorizationResult = await missingAuthorizationPreflight.client.preflight();
+assert.equal(missingAuthorizationResult.ready, false);
+assert.equal(missingAuthorizationResult.issues.some((item) => item.code === "product_not_authorized"), true);
+assert.equal(missingAuthorizationResult.actions.some((item) => item.code === "authorize_product"), true);
+
+const targetMismatchPreflight = mockClient([
+  { body: { ok: true } },
+  { body: { authenticated: true, user: { id: "user_1" } } },
+  { body: { items: [{ id: "dev_1", status: "online" }] } },
+  { body: { counts: { total: 0 }, devices: [] } },
+]);
+const targetMismatchResult = await targetMismatchPreflight.client.preflight({ deviceId: "missing_dev" });
+assert.equal(targetMismatchResult.ready, false);
+assert.equal(targetMismatchResult.issues.some((item) => item.code === "device_not_found"), true);
+assert.equal(targetMismatchPreflight.calls.some((call) => call.path.includes("/authorization")), false);
+
 const errorClient = createBridgeClient({
   apiBase: "https://api.example.test",
   productId: "panda-chat",
@@ -149,3 +205,25 @@ await assert.rejects(
 );
 
 console.log("[sdk.test] pass");
+
+function mockClient(responses) {
+  const calls = [];
+  const client = createBridgeClient({
+    apiBase: "https://api.example.test",
+    productId: "panda-chat",
+    fetch: async (url, init) => {
+      const next = responses.shift() || { body: {} };
+      const parsed = new URL(url);
+      calls.push({
+        url,
+        path: `${parsed.pathname}${parsed.search}`,
+        method: init.method,
+      });
+      return new Response(JSON.stringify(next.body), {
+        status: next.status || 200,
+        headers: { "content-type": "application/json" },
+      });
+    },
+  });
+  return { client, calls };
+}

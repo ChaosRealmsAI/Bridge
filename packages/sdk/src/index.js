@@ -29,6 +29,7 @@ export function createBridgeClient(options = {}) {
   return {
     productId,
     diagnostics: () => request("GET", "/v1/diagnostics"),
+    preflight: (input = {}) => preflight(request, productId, input),
     queue: {
       summary: () => request("GET", "/v1/queue/summary"),
     },
@@ -90,6 +91,147 @@ export function createBridgeClient(options = {}) {
       cancel: (jobId) => request("POST", `/v1/jobs/${encodeURIComponent(jobId)}/cancel`),
     },
   };
+}
+
+async function preflight(request, productId, input = {}) {
+  const targetDeviceId = stringValue(input.deviceId || input.device_id, 120) || null;
+  const issues = [];
+  const actions = [];
+  const result = {
+    ready: false,
+    product_id: productId,
+    target_device_id: targetDeviceId,
+    diagnostics: null,
+    authenticated: false,
+    session: null,
+    devices: [],
+    online_devices: [],
+    authorizations: [],
+    authorized_devices: [],
+    selected_device: null,
+    queue: null,
+    issues,
+    actions,
+  };
+
+  const diagnostics = await preflightCall(() => request("GET", "/v1/diagnostics"));
+  if (!diagnostics.ok) {
+    addPreflightIssue(result, "bridge_unreachable", "Bridge diagnostics is not reachable.", "retry_bridge", diagnostics.error);
+    return result;
+  }
+  result.diagnostics = diagnostics.payload;
+  if (diagnostics.payload?.ok !== true) {
+    addPreflightIssue(result, "bridge_not_ready", "Bridge diagnostics did not report ready.", "retry_bridge", { payload: diagnostics.payload });
+  }
+
+  const session = await preflightCall(() => request("GET", "/v1/session"));
+  if (!session.ok) {
+    if (session.error.status === 401) {
+      addPreflightIssue(result, "not_authenticated", "No active Bridge session.", "login");
+      return result;
+    }
+    addPreflightIssue(result, "session_unavailable", "Bridge session could not be read.", "retry_session", session.error);
+    return result;
+  }
+  result.authenticated = session.payload?.authenticated === true;
+  result.session = session.payload || null;
+  if (!result.authenticated) {
+    addPreflightIssue(result, "not_authenticated", "No active Bridge session.", "login");
+    return result;
+  }
+
+  const devices = await preflightCall(() => request("GET", "/v1/devices"));
+  if (!devices.ok) {
+    addPreflightIssue(result, "devices_unavailable", "Bridge devices could not be read.", "retry_devices", devices.error);
+    return result;
+  }
+  result.devices = Array.isArray(devices.payload?.items) ? devices.payload.items : [];
+  result.online_devices = result.devices.filter((device) => device?.status === "online");
+
+  if (!result.devices.length) {
+    addPreflightIssue(result, "no_devices", "No Bridge desktop device is connected to this account.", "connect_device");
+  }
+  if (result.devices.length && !result.online_devices.length) {
+    addPreflightIssue(result, "no_online_devices", "No Bridge desktop device is currently online.", "open_desktop");
+  }
+
+  let candidateDevices = targetDeviceId
+    ? result.online_devices.filter((device) => device.id === targetDeviceId)
+    : result.online_devices;
+  if (targetDeviceId && !result.devices.some((device) => device.id === targetDeviceId)) {
+    addPreflightIssue(result, "device_not_found", "The requested Bridge device is not visible to this account.", "connect_device");
+    candidateDevices = [];
+  }
+
+  for (const device of candidateDevices) {
+    const authorization = await preflightCall(() => (
+      request("GET", `/v1/products/${encodeURIComponent(productId)}/authorization?device_id=${encodeURIComponent(device.id)}`)
+    ));
+    if (authorization.ok && authorization.payload?.authorization?.status === "active") {
+      result.authorizations.push(authorization.payload.authorization);
+      result.authorized_devices.push(device);
+    } else if (!authorization.ok) {
+      result.authorizations.push({ device_id: device.id, error: authorization.error });
+    }
+  }
+
+  if (candidateDevices.length && !result.authorized_devices.length) {
+    addPreflightIssue(result, "product_not_authorized", "This product is not authorized for an online Bridge device.", "authorize_product");
+  }
+
+  const queue = await preflightCall(() => request("GET", "/v1/queue/summary"));
+  if (queue.ok) {
+    result.queue = queue.payload;
+  } else {
+    addPreflightIssue(result, "queue_unavailable", "Bridge queue summary could not be read.", "retry_queue", queue.error);
+  }
+
+  result.selected_device = targetDeviceId
+    ? result.authorized_devices.find((device) => device.id === targetDeviceId) || null
+    : result.authorized_devices[0] || null;
+  result.ready = result.issues.length === 0 && Boolean(result.selected_device);
+  return result;
+}
+
+async function preflightCall(operation) {
+  try {
+    return { ok: true, payload: await operation() };
+  } catch (error) {
+    return { ok: false, error: preflightError(error) };
+  }
+}
+
+function preflightError(error) {
+  return {
+    status: Number.isFinite(Number(error?.status)) ? Number(error.status) : null,
+    code: stringValue(error?.payload?.error || error?.message || "bridge_error", 120) || "bridge_error",
+    payload: objectValue(error?.payload),
+  };
+}
+
+function addPreflightIssue(result, code, message, action, detail = null) {
+  result.issues.push({
+    code,
+    message,
+    ...(detail ? { detail } : {}),
+  });
+  if (!result.actions.some((item) => item.code === action)) {
+    result.actions.push(preflightAction(action));
+  }
+}
+
+function preflightAction(code) {
+  const labels = {
+    retry_bridge: "Retry Bridge diagnostics or check the API base.",
+    retry_session: "Retry session lookup.",
+    retry_devices: "Retry device lookup.",
+    retry_queue: "Retry queue summary.",
+    login: "Sign in or create a Bridge session.",
+    connect_device: "Connect Panda Bridge Desktop to this account.",
+    open_desktop: "Open Panda Bridge Desktop and keep it online.",
+    authorize_product: "Connect this product to the desktop device.",
+  };
+  return { code, label: labels[code] || "Review Bridge setup." };
 }
 
 async function createJob(request, productId, input) {
