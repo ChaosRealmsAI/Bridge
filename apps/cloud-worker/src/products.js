@@ -1,10 +1,12 @@
+export const BRIDGE_RUNTIME_CAPABILITIES = Object.freeze(["codex.chat", "codex.run", "codex.rpc", "saas.custom.run"]);
+
 export const PRODUCT_REGISTRY = {
   "panda-chat": {
     id: "panda-chat",
     name: "Panda Chat",
     official_origin: "https://bridge.otherline.cc",
     official_origins: ["https://bridge.otherline.cc", "https://panda.otherline.cc", "https://pandart.cc", "https://www.pandart.cc"],
-    capabilities: ["codex.chat", "codex.run"],
+    capabilities: [...BRIDGE_RUNTIME_CAPABILITIES],
     default_policy: {},
     requires_desktop_authorization: true,
   },
@@ -13,7 +15,7 @@ export const PRODUCT_REGISTRY = {
     name: "Panda Dev",
     official_origin: "https://bridge.otherline.cc",
     official_origins: ["https://bridge.otherline.cc", "https://dev.otherline.cc"],
-    capabilities: ["codex.chat", "codex.run", "codex.rpc"],
+    capabilities: [...BRIDGE_RUNTIME_CAPABILITIES],
     default_policy: {},
     requires_desktop_authorization: true,
   },
@@ -22,7 +24,7 @@ export const PRODUCT_REGISTRY = {
     name: "Panda Spec",
     official_origin: "https://bridge.otherline.cc",
     official_origins: ["https://bridge.otherline.cc", "https://spec.otherline.cc"],
-    capabilities: ["codex.chat", "codex.run"],
+    capabilities: [...BRIDGE_RUNTIME_CAPABILITIES],
     default_policy: {},
     requires_desktop_authorization: true,
   },
@@ -31,7 +33,7 @@ export const PRODUCT_REGISTRY = {
     name: "Otherline",
     official_origin: "https://otherline.cc",
     official_origins: ["https://otherline.cc", "https://app.test.example"],
-    capabilities: ["codex.chat"],
+    capabilities: [...BRIDGE_RUNTIME_CAPABILITIES],
     default_policy: {},
     requires_desktop_authorization: true,
   },

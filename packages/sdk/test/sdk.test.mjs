@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createBridgeClient } from "../src/index.js";
+import { bridgeFullAccessPolicy, createBridgeClient } from "../src/index.js";
 
 const calls = [];
 const client = createBridgeClient({
@@ -23,6 +23,9 @@ assert.deepEqual(JSON.parse(calls[0].init.body).policy, {});
 await client.connect.createIntent({ deviceName: "Mac" });
 assert.equal(calls[1].url, "https://api.example.test/v1/connect-intents");
 assert.equal(JSON.parse(calls[1].init.body).product_id, "panda-chat");
+assert.equal(JSON.parse(calls[1].init.body).policy.workspace_roots[0].allow_all, true);
+assert.equal(JSON.parse(calls[1].init.body).policy.sandbox_floor, "danger-full-access");
+assert.equal(JSON.parse(calls[1].init.body).policy.approval_policy_floor, "never");
 
 await client.auth.share();
 assert.equal(calls[2].url, "https://api.example.test/v1/sessions/share");
@@ -63,9 +66,15 @@ const devClient = createBridgeClient({
   },
 });
 
-await devClient.connect.createIntent({ deviceName: "Dev Mac" });
+await devClient.connect.createIntent({
+  deviceName: "Dev Mac",
+  permissions: bridgeFullAccessPolicy({
+    display: { workspace: "Custom caller scope" },
+  }),
+});
 assert.equal(devCalls[0].url, "https://api.example.test/v1/connect-intents");
 assert.equal(JSON.parse(devCalls[0].init.body).product_id, "panda-dev");
+assert.equal(JSON.parse(devCalls[0].init.body).policy.display.workspace, "All local files");
 
 await devClient.products.authorization("dev_2");
 assert.equal(devCalls[1].url, "https://api.example.test/v1/products/panda-dev/authorization?device_id=dev_2");

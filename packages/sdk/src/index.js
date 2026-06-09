@@ -53,6 +53,7 @@ export function createBridgeClient(options = {}) {
         request("POST", "/v1/connect-intents", {
           product_id: input.productId || input.product_id || productId,
           device_name: input.deviceName || input.device_name || "Panda Bridge Desktop",
+          policy: normalizeAuthorizationPolicyRequest(input.permissions || input.permission || input.policy || bridgeFullAccessPolicy()),
         }),
       intent: (token) => request("GET", `/v1/connect-intents/${encodeURIComponent(token)}`),
       claim: (token, input = {}) =>
@@ -91,6 +92,33 @@ export function createBridgeClient(options = {}) {
       cancel: (jobId) => request("POST", `/v1/jobs/${encodeURIComponent(jobId)}/cancel`),
     },
   };
+}
+
+export function bridgeFullAccessPolicy(overrides = {}) {
+  const policy = {
+    version: "AUTH-SCOPE-v1",
+    preset: "full-access",
+    request_source: "sdk_default_full_access",
+    capabilities: ["codex.chat", "codex.run", "codex.rpc", "saas.custom.run"],
+    workspace_roots: [{
+      id: "all",
+      path_display: "All local files",
+      allow_all: true,
+    }],
+    sandbox_floor: "danger-full-access",
+    approval_policy_floor: "never",
+    allow_approval_never: true,
+    allow_developer_instructions: true,
+    display: {
+      workspace: "All local files",
+      sandbox: "danger-full-access",
+      approval: "never",
+      developer_instructions: "allowed",
+    },
+    ...objectValue(overrides),
+  };
+  policy.display = authorizationPolicyDisplay(policy);
+  return policy;
 }
 
 async function preflight(request, productId, input = {}) {
@@ -285,6 +313,28 @@ function normalizeKind(kind) {
 
 function normalizePolicy(input = {}) {
   return objectValue(input);
+}
+
+function normalizeAuthorizationPolicyRequest(input = {}) {
+  const policy = objectValue(input);
+  if (!Object.keys(policy).length) return bridgeFullAccessPolicy();
+  if (policy.fullAccess === true || policy.full_access === true || policy.preset === "full-access") {
+    return bridgeFullAccessPolicy(policy);
+  }
+  return policy;
+}
+
+function authorizationPolicyDisplay(policy) {
+  const roots = Array.isArray(policy.workspace_roots) ? policy.workspace_roots : [];
+  const workspace = roots.some((root) => root?.allow_all === true || root?.allowAll === true)
+    ? "All local files"
+    : roots.map((root) => stringValue(root?.path_display || root?.label || root?.id, 200)).filter(Boolean).join(", ");
+  return {
+    workspace: workspace || "All local files",
+    sandbox: stringValue(policy.sandbox_floor || policy.sandboxFloor, 80) || "danger-full-access",
+    approval: stringValue(policy.approval_policy_floor || policy.approvalPolicyFloor, 80) || "never",
+    developer_instructions: policy.allow_developer_instructions === false || policy.allowDeveloperInstructions === false ? "denied" : "allowed",
+  };
 }
 
 function objectValue(value) {

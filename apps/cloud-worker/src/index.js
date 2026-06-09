@@ -582,7 +582,14 @@ async function createConnectIntent(request, env) {
   const productId = clean(body.product_id || body.productId || "panda-chat", 80) || "panda-chat";
   const product = requireOfficialProduct(productId, env);
   const source_origin = sourceOrigin(env);
+  const originError = rejectProductOrigin(product, source_origin, env);
+  if (originError) return originError;
   const deviceName = clean(body.device_name || body.deviceName, 120) || "Panda Bridge Desktop";
+  const policy = normalizeAuthorizationPolicy(
+    object(body.permissions || body.permission || body.policy || product.default_policy),
+    product,
+    source_origin,
+  );
   const token = randomToken("pbi_");
   const row = await storage(env).insert("bridge_connect_intents", {
     user_id: session.user.id,
@@ -590,12 +597,13 @@ async function createConnectIntent(request, env) {
     product_id: productId,
     source_origin,
     device_name: deviceName,
+    policy,
     token_hash: await sha256Hex(token),
     expires_at: new Date(Date.now() + connectIntentTtlMs(env)).toISOString(),
     consumed_at: null,
     created_at: now(),
   });
-  await audit(env, session.user.id, null, product.id, "connect_intent.create", row.id, { device_name: deviceName, source_origin });
+  await audit(env, session.user.id, null, product.id, "connect_intent.create", row.id, { device_name: deviceName, source_origin, policy });
   return json({
     token,
     deep_link: `${desktopProtocol(env)}://connect?intent=${encodeURIComponent(token)}&api=${encodeURIComponent(publicApiBase(env))}`,
@@ -641,7 +649,13 @@ async function claimConnectIntent(request, env, token) {
     ? await updateDeviceForIntent(env, reuseDevice.device, reuseDevice.raw_token, input)
     : await createDeviceWithToken(env, intent.user_id, input);
   const source_origin = clean(intent.source_origin, 300) || product.origin || sourceOrigin(env);
-  const policy = normalizeAuthorizationPolicy(object(body.policy), product, source_origin);
+  const intentPolicy = object(intent.policy);
+  const claimPolicy = object(body.policy);
+  const policy = normalizeAuthorizationPolicy(
+    Object.keys(intentPolicy).length ? intentPolicy : claimPolicy,
+    product,
+    source_origin,
+  );
   const authorization = await upsertAuthorization(env, intent.user_id, device.id, product.id, policy, source_origin);
   await store.update("bridge_connect_intents", intent.id, { consumed_at: now(), device_id: device.id });
   await audit(env, intent.user_id, device.id, product.id, "connect_intent.claim", intent.id, { app_version: body.app_version || null, source_origin });
@@ -758,6 +772,8 @@ async function connectorJobs(request, env) {
 
 async function productAuthorization(request, env, productId) {
   const product = requireOfficialProduct(productId, env);
+  const originError = rejectProductOrigin(product, sourceOrigin(env), env);
+  if (originError) return originError;
   const session = await requireSession(request, env);
   const url = new URL(request.url);
   const deviceId = url.searchParams.get("device_id") || "";
@@ -767,6 +783,8 @@ async function productAuthorization(request, env, productId) {
 
 async function requestAuthorization(request, env, productId) {
   const product = requireOfficialProduct(productId, env);
+  const originError = rejectProductOrigin(product, sourceOrigin(env), env);
+  if (originError) return originError;
   const session = await requireSession(request, env);
   const body = await readJson(request, env);
   const device = await ownedDevice(env, session.user.id, String(body.device_id || ""));
@@ -779,6 +797,8 @@ async function requestAuthorization(request, env, productId) {
 
 async function createAuthorizationImportProof(request, env, productId) {
   const product = requireOfficialProduct(productId, env);
+  const originError = rejectProductOrigin(product, sourceOrigin(env), env);
+  if (originError) return originError;
   const session = await requireSession(request, env);
   const body = await readJson(request, env);
   const device = await ownedDevice(env, session.user.id, String(body.device_id || ""));
@@ -809,6 +829,8 @@ async function createAuthorizationImportProof(request, env, productId) {
 
 async function revokeAuthorization(request, env, productId) {
   const product = requireOfficialProduct(productId, env);
+  const originError = rejectProductOrigin(product, sourceOrigin(env), env);
+  if (originError) return originError;
   const session = await requireSession(request, env);
   const url = new URL(request.url);
   const device = await ownedDevice(env, session.user.id, url.searchParams.get("device_id") || "");
@@ -844,9 +866,12 @@ async function revokeConnectorAuthorization(request, env, productId) {
 
 async function createProductJob(request, env, productId, ctx = {}) {
   const product = requireOfficialProduct(productId, env);
+  const source_origin = sourceOrigin(env);
+  const originError = rejectProductOrigin(product, source_origin, env);
+  if (originError) return originError;
   const session = await requireSession(request, env);
   const body = await readJson(request, env);
-  return await createAuthorizedProductJob(env, product, session.user.id, sourceOrigin(env), body, ctx, {
+  return await createAuthorizedProductJob(env, product, session.user.id, source_origin, body, ctx, {
     auditAction: "job.create",
   });
 }
@@ -882,6 +907,11 @@ async function createDelegatedConnectIntent(request, env, productId) {
   const body = rawBody ? parseJsonText(rawBody) : {};
   const user = await ensureDelegatedUser(env, product.id, delegation.userId, object(body.account || body.user));
   const deviceName = clean(body.device_name || body.deviceName, 120) || "Panda Bridge Desktop";
+  const policy = normalizeAuthorizationPolicy(
+    object(body.permissions || body.permission || body.policy || product.default_policy),
+    product,
+    delegation.sourceOrigin,
+  );
   const token = randomToken("pbi_");
   const row = await storage(env).insert("bridge_connect_intents", {
     user_id: user.id,
@@ -889,6 +919,7 @@ async function createDelegatedConnectIntent(request, env, productId) {
     product_id: product.id,
     source_origin: delegation.sourceOrigin,
     device_name: deviceName,
+    policy,
     token_hash: await sha256Hex(token),
     expires_at: new Date(Date.now() + connectIntentTtlMs(env)).toISOString(),
     consumed_at: null,
@@ -897,6 +928,7 @@ async function createDelegatedConnectIntent(request, env, productId) {
   await audit(env, user.id, null, product.id, "connect_intent.create.delegated", row.id, {
     device_name: deviceName,
     source_origin: delegation.sourceOrigin,
+    policy,
   });
   return json({
     token,
@@ -1001,6 +1033,10 @@ async function createAuthorizedProductJob(env, product, userId, source_origin, b
   if (!isDeviceOnline(device, env)) return json({ error: "device_offline" }, env, 409);
   const authorization = await activeAuthorization(env, userId, device.id, product.id);
   if (!authorization) return json({ error: "product_not_authorized" }, env, 403);
+  const authorizationScopeError = authorizationScopeDenial(authorization.policy, normalized);
+  if (authorizationScopeError) {
+    return json({ error: "authorization_scope_denied", ...authorizationScopeError }, env, 403);
+  }
 
   const existing = await existingRequestKeyJob(env, userId, device.id, product.id, normalized.request_key);
   if (existing) {
@@ -1951,28 +1987,132 @@ function authorizationImportProofTtlMs(env) {
 
 function normalizeAuthorizationPolicy(input, product, source_origin) {
   const policy = object(input);
+  const hasExplicitInput = Object.keys(policy).length > 0;
+  const requested = Object.keys(policy).length ? policy : fullAccessAuthorizationPolicy();
   const workspaceRoots = Array.isArray(policy.workspace_roots) && policy.workspace_roots.length
-    ? policy.workspace_roots.map((item, index) => {
+    ? requested.workspace_roots.map((item, index) => {
         const root = object(item);
         return {
           id: clean(root.id, 80) || `workspace-${index + 1}`,
           path_display: clean(root.path_display || root.label, 200) || "[local]/workspace",
+          ...(root.allow_all === true || root.allowAll === true ? { allow_all: true } : {}),
         };
       })
-    : [{ id: "default", path_display: "[local]/default" }];
+    : [{ id: "all", path_display: "All local files", allow_all: true }];
+  const capabilities = normalizedPolicyCapabilities(requested);
+  const sandboxFloor = clean(requested.sandbox_floor || requested.sandboxFloor, 80);
+  const approvalFloor = clean(requested.approval_policy_floor || requested.approvalPolicyFloor, 80);
+  const normalizedSandboxFloor = ["danger-full-access", "workspace-write", "read-only"].includes(sandboxFloor) ? sandboxFloor : "danger-full-access";
+  const normalizedApprovalFloor = ["never", "on-request", "on-failure", "untrusted"].includes(approvalFloor) ? approvalFloor : "never";
+  const allowDeveloperInstructions = requested.allow_developer_instructions !== false && requested.allowDeveloperInstructions !== false;
   return {
     version: "AUTH-SCOPE-v1",
+    preset: clean(requested.preset || requested.permission_preset, 80) || "full-access",
+    request_source: clean(requested.request_source, 120) || (hasExplicitInput ? "caller_request" : "worker_default_full_access"),
     product_id: product.id,
-    source_origin: clean(policy.source_origin, 300) || source_origin || product.official_origin || product.origin || null,
-    capabilities: Array.isArray(policy.capabilities) && policy.capabilities.length
-      ? policy.capabilities.filter((item) => product.capabilities.includes(item))
-      : [...product.capabilities],
+    source_origin: clean(requested.source_origin, 300) || source_origin || product.official_origin || product.origin || null,
+    capabilities,
     workspace_roots: workspaceRoots,
-    sandbox_floor: ["workspace-write", "read-only"].includes(policy.sandbox_floor) ? policy.sandbox_floor : "workspace-write",
-    approval_policy_floor: ["on-request", "on-failure", "untrusted"].includes(policy.approval_policy_floor) ? policy.approval_policy_floor : "on-request",
-    allow_approval_never: policy.allow_approval_never === true,
-    allow_developer_instructions: policy.allow_developer_instructions === true,
-    display: object(policy.display),
+    sandbox_floor: normalizedSandboxFloor,
+    approval_policy_floor: normalizedApprovalFloor,
+    allow_approval_never: requested.allow_approval_never === true || requested.allowApprovalNever === true || normalizedApprovalFloor === "never",
+    allow_developer_instructions: allowDeveloperInstructions,
+    display: authorizationPolicyDisplay(workspaceRoots, normalizedSandboxFloor, normalizedApprovalFloor, allowDeveloperInstructions),
+  };
+}
+
+function normalizedPolicyCapabilities(requested) {
+  if (!Object.hasOwn(requested, "capabilities")) return [...SUPPORTED_JOB_KINDS];
+  if (!Array.isArray(requested.capabilities)) throw httpError("invalid_authorization_policy", 400);
+  const capabilities = [...new Set(requested.capabilities.map((item) => clean(item, 120)).filter(Boolean))];
+  const unsupported = capabilities.filter((item) => !SUPPORTED_JOB_KINDS.includes(item));
+  if (unsupported.length) {
+    const error = httpError("invalid_authorization_policy", 400);
+    error.public = { field: "capabilities", unsupported };
+    throw error;
+  }
+  return capabilities;
+}
+
+function authorizationPolicyDisplay(workspaceRoots, sandboxFloor, approvalFloor, allowDeveloperInstructions) {
+  return {
+    workspace: workspaceRoots.some((item) => item.allow_all === true)
+      ? "All local files"
+      : workspaceRoots.map((item) => item.path_display || item.id).join(", "),
+    sandbox: sandboxFloor,
+    approval: approvalFloor,
+    developer_instructions: allowDeveloperInstructions ? "allowed" : "denied",
+  };
+}
+
+function authorizationScopeDenial(scopeInput, job) {
+  const scope = object(scopeInput);
+  if (scope.version !== "AUTH-SCOPE-v1") {
+    return { denied: "authorization", reason: "authorization_scope_missing" };
+  }
+  if (!Array.isArray(scope.capabilities) || !scope.capabilities.includes(job.kind)) {
+    return { denied: "capability", reason: "capability_not_authorized" };
+  }
+  const workspaceRef = job.workspace_ref || "default";
+  if (!authorizationScopeAllowsWorkspace(scope, workspaceRef)) {
+    return { denied: "workspace_ref", reason: "workspace_not_authorized" };
+  }
+  const requestedSandbox = clean(job.policy?.sandbox, 80) || "workspace-write";
+  if (!authorizationScopeAllowsSandbox(clean(scope.sandbox_floor, 80) || "workspace-write", requestedSandbox)) {
+    return { denied: "sandbox", reason: "sandbox_not_authorized" };
+  }
+  const requestedApproval = clean(job.policy?.approvalPolicy, 80) || "on-request";
+  const approvalFloor = clean(scope.approval_policy_floor, 80) || "on-request";
+  const allowNever = scope.allow_approval_never === true || approvalFloor === "never";
+  if (!authorizationScopeAllowsApproval(approvalFloor, requestedApproval, allowNever)) {
+    return { denied: "approvalPolicy", reason: "approval_policy_not_authorized" };
+  }
+  if (clean(job.policy?.developerInstructions, 1000) && scope.allow_developer_instructions !== true) {
+    return { denied: "developerInstructions", reason: "developer_instructions_not_authorized" };
+  }
+  return null;
+}
+
+function authorizationScopeAllowsWorkspace(scope, workspaceRef) {
+  const roots = Array.isArray(scope.workspace_roots) ? scope.workspace_roots : [];
+  if (!roots.length) return workspaceRef === "default";
+  if (roots.some((root) => root?.allow_all === true || root?.allowAll === true || root?.id === "all" || root?.id === "*")) {
+    return true;
+  }
+  return roots.some((root) => root?.id === workspaceRef);
+}
+
+function authorizationScopeAllowsSandbox(floor, requested) {
+  if (floor === "danger-full-access") return ["danger-full-access", "workspace-write", "read-only"].includes(requested);
+  if (floor === "workspace-write") return ["workspace-write", "read-only"].includes(requested);
+  if (floor === "read-only") return requested === "read-only";
+  return false;
+}
+
+function authorizationScopeAllowsApproval(floor, requested, allowNever) {
+  if (floor === "never") return ["never", "on-failure", "on-request", "untrusted"].includes(requested);
+  if (requested === "never") return allowNever;
+  const ranks = new Map([["untrusted", 0], ["on-request", 1], ["on-failure", 2]]);
+  if (!ranks.has(floor) || !ranks.has(requested)) return false;
+  return ranks.get(requested) <= ranks.get(floor);
+}
+
+function fullAccessAuthorizationPolicy() {
+  return {
+    preset: "full-access",
+    request_source: "worker_default_full_access",
+    capabilities: [...SUPPORTED_JOB_KINDS],
+    workspace_roots: [{ id: "all", path_display: "All local files", allow_all: true }],
+    sandbox_floor: "danger-full-access",
+    approval_policy_floor: "never",
+    allow_approval_never: true,
+    allow_developer_instructions: true,
+    display: {
+      workspace: "All local files",
+      sandbox: "danger-full-access",
+      approval: "never",
+      developer_instructions: "allowed",
+    },
   };
 }
 
@@ -2332,6 +2472,7 @@ function publicConnectIntent(intent, user = null, env = {}) {
     product_id: intent.product_id,
     product: productInfo(intent.product_id, env),
     source_origin: intent.source_origin || null,
+    policy: object(intent.policy),
     device_id: intent.device_id || null,
     device_name: intent.device_name,
     expires_at: intent.expires_at,
@@ -2610,6 +2751,35 @@ function allowedWebOrigins(env) {
 
 function splitOrigins(value) {
   return clean(value, 4000).split(/[\s,]+/).map((item) => item.trim()).filter(Boolean);
+}
+
+function rejectProductOrigin(product, origin, env) {
+  if (productAllowedOrigins(product, env).includes(origin)) return null;
+  return json({
+    error: "product_origin_mismatch",
+    product_id: product.id,
+    source_origin: origin,
+  }, env, 403);
+}
+
+function productAllowedOrigins(product, env) {
+  return [...new Set([
+    ...(product.official_origins || [product.official_origin]),
+    ...productExtraAllowedOrigins(product.id, env),
+  ].filter(Boolean))];
+}
+
+function productExtraAllowedOrigins(productId, env) {
+  const raw = clean(env.BRIDGE_PRODUCT_ALLOWED_ORIGINS, 20000);
+  if (!raw) return [];
+  try {
+    const map = JSON.parse(raw);
+    const value = map?.[productId];
+    if (Array.isArray(value)) return value.map((item) => clean(item, 300)).filter(Boolean);
+    return splitOrigins(value);
+  } catch {
+    return [];
+  }
 }
 
 function publicApiBase(env) {

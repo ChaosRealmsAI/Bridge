@@ -60,12 +60,17 @@ Bridge Desktop 需要本地安装。
 
 ## 能力边界
 
-Bridge Cloud 负责认证、授权关系、产品 capability 和队列边界。Bridge
-Desktop 是本机权限最终执行者：SaaS 可以请求 `kind`、`policy`、
-`workspace_ref` 和 payload，但本机只会在用户授权可见范围和本机白名单内执行。
+Bridge Cloud 负责认证、授权关系、产品 capability、product-specific origin、
+队列和审计边界。Bridge
+Desktop 是本机权限最终执行者：SaaS / 调用方可以在 `connect.createIntent`
+里声明需要的 `AUTH-SCOPE-v1`，默认是 full-access bridge scope，也可以自定义
+scope。Desktop 展示这份 caller-defined scope，用户允许后写入本地授权记录。
 
-授权表示某个 product 可以在可见 scope 内使用这台设备；越权 cwd、sandbox、
-approval policy 或 developer instructions 会被 Desktop 拒绝。
+授权表示某个 product 可以按这份已批准 scope 使用这台设备；job 的 `kind`、
+`policy`、`workspace_ref` 和 payload 原样传到 Desktop。请求未超过本地授权记录
+时执行。Cloud 会先用 `authorization_scope_denied` 拒绝明显超过授权 scope 的
+任务；Desktop 对本地路径和最终执行做兜底验权，越权时返回
+`local_policy_denied`，不启动 Codex。
 
 ## Spec
 
@@ -113,6 +118,7 @@ npm run pandart:local
 npm run check
 npm run verify:sdk-examples
 npm run verify:productized-onboarding
+npm run verify:bridge-full-access-policy
 npm run verify:desktop-ai-cli
 npm run verify:spec
 npm run verify:local

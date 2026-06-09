@@ -203,6 +203,9 @@ async function startLocalBridgeApi() {
     BRIDGE_LOCAL_MEMORY: "1",
     BRIDGE_WEB_ORIGIN: "http://chat.local.test",
     BRIDGE_ALLOWED_ORIGINS: "http://chat.local.test http://127.0.0.1",
+    BRIDGE_PRODUCT_ALLOWED_ORIGINS: JSON.stringify({
+      "panda-chat": ["http://chat.local.test"],
+    }),
     BRIDGE_PUBLIC_API_BASE: "http://127.0.0.1:0",
     SESSION_COOKIE_NAME: "pb_session",
   };

@@ -315,19 +315,20 @@
 
     function grantView(p){
       const policy=p.policy||{};
-      const caps=Array.isArray(p.capabilities)&&p.capabilities.length?p.capabilities:policy.capabilities||[];
+      const caps=Array.isArray(p.capabilities)?p.capabilities:(Array.isArray(policy.capabilities)?policy.capabilities:[]);
       return `<div class="grantgrid">
           <div><div class="gk">Origin</div><div class="gv">${esc(p.origin||policy.source_origin||"unknown")}</div></div>
           <div><div class="gk">Scope</div><div class="gv">${chips(caps)}</div></div>
-          <div><div class="gk">Workspace</div><div class="gv">${esc(policy.display?.workspace||workspaceSummary(policy)||"default workspace")}</div></div>
-          <div><div class="gk">Sandbox</div><div class="gv">${esc(policy.display?.sandbox||policy.sandbox_floor||"workspace-write")}</div></div>
-          <div><div class="gk">Approval</div><div class="gv">${esc(policy.display?.approval||policy.approval_policy_floor||"on-request")}</div></div>
+          <div><div class="gk">Workspace</div><div class="gv">${esc(workspaceSummary(policy)||"default workspace")}</div></div>
+          <div><div class="gk">Sandbox</div><div class="gv">${esc(policy.sandbox_floor||"workspace-write")}</div></div>
+          <div><div class="gk">Approval</div><div class="gv">${esc(policy.approval_policy_floor||"on-request")}</div></div>
           <div><div class="gk">Authorized</div><div class="gv">${esc(formatTime(p.authorized_at)||"unknown")}</div></div>
         </div>`;
     }
 
     function chips(items){
-      const list=Array.isArray(items)&&items.length?items:["codex.chat"];
+      const list=Array.isArray(items)?items:[];
+      if(!list.length) return `<div class="chips"><span class="chip">none</span></div>`;
       return `<div class="chips">${list.map(item=>`<span class="chip">${esc(item)}</span>`).join("")}</div>`;
     }
 
@@ -349,17 +350,18 @@
 
     function requestView(p){
       const policy = p.local_policy || {};
-      const capabilities = Array.isArray(p.capabilities) && p.capabilities.length ? p.capabilities.join(", ") : "codex.chat";
+      const capItems = Array.isArray(p.capabilities) ? p.capabilities : (Array.isArray(policy.capabilities) ? policy.capabilities : []);
+      const capabilities = capItems.length ? capItems.join(", ") : "none";
       return `<div class="reqp"><div class="av">${av(p.email)}</div>
           <div class="em">${esc(p.email||'Panda')}</div>
           <div class="desc">${t('reqLine',{product:'<b>'+esc(p.product_name||'Panda')+'</b>'})}<br>${t('reqLine2')}</div>
           <div class="scope">
             <div class="sr"><div class="sk">Origin</div><div class="sv">${esc(p.cloud_origin||p.origin||"unknown")}</div></div>
             <div class="sr"><div class="sk">Scope</div><div class="sv">${esc(capabilities)}</div></div>
-            <div class="sr"><div class="sk">Workspace</div><div class="sv">${esc(policy.default_workspace||"default workspace")}</div></div>
-            <div class="sr"><div class="sk">Sandbox</div><div class="sv">${esc((policy.sandbox_allowed||["workspace-write","read-only"]).join(", "))}</div></div>
-            <div class="sr"><div class="sk">Approval</div><div class="sv">${esc(policy.approval_default||"on-request")} · never ${esc(policy.approval_never||"denied_by_default")}</div></div>
-            <div class="sr"><div class="sk">Instructions</div><div class="sv">${esc(policy.developer_instructions||"denied_by_default")}</div></div>
+            <div class="sr"><div class="sk">Workspace</div><div class="sv">${esc(workspaceSummary(policy)||"All local files")}</div></div>
+            <div class="sr"><div class="sk">Sandbox</div><div class="sv">${esc(policy.sandbox_floor||"danger-full-access")}</div></div>
+            <div class="sr"><div class="sk">Approval</div><div class="sv">${esc(policy.approval_policy_floor||"never")}</div></div>
+            <div class="sr"><div class="sk">Instructions</div><div class="sv">${esc(policy.allow_developer_instructions?"allowed":"denied")}</div></div>
           </div>
           <div class="qrow"><button class="btn" onclick="deny(${ui.selReq})">${t('deny')}</button>
             <button class="btn primary" onclick="approve(${ui.selReq})">${t('allow')}</button></div></div>`;
@@ -443,7 +445,7 @@
         const { id, command } = JSON.parse(raw);
         const reply = (ok, payload)=> setTimeout(()=>window.PandaBridge.receive({ type:"response", id, ok, result: payload }), 70);
         if (command==="status") return reply(true, JSON.parse(JSON.stringify(mock)));
-        if (command==="preview_intent") return reply(true, { product_id:"panda-chat", product_name:"Panda Chat", user_display_name:"team-demo@otherline.cc", cloud_origin:"bridge.otherline.cc", capabilities:["codex.chat"], local_policy:{ default_workspace:"/Users/demo/project", sandbox_allowed:["workspace-write","read-only"], approval_default:"on-request", approval_never:"denied_by_default", developer_instructions:"denied_by_default" } });
+        if (command==="preview_intent") return reply(true, { product_id:"panda-chat", product_name:"Panda Chat", user_display_name:"team-demo@otherline.cc", cloud_origin:"bridge.otherline.cc", capabilities:["codex.chat","codex.run","codex.rpc","saas.custom.run"], local_policy:{ version:"AUTH-SCOPE-v1", workspace_roots:[{id:"all",path_display:"All local files",allow_all:true}], sandbox_floor:"danger-full-access", approval_policy_floor:"never", allow_approval_never:true, allow_developer_instructions:true, display:{workspace:"All local files",sandbox:"danger-full-access",approval:"never",developer_instructions:"allowed"} } });
         if (command==="claim_intent"){ mock.authorized_products[0].accounts.push({id:"acct_team",email:"team-demo@otherline.cc",device_id:"dev_macbookpro_8f21",authorized_at:new Date().toISOString()}); return reply(true, { product_id:"panda-chat", product_name:"Panda Chat", account_display:"team-demo@otherline.cc", authorized_products:mock.authorized_products }); }
         if (command==="revoke_authorization"){
           const { params } = JSON.parse(raw);

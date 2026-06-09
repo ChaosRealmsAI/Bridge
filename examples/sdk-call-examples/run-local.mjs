@@ -65,6 +65,11 @@ const server = createServer(async (incoming, outgoing) => {
       ...env,
       BRIDGE_WEB_ORIGIN: `http://127.0.0.1:${port}`,
       BRIDGE_PUBLIC_API_BASE: `http://127.0.0.1:${port}`,
+      BRIDGE_PRODUCT_ALLOWED_ORIGINS: JSON.stringify({
+        "panda-chat": [`http://127.0.0.1:${port}`],
+        "panda-dev": [`http://127.0.0.1:${port}`],
+        "panda-spec": [`http://127.0.0.1:${port}`],
+      }),
     });
     outgoing.writeHead(response.status, Object.fromEntries(response.headers.entries()));
     outgoing.end(response.body ? Buffer.from(await response.arrayBuffer()) : undefined);

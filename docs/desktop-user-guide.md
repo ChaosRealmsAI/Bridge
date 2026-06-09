@@ -9,13 +9,21 @@ you approve that product.
 2. Sign in to the product that wants to use this computer.
 3. Click the product's `Connect local Agent` action.
 4. The Desktop app opens an authorization view.
-5. Check the product name, account, source origin, capabilities, workspace,
-   sandbox, and approval policy.
+5. Check the product name, account, source origin, capabilities, requested
+   workspace scope, sandbox, approval policy, and developer-instruction access.
 6. Click Allow.
 
 After approval, the product appears in Desktop with a local authorization
 record. That record is kept on this computer and is used by the local runtime
 before executing jobs.
+
+Some products request full Bridge access. In that case the authorization view
+and local record can show `All local files`, `danger-full-access`,
+`approvalPolicy: never`, and developer instructions allowed. Desktop will then
+allow jobs that stay within that approved full-access grant. If a later job asks
+for more than the approved record allows, Desktop rejects it locally.
+The workspace/sandbox/approval/instruction summary is derived from the approved
+policy fields, not from arbitrary product display copy.
 
 ## Local Authorization Record
 
@@ -23,8 +31,10 @@ Desktop shows:
 
 - Product name and source origin.
 - Authorized account and device id.
-- Capability list such as `codex.chat` or `codex.run`.
-- Local policy summary, including workspace, sandbox, and approval policy.
+- Capability list such as `codex.chat`, `codex.run`, `codex.rpc`, or
+  `saas.custom.run`.
+- Local policy summary, including workspace scope, sandbox, approval policy, and
+  developer-instruction access.
 - Authorization time.
 
 Desktop does not show device tokens, session cookies, product secrets, or
@@ -48,5 +58,5 @@ or later jobs for that product will fail instead of continuing silently.
 - If Desktop says Codex is missing, run `codex login` on this computer.
 - If one product works and another does not, authorize the second product
   separately.
-- If you changed local permission settings, re-authorize the product so the
-  Desktop record captures the current policy.
+- If a product needs a different permission scope, re-authorize the product so
+  the Desktop record captures the caller's new requested policy.

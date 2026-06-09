@@ -16,6 +16,10 @@ const env = {
   BRIDGE_LOCAL_MEMORY: "1",
   BRIDGE_WEB_ORIGIN: "http://chat.local.test",
   BRIDGE_ALLOWED_ORIGINS: "http://chat.local.test http://dev.local.test http://127.0.0.1",
+  BRIDGE_PRODUCT_ALLOWED_ORIGINS: JSON.stringify({
+    "panda-chat": ["http://chat.local.test"],
+    "panda-dev": ["http://dev.local.test"],
+  }),
   BRIDGE_PUBLIC_API_BASE: "http://127.0.0.1:0",
   BRIDGE_DEVICE_MAX_QUEUED_JOBS: "50",
   BRIDGE_ACCOUNT_MAX_ACTIVE_JOBS: "50",
@@ -102,15 +106,13 @@ try {
   assertGrant(statusAfterChat, "panda-chat", session.user.id, chatDevice.id);
   assertNoSecretKeys(statusAfterChat);
   await assertReady(aChat, chatDevice.id, true, "panda-chat should be ready after desktop authorization");
-  await expectSdkError(
-    () => aChat.codex.rpc({
-      deviceId: chatDevice.id,
-      calls: [{ method: "initialize" }],
-      requestKey: `v15-chat-rpc-scope-${suffix}`,
-    }),
-    403,
-    "scope_insufficient",
-  );
+  const chatRpc = await aChat.codex.rpc({
+    deviceId: chatDevice.id,
+    calls: [{ method: "initialize" }],
+    requestKey: `v15-chat-rpc-scope-${suffix}`,
+  });
+  assert.equal(chatRpc.job.status, "queued");
+  await aChat.jobs.cancel(chatRpc.job.id);
 
   const chatBeforeRevoke = await chatAndPoll(aChat, chatDevice.id, "v15 chat before revoke", "chat-before-revoke");
 
@@ -191,7 +193,7 @@ try {
     },
     negative_paths: {
       browser_claim_error: "desktop_claim_required",
-      chat_rpc_error: "scope_insufficient",
+      chat_rpc_job_accepted: chatRpc.job.id,
       chat_after_revoke_error: "product_not_authorized",
     },
     docs: [

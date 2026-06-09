@@ -172,6 +172,10 @@ struct IntentResponse {
 struct ConnectIntent {
     product_id: String,
     product: Option<ProductInfo>,
+    #[serde(default)]
+    policy: Value,
+    #[serde(default)]
+    source_origin: Option<String>,
     device_name: Option<String>,
     expires_at: String,
     user: Option<ConnectUser>,
@@ -200,6 +204,8 @@ struct ClaimResponse {
 struct AuthorizationInfo {
     #[serde(default)]
     policy: Value,
+    #[serde(default)]
+    source_origin: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1346,22 +1352,35 @@ fn preview_intent(api: &str, intent: &str) -> Result<IntentPreview, String> {
         .unwrap_or_else(|| product_id.clone());
     let cloud_origin = payload
         .connect_intent
-        .product
-        .as_ref()
-        .and_then(|product| product.origin.clone())
+        .source_origin
+        .clone()
+        .or_else(|| {
+            payload
+                .connect_intent
+                .product
+                .as_ref()
+                .and_then(|product| product.origin.clone())
+        })
         .unwrap_or_else(|| api_base.clone());
-    let capabilities = payload
+    let product_capabilities = payload
         .connect_intent
         .product
         .as_ref()
         .map(|product| product.capabilities.clone())
         .unwrap_or_default();
+    let local_policy = intent_authorization_policy(
+        &payload.connect_intent,
+        &product_id,
+        &cloud_origin,
+        &product_capabilities,
+    );
+    let capabilities = authorization_policy_capabilities(&local_policy).unwrap_or(product_capabilities);
     Ok(IntentPreview {
         product_id,
         product_name,
         cloud_origin,
         capabilities,
-        local_policy: local_policy_preview(),
+        local_policy,
         device_name: payload
             .connect_intent
             .device_name
@@ -1430,9 +1449,22 @@ fn claim_intent(api: &str, intent: &str, device_name: &str) -> Result<ClaimResul
     let product_id = payload.product.as_ref().map(|product| product.id.clone());
     let product_name = payload.product.as_ref().map(|product| product.name.clone());
     let cloud_origin = payload
-        .product
+        .authorization
         .as_ref()
-        .and_then(|product| product.origin.clone());
+        .and_then(|authorization| authorization.source_origin.clone())
+        .or_else(|| {
+            payload
+                .authorization
+                .as_ref()
+                .and_then(|authorization| {
+                    authorization
+                        .policy
+                        .get("source_origin")
+                        .and_then(Value::as_str)
+                        .map(ToOwned::to_owned)
+                })
+        })
+        .or_else(|| payload.product.as_ref().and_then(|product| product.origin.clone()));
     let product_capabilities = payload
         .product
         .as_ref()
@@ -1443,6 +1475,8 @@ fn claim_intent(api: &str, intent: &str, device_name: &str) -> Result<ClaimResul
         .as_ref()
         .map(|authorization| authorization.policy.clone())
         .unwrap_or(Value::Null);
+    let grant_capabilities =
+        authorization_policy_capabilities(&authorization_policy).unwrap_or(product_capabilities);
     let existing_connection = existing_connections.iter().find(|connection| {
         connection.device_id == payload.device.id
             || (connection.api_base == api_base
@@ -1456,7 +1490,7 @@ fn claim_intent(api: &str, intent: &str, device_name: &str) -> Result<ClaimResul
         product_id.clone(),
         product_name.clone(),
         cloud_origin.clone(),
-        product_capabilities,
+        grant_capabilities,
         authorization_policy,
     );
     let connection = Credentials {
@@ -2517,24 +2551,25 @@ fn execute_and_ack_warm(
 }
 
 fn execute_job(credentials: &Credentials, job: &BridgeJob) -> Result<Value, String> {
-    if let Err(error) = validate_local_job_authorization(credentials, job) {
-        let result = local_policy_denial_result(job, &error);
-        post_event_best_effort(
-            credentials,
-            &job.id,
-            "policy_denied",
-            local_policy_denial_event(job, &error),
-        );
-        return Ok(result);
-    }
-    if let Ok(policy) = effective_job_policy(job) {
-        post_event_best_effort(
-            credentials,
-            &job.id,
-            "effective_policy",
-            effective_policy_event(job, &policy),
-        );
-    }
+    let policy = match local_job_policy_for_credentials(credentials, job) {
+        Ok(policy) => policy,
+        Err(error) => {
+            let result = local_policy_denial_result(job, &error);
+            post_event_best_effort(
+                credentials,
+                &job.id,
+                "policy_denied",
+                local_policy_denial_event(job, &error),
+            );
+            return Ok(result);
+        }
+    };
+    post_event_best_effort(
+        credentials,
+        &job.id,
+        "effective_policy",
+        effective_policy_event(job, &policy),
+    );
     post_event_best_effort(
         credentials,
         &job.id,
@@ -2570,27 +2605,28 @@ fn execute_job_warm(
     job: &BridgeJob,
     session: &mut Option<CodexWarmSession>,
 ) -> Result<Value, String> {
-    if let Err(error) = validate_local_job_authorization(credentials, job) {
-        let mut result = local_policy_denial_result(job, &error);
-        if let Value::Object(ref mut map) = result {
-            map.insert("codex_warm".to_string(), Value::Bool(false));
+    let policy = match local_job_policy_for_credentials(credentials, job) {
+        Ok(policy) => policy,
+        Err(error) => {
+            let mut result = local_policy_denial_result(job, &error);
+            if let Value::Object(ref mut map) = result {
+                map.insert("codex_warm".to_string(), Value::Bool(false));
+            }
+            post_event_best_effort(
+                credentials,
+                &job.id,
+                "policy_denied",
+                local_policy_denial_event(job, &error),
+            );
+            return Ok(result);
         }
-        post_event_best_effort(
-            credentials,
-            &job.id,
-            "policy_denied",
-            local_policy_denial_event(job, &error),
-        );
-        return Ok(result);
-    }
-    if let Ok(policy) = effective_job_policy(job) {
-        post_event_best_effort(
-            credentials,
-            &job.id,
-            "effective_policy",
-            effective_policy_event(job, &policy),
-        );
-    }
+    };
+    post_event_best_effort(
+        credentials,
+        &job.id,
+        "effective_policy",
+        effective_policy_event(job, &policy),
+    );
     post_event_best_effort(
         credentials,
         &job.id,
@@ -2622,7 +2658,6 @@ fn execute_job_warm(
             json!({ "ok": true, "reply": reply, "fixture": true, "cloud_openai_credentials": false }),
         );
     }
-    let policy = effective_job_policy(job)?;
     let cwd = policy.cwd.clone();
     let should_restart = session.as_ref().map(|item| item.cwd != cwd).unwrap_or(true);
     if should_restart {
@@ -2646,10 +2681,10 @@ fn execute_job_warm(
     }
 }
 
-fn validate_local_job_authorization(
+fn local_job_policy_for_credentials(
     credentials: &Credentials,
     job: &BridgeJob,
-) -> Result<(), String> {
+) -> Result<LocalJobPolicy, String> {
     let grant = credentials_products(credentials)
         .into_iter()
         .find(|item| item.id == job.product_id)
@@ -2664,18 +2699,26 @@ fn validate_local_job_authorization(
         return Err("authorization_scope_missing_locally".to_string());
     }
     validate_authorization_scope(&grant.policy, job)?;
-    let _ = effective_job_policy(job)?;
+    effective_job_policy(job, Some(&grant.policy))
+}
+
+#[cfg(test)]
+fn validate_local_job_authorization(
+    credentials: &Credentials,
+    job: &BridgeJob,
+) -> Result<(), String> {
+    let _ = local_job_policy_for_credentials(credentials, job)?;
     Ok(())
 }
 
 fn validate_authorization_scope(scope: &Value, job: &BridgeJob) -> Result<(), String> {
-    if let Some(capabilities) = scope.get("capabilities").and_then(Value::as_array) {
-        if !capabilities.is_empty()
-            && !capabilities
+    match scope.get("capabilities").and_then(Value::as_array) {
+        Some(capabilities)
+            if capabilities
                 .iter()
                 .filter_map(Value::as_str)
-                .any(|item| item == job.kind)
-        {
+                .any(|item| item == job.kind) => {}
+        _ => {
             return Err(format!(
                 "capability_not_authorized_locally: {}:{}",
                 job.product_id, job.kind
@@ -2727,6 +2770,9 @@ fn authorization_scope_allows_workspace(scope: &Value, workspace_ref: &str) -> b
         Some(items) => items,
         None => return workspace_ref == "default",
     };
+    if roots.iter().any(root_allows_all_workspaces) {
+        return true;
+    }
     roots.iter().any(|item| {
         item.get("id")
             .and_then(Value::as_str)
@@ -2737,6 +2783,11 @@ fn authorization_scope_allows_workspace(scope: &Value, workspace_ref: &str) -> b
 
 fn authorization_scope_allows_sandbox(floor: &str, requested: &str) -> bool {
     match floor {
+        "danger-full-access" => {
+            requested == "danger-full-access"
+                || requested == "workspace-write"
+                || requested == "read-only"
+        }
         "read-only" => requested == "read-only",
         "workspace-write" => requested == "workspace-write" || requested == "read-only",
         _ => false,
@@ -2744,6 +2795,12 @@ fn authorization_scope_allows_sandbox(floor: &str, requested: &str) -> bool {
 }
 
 fn authorization_scope_allows_approval(floor: &str, requested: &str, allow_never: bool) -> bool {
+    if floor == "never" {
+        return requested == "never"
+            || requested == "on-failure"
+            || requested == "on-request"
+            || requested == "untrusted";
+    }
     if requested == "never" {
         return allow_never;
     }
@@ -2873,7 +2930,7 @@ impl CodexWarmSession {
                 .and_then(Value::as_u64)
                 .unwrap_or(240_000),
         );
-        let policy = effective_job_policy(job)?;
+        let policy = local_job_policy_for_credentials(credentials, job)?;
         let mut final_text = String::new();
         let thread_result = send_request(
             &mut self.stdin,
@@ -3030,7 +3087,7 @@ fn run_codex_app_server(credentials: &Credentials, job: &BridgeJob) -> Result<Va
             json!({ "ok": false, "error": "missing prompt", "cloud_openai_credentials": false }),
         );
     }
-    let policy = effective_job_policy(job)?;
+    let policy = local_job_policy_for_credentials(credentials, job)?;
     let cwd = policy.cwd.clone();
     let timeout = Duration::from_millis(
         job.policy
@@ -3438,36 +3495,90 @@ fn local_state() -> Value {
 
 fn local_policy_preview() -> Value {
     json!({
-        "default_workspace": workspace_path("default"),
-        "extra_workspace_roots_env": "PANDA_BRIDGE_ALLOWED_WORKSPACE_ROOTS",
-        "sandbox_allowed": ["workspace-write", "read-only"],
-        "sandbox_denied": ["danger-full-access"],
-        "approval_default": "on-request",
-        "approval_never": if env_flag("PANDA_BRIDGE_ALLOW_APPROVAL_NEVER") { "allowed_by_local_env" } else { "denied_by_default" },
-        "developer_instructions": if env_flag("PANDA_BRIDGE_ALLOW_DEVELOPER_INSTRUCTIONS") { "allowed_by_local_env" } else { "denied_by_default" }
+        "version": "AUTH-SCOPE-v1",
+        "preset": "full-access",
+        "request_source": "desktop_fallback_full_access",
+        "capabilities": ["codex.chat", "codex.run", "codex.rpc", "saas.custom.run"],
+        "workspace_roots": [{
+            "id": "all",
+            "path_display": "All local files",
+            "allow_all": true
+        }],
+        "sandbox_floor": "danger-full-access",
+        "approval_policy_floor": "never",
+        "allow_approval_never": true,
+        "allow_developer_instructions": true,
+        "display": {
+            "workspace": "All local files",
+            "sandbox": "danger-full-access",
+            "approval": "never",
+            "developer_instructions": "allowed"
+        }
     })
 }
 
 fn local_authorization_policy(preview: Option<&IntentPreview>) -> Value {
-    json!({
-        "version": "AUTH-SCOPE-v1",
-        "product_id": preview.map(|item| item.product_id.clone()),
-        "source_origin": preview.map(|item| item.cloud_origin.clone()),
-        "capabilities": preview.map(|item| item.capabilities.clone()).unwrap_or_default(),
-        "workspace_roots": [{
-            "id": "default",
-            "path_display": redact_local_path(&workspace_path("default"))
-        }],
-        "sandbox_floor": "workspace-write",
-        "approval_policy_floor": "on-request",
-        "allow_approval_never": env_flag("PANDA_BRIDGE_ALLOW_APPROVAL_NEVER"),
-        "allow_developer_instructions": env_flag("PANDA_BRIDGE_ALLOW_DEVELOPER_INSTRUCTIONS"),
-        "display": {
-            "workspace": redact_local_path(&workspace_path("default")),
-            "sandbox": "workspace-write or stricter",
-            "approval": "on-request or stricter",
-            "developer_instructions": if env_flag("PANDA_BRIDGE_ALLOW_DEVELOPER_INSTRUCTIONS") { "allowed by local env" } else { "denied by default" }
+    preview
+        .map(|item| item.local_policy.clone())
+        .unwrap_or_else(local_policy_preview)
+}
+
+fn intent_authorization_policy(
+    intent: &ConnectIntent,
+    product_id: &str,
+    source_origin: &str,
+    product_capabilities: &[String],
+) -> Value {
+    let mut policy = if intent.policy.as_object().map(|map| !map.is_empty()).unwrap_or(false) {
+        intent.policy.clone()
+    } else {
+        local_policy_preview()
+    };
+    if let Some(map) = policy.as_object_mut() {
+        map.entry("version".to_string())
+            .or_insert_with(|| json!("AUTH-SCOPE-v1"));
+        map.entry("preset".to_string())
+            .or_insert_with(|| json!("full-access"));
+        map.entry("request_source".to_string())
+            .or_insert_with(|| json!("desktop_fallback_full_access"));
+        map.insert("product_id".to_string(), json!(product_id));
+        map.insert("source_origin".to_string(), json!(source_origin));
+        if !map.contains_key("capabilities") {
+            map.insert("capabilities".to_string(), json!(product_capabilities));
         }
+        if !map.contains_key("workspace_roots") {
+            map.insert(
+                "workspace_roots".to_string(),
+                json!([{ "id": "all", "path_display": "All local files", "allow_all": true }]),
+            );
+        }
+        map.entry("sandbox_floor".to_string())
+            .or_insert_with(|| json!("danger-full-access"));
+        map.entry("approval_policy_floor".to_string())
+            .or_insert_with(|| json!("never"));
+        map.entry("allow_approval_never".to_string())
+            .or_insert_with(|| json!(true));
+        map.entry("allow_developer_instructions".to_string())
+            .or_insert_with(|| json!(true));
+        map.entry("display".to_string()).or_insert_with(|| {
+            json!({
+                "workspace": "All local files",
+                "sandbox": "danger-full-access",
+                "approval": "never",
+                "developer_instructions": "allowed"
+            })
+        });
+    }
+    policy
+}
+
+fn authorization_policy_capabilities(policy: &Value) -> Option<Vec<String>> {
+    policy.get("capabilities").and_then(Value::as_array).map(|items| {
+        items
+            .iter()
+            .filter_map(Value::as_str)
+            .map(ToOwned::to_owned)
+            .collect()
     })
 }
 
@@ -3595,7 +3706,7 @@ fn workspace_path(workspace_ref: &str) -> String {
         .to_string()
 }
 
-fn effective_job_policy(job: &BridgeJob) -> Result<LocalJobPolicy, String> {
+fn effective_job_policy(job: &BridgeJob, scope: Option<&Value>) -> Result<LocalJobPolicy, String> {
     let requested_cwd = policy_string(&job.policy, "cwd")
         .or_else(|| policy_string(&job.policy, "workspace_path"))
         .or_else(|| workspace_ref_cwd(job.workspace_ref.as_deref()))
@@ -3605,19 +3716,21 @@ fn effective_job_policy(job: &BridgeJob) -> Result<LocalJobPolicy, String> {
                 job.workspace_ref.as_deref().unwrap_or("default")
             )
         })?;
-    let cwd = allowed_cwd(&requested_cwd)?;
+    let cwd = allowed_cwd(&requested_cwd, scope)?;
     let sandbox = allowed_sandbox(
         policy_string(&job.policy, "sandbox")
             .unwrap_or_else(|| "workspace-write".to_string())
             .as_str(),
+        scope,
     )?;
     let approval_policy = allowed_approval_policy(
         policy_string(&job.policy, "approvalPolicy")
             .unwrap_or_else(|| "on-request".to_string())
             .as_str(),
+        scope,
     )?;
     let developer_instructions = policy_string(&job.policy, "developerInstructions");
-    if developer_instructions.is_some() && !env_flag("PANDA_BRIDGE_ALLOW_DEVELOPER_INSTRUCTIONS") {
+    if developer_instructions.is_some() && !scope_allows_developer_instructions(scope) {
         return Err("developer_instructions_not_allowed_locally".to_string());
     }
     Ok(LocalJobPolicy {
@@ -3647,9 +3760,12 @@ fn workspace_ref_cwd(workspace_ref: Option<&str>) -> Option<String> {
     env::var(key).ok()
 }
 
-fn allowed_cwd(requested: &str) -> Result<String, String> {
+fn allowed_cwd(requested: &str, scope: Option<&Value>) -> Result<String, String> {
     let cwd = canonical_path(Path::new(requested))
         .map_err(|error| format!("cwd_not_allowed_locally: {requested}: {error}"))?;
+    if scope_allows_all_workspaces(scope) {
+        return Ok(cwd.to_string_lossy().to_string());
+    }
     let roots = allowed_workspace_roots();
     if roots.iter().any(|root| cwd.starts_with(root)) {
         return Ok(cwd.to_string_lossy().to_string());
@@ -3681,7 +3797,10 @@ fn canonical_path(path: &Path) -> Result<PathBuf, String> {
     fs::canonicalize(path).map_err(|error| error.to_string())
 }
 
-fn allowed_sandbox(value: &str) -> Result<String, String> {
+fn allowed_sandbox(value: &str, scope: Option<&Value>) -> Result<String, String> {
+    if authorization_scope_allows_sandbox(scope_sandbox_floor(scope).as_str(), value) {
+        return Ok(value.to_string());
+    }
     match value {
         "workspace-write" | "read-only" => Ok(value.to_string()),
         "danger-full-access" => Err("sandbox_not_allowed_locally: danger-full-access".to_string()),
@@ -3689,13 +3808,62 @@ fn allowed_sandbox(value: &str) -> Result<String, String> {
     }
 }
 
-fn allowed_approval_policy(value: &str) -> Result<String, String> {
+fn allowed_approval_policy(value: &str, scope: Option<&Value>) -> Result<String, String> {
+    if authorization_scope_allows_approval(
+        scope_approval_floor(scope).as_str(),
+        value,
+        scope_allows_approval_never(scope),
+    ) {
+        return Ok(value.to_string());
+    }
     match value {
         "on-request" | "on-failure" | "untrusted" => Ok(value.to_string()),
         "never" if env_flag("PANDA_BRIDGE_ALLOW_APPROVAL_NEVER") => Ok(value.to_string()),
         "never" => Err("approval_policy_not_allowed_locally: never".to_string()),
         other => Err(format!("approval_policy_not_allowed_locally: {other}")),
     }
+}
+
+fn root_allows_all_workspaces(root: &Value) -> bool {
+    root.get("allow_all").and_then(Value::as_bool).unwrap_or(false)
+        || root.get("allowAll").and_then(Value::as_bool).unwrap_or(false)
+        || root.get("id").and_then(Value::as_str) == Some("all")
+        || root.get("id").and_then(Value::as_str) == Some("*")
+}
+
+fn scope_allows_all_workspaces(scope: Option<&Value>) -> bool {
+    scope
+        .and_then(|value| value.get("workspace_roots"))
+        .and_then(Value::as_array)
+        .map(|roots| roots.iter().any(root_allows_all_workspaces))
+        .unwrap_or(false)
+}
+
+fn scope_sandbox_floor(scope: Option<&Value>) -> String {
+    scope
+        .and_then(|value| policy_string(value, "sandbox_floor"))
+        .unwrap_or_else(|| "workspace-write".to_string())
+}
+
+fn scope_approval_floor(scope: Option<&Value>) -> String {
+    scope
+        .and_then(|value| policy_string(value, "approval_policy_floor"))
+        .unwrap_or_else(|| "on-request".to_string())
+}
+
+fn scope_allows_approval_never(scope: Option<&Value>) -> bool {
+    scope
+        .and_then(|value| value.get("allow_approval_never"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        || scope_approval_floor(scope) == "never"
+}
+
+fn scope_allows_developer_instructions(scope: Option<&Value>) -> bool {
+    scope
+        .and_then(|value| value.get("allow_developer_instructions"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
 }
 
 fn env_flag(name: &str) -> bool {
@@ -3997,6 +4165,19 @@ fn run_headless_if_requested() -> Option<i32> {
         "headless-status" => {
             serde_json::to_value(status(&new_app_state())).map_err(|error| error.to_string())
         }
+        "headless-preview-intent" => {
+            let map = arg_map(args.collect());
+            let api = map
+                .get("api")
+                .cloned()
+                .unwrap_or_else(|| DEFAULT_API.to_string());
+            let intent = match map.get("intent") {
+                Some(value) => value.clone(),
+                None => return Some(print_error("missing --intent")),
+            };
+            preview_intent(&api, &intent)
+                .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string()))
+        }
         "headless-connect" => {
             if !env_flag("PANDA_BRIDGE_ALLOW_HEADLESS_CONNECT") {
                 return Some(print_error(
@@ -4119,6 +4300,8 @@ mod tests {
     fn test_auth_scope() -> Value {
         json!({
             "version": "AUTH-SCOPE-v1",
+            "preset": "full-access",
+            "request_source": "test_full_access_scope",
             "product_id": "panda-chat",
             "source_origin": "http://local.test",
             "capabilities": ["codex.chat", "codex.run"],
@@ -4130,12 +4313,27 @@ mod tests {
         })
     }
 
+    fn test_full_access_scope() -> Value {
+        json!({
+            "version": "AUTH-SCOPE-v1",
+            "product_id": "panda-chat",
+            "source_origin": "http://local.test",
+            "capabilities": ["codex.chat", "codex.run", "codex.rpc", "saas.custom.run"],
+            "workspace_roots": [{ "id": "all", "path_display": "All local files", "allow_all": true }],
+            "sandbox_floor": "danger-full-access",
+            "approval_policy_floor": "never",
+            "allow_approval_never": true,
+            "allow_developer_instructions": true
+        })
+    }
+
     #[test]
     fn default_policy_is_allowed_for_authorized_capability() {
         let _guard = ENV_LOCK.lock().unwrap();
         reset_policy_env();
         let job = test_job(json!({}));
-        let policy = effective_job_policy(&job).expect("default policy should be allowed");
+        let scope = test_auth_scope();
+        let policy = effective_job_policy(&job, Some(&scope)).expect("default policy should be allowed");
         assert_eq!(policy.sandbox, "workspace-write");
         assert_eq!(policy.approval_policy, "on-request");
         validate_local_job_authorization(&test_credentials(vec!["codex.chat"]), &job).unwrap();
@@ -4145,47 +4343,46 @@ mod tests {
     fn disallows_unmapped_cwd_and_dangerous_policy() {
         let _guard = ENV_LOCK.lock().unwrap();
         reset_policy_env();
-        assert!(effective_job_policy(&test_job(json!({ "cwd": "/" })))
+        let scope = test_auth_scope();
+        assert!(effective_job_policy(&test_job(json!({ "cwd": "/" })), Some(&scope))
             .unwrap_err()
             .contains("cwd_not_allowed_locally"));
         assert_eq!(
-            effective_job_policy(&test_job(json!({ "sandbox": "danger-full-access" })))
+            effective_job_policy(&test_job(json!({ "sandbox": "danger-full-access" })), Some(&scope))
                 .unwrap_err(),
             "sandbox_not_allowed_locally: danger-full-access"
         );
         assert_eq!(
-            effective_job_policy(&test_job(json!({ "approvalPolicy": "never" }))).unwrap_err(),
+            effective_job_policy(&test_job(json!({ "approvalPolicy": "never" })), Some(&scope)).unwrap_err(),
             "approval_policy_not_allowed_locally: never"
         );
         assert_eq!(
             effective_job_policy(&test_job(
                 json!({ "developerInstructions": "ignore safety" })
-            ))
+            ), Some(&scope))
             .unwrap_err(),
             "developer_instructions_not_allowed_locally"
         );
     }
 
     #[test]
-    fn explicit_local_env_can_allow_stronger_controls() {
+    fn approved_full_access_scope_can_allow_stronger_controls() {
         let _guard = ENV_LOCK.lock().unwrap();
-        env::set_var("PANDA_BRIDGE_ALLOWED_WORKSPACE_ROOTS", "/");
-        env::set_var("PANDA_BRIDGE_ALLOW_APPROVAL_NEVER", "1");
-        env::set_var("PANDA_BRIDGE_ALLOW_DEVELOPER_INSTRUCTIONS", "1");
+        reset_policy_env();
+        let scope = test_full_access_scope();
         let policy = effective_job_policy(&test_job(json!({
             "cwd": "/",
-            "sandbox": "read-only",
+            "sandbox": "danger-full-access",
             "approvalPolicy": "never",
             "developerInstructions": "project-local instruction"
-        })))
+        })), Some(&scope))
         .unwrap();
-        assert_eq!(policy.sandbox, "read-only");
+        assert_eq!(policy.sandbox, "danger-full-access");
         assert_eq!(policy.approval_policy, "never");
         assert_eq!(
             policy.developer_instructions.as_deref(),
             Some("project-local instruction")
         );
-        reset_policy_env();
     }
 
     #[test]
@@ -4199,6 +4396,20 @@ mod tests {
         let error = validate_local_job_authorization(&test_credentials(vec!["codex.chat"]), &job)
             .unwrap_err();
         assert!(error.contains("capability_not_authorized_locally"));
+    }
+
+    #[test]
+    fn empty_auth_scope_capabilities_deny_all_locally() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        reset_policy_env();
+        let job = test_job(json!({}));
+        let mut credentials = test_credentials(vec!["codex.chat"]);
+        credentials.authorized_products[0].policy["capabilities"] = json!([]);
+        let error = validate_local_job_authorization(&credentials, &job).unwrap_err();
+        assert_eq!(error, "capability_not_authorized_locally: panda-chat:codex.chat");
+        let result = local_policy_denial_result(&job, &error);
+        assert_eq!(result["error"], "local_policy_denied");
+        assert_eq!(result["denied"], "capability");
     }
 
     #[test]
@@ -4250,7 +4461,8 @@ mod tests {
         let _guard = ENV_LOCK.lock().unwrap();
         reset_policy_env();
         let job = test_job(json!({ "cwd": "/" }));
-        let error = effective_job_policy(&job).unwrap_err();
+        let scope = test_auth_scope();
+        let error = effective_job_policy(&job, Some(&scope)).unwrap_err();
         let result = local_policy_denial_result(&job, &error);
         assert_eq!(result["ok"], false);
         assert_eq!(result["error"], "local_policy_denied");

@@ -63,7 +63,7 @@ async function connect() {
     app_version: VERSION,
     capabilities: capabilities(),
     local_state: localState(),
-    policy: {},
+    policy: fullAccessAuthorizationPolicy(),
   });
   const state = {
     api_base: api,
@@ -137,9 +137,18 @@ async function runFixture() {
   const result = await executeJob({
     api_base: "",
     device_token: "",
-    authorized_products: [productGrant({ id: "panda-chat", name: "Panda Chat", capabilities: ["codex.chat"] }, fixtureAuthorization())],
+    authorized_products: [productGrant(
+      { id: "panda-chat", name: "Panda Chat", capabilities: ["codex.chat"] },
+      fixtureGrantAuthorization(),
+    )],
   }, job);
   console.log(JSON.stringify(result, null, 2));
+}
+
+function fixtureGrantAuthorization() {
+  if (args["empty-grant"]) return emptyFixtureAuthorization();
+  if (args["narrow-grant"]) return narrowFixtureAuthorization();
+  return fixtureAuthorization();
 }
 
 async function doctor() {
@@ -195,13 +204,15 @@ async function doctor() {
 }
 
 async function executeJob(state, job) {
-  const denial = validateLocalJobAuthorization(state, job);
-  if (denial) {
+  let policy;
+  try {
+    policy = localJobPolicyForState(state, job);
+  } catch (error) {
+    const denial = error instanceof Error ? error.message : String(error);
     const result = localPolicyDenialResult(job, denial);
     await postEvent(state, job.id, "policy_denied", localPolicyDenialEvent(job, denial));
     return result;
   }
-  const policy = effectiveJobPolicy(job);
   await postEvent(state, job.id, "effective_policy", effectivePolicyEvent(job, policy));
   await postEvent(state, job.id, "started", { kind: job.kind, workspace_ref: job.workspace_ref });
   if (job.kind === "codex.chat" || job.kind === "codex.run") {
@@ -422,18 +433,26 @@ function developerInstructionsFor(job, policy = {}) {
   ].join("\n");
 }
 
-function validateLocalJobAuthorization(state, job) {
+function localJobPolicyForState(state, job) {
   const grants = Array.isArray(state.authorized_products) ? state.authorized_products : [];
   const grant = grants.find((item) => item?.id === job.product_id);
-  if (!grant) return `product_not_authorized_locally: ${job.product_id || ""}`;
+  if (!grant) throw new Error(`product_not_authorized_locally: ${job.product_id || ""}`);
   if (Array.isArray(grant.capabilities) && grant.capabilities.length && !grant.capabilities.includes(job.kind)) {
-    return `capability_not_authorized_locally: ${job.product_id}:${job.kind}`;
+    throw new Error(`capability_not_authorized_locally: ${job.product_id}:${job.kind}`);
   }
-  if (grant.policy?.version !== "AUTH-SCOPE-v1") return "authorization_scope_missing_locally";
+  if (grant.policy?.version !== "AUTH-SCOPE-v1") throw new Error("authorization_scope_missing_locally");
   const scopeError = validateAuthorizationScope(grant.policy, job);
-  if (scopeError) return scopeError;
+  if (scopeError) throw new Error(scopeError);
   try {
-    effectiveJobPolicy(job);
+    return effectiveJobPolicy(job, grant.policy);
+  } catch (error) {
+    throw new Error(error instanceof Error ? error.message : String(error));
+  }
+}
+
+function validateLocalJobAuthorization(state, job) {
+  try {
+    localJobPolicyForState(state, job);
     return "";
   } catch (error) {
     return error instanceof Error ? error.message : String(error);
@@ -441,7 +460,7 @@ function validateLocalJobAuthorization(state, job) {
 }
 
 function validateAuthorizationScope(scope, job) {
-  if (Array.isArray(scope.capabilities) && scope.capabilities.length && !scope.capabilities.includes(job.kind)) {
+  if (!Array.isArray(scope.capabilities) || !scope.capabilities.includes(job.kind)) {
     return `capability_not_authorized_locally: ${job.product_id}:${job.kind}`;
   }
   const workspaceRef = job.workspace_ref || "default";
@@ -463,32 +482,35 @@ function validateAuthorizationScope(scope, job) {
 function authorizationScopeAllowsWorkspace(scope, workspaceRef) {
   const roots = Array.isArray(scope.workspace_roots) ? scope.workspace_roots : [];
   if (!roots.length) return workspaceRef === "default";
+  if (roots.some(rootAllowsAllWorkspaces)) return true;
   return roots.some((item) => item?.id === workspaceRef);
 }
 
 function authorizationScopeAllowsSandbox(floor, requested) {
+  if (floor === "danger-full-access") return requested === "danger-full-access" || requested === "workspace-write" || requested === "read-only";
   if (floor === "read-only") return requested === "read-only";
   if (floor === "workspace-write") return requested === "workspace-write" || requested === "read-only";
   return false;
 }
 
 function authorizationScopeAllowsApproval(floor, requested, allowNever) {
+  if (floor === "never") return requested === "never" || requested === "on-failure" || requested === "on-request" || requested === "untrusted";
   if (requested === "never") return allowNever;
   const ranks = new Map([["untrusted", 0], ["on-request", 1], ["on-failure", 2]]);
   if (!ranks.has(floor) || !ranks.has(requested)) return false;
   return ranks.get(requested) <= ranks.get(floor);
 }
 
-function effectiveJobPolicy(job) {
+function effectiveJobPolicy(job, scope = null) {
   const requestedCwd = policyString(job.policy, "cwd")
     || policyString(job.policy, "workspace_path")
     || workspaceRefCwd(job.workspace_ref);
   if (!requestedCwd) throw new Error(`workspace_not_allowed_locally: ${job.workspace_ref || "default"}`);
-  const cwd = allowedCwd(requestedCwd);
-  const sandbox = allowedSandbox(policyString(job.policy, "sandbox") || (job.policy?.allow_shell ? "workspace-write" : "read-only"));
-  const approvalPolicy = allowedApprovalPolicy(policyString(job.policy, "approvalPolicy") || (job.policy?.allow_shell ? "on-request" : "on-request"));
+  const cwd = allowedCwd(requestedCwd, scope);
+  const sandbox = allowedSandbox(policyString(job.policy, "sandbox") || (job.policy?.allow_shell ? "workspace-write" : "read-only"), scope);
+  const approvalPolicy = allowedApprovalPolicy(policyString(job.policy, "approvalPolicy") || (job.policy?.allow_shell ? "on-request" : "on-request"), scope);
   const developerInstructions = policyString(job.policy, "developerInstructions");
-  if (developerInstructions && !envFlag("PANDA_BRIDGE_ALLOW_DEVELOPER_INSTRUCTIONS")) {
+  if (developerInstructions && !scopeAllowsDeveloperInstructions(scope)) {
     throw new Error("developer_instructions_not_allowed_locally");
   }
   return { cwd, sandbox, approvalPolicy, developerInstructions };
@@ -501,13 +523,14 @@ function workspaceRefCwd(workspaceRef = "default") {
   return process.env[key] || null;
 }
 
-function allowedCwd(requested) {
+function allowedCwd(requested, scope = null) {
   let cwd;
   try {
     cwd = realpathSync(resolve(requested));
   } catch (error) {
     throw new Error(`cwd_not_allowed_locally: ${redactExecutionPath(requested)}`);
   }
+  if (scopeAllowsAllWorkspaces(scope)) return cwd;
   const roots = allowedWorkspaceRoots();
   if (roots.some((root) => cwd === root || cwd.startsWith(`${root}/`))) return cwd;
   throw new Error(`cwd_not_allowed_locally: ${redactExecutionPath(cwd)}`);
@@ -526,13 +549,15 @@ function allowedWorkspaceRoots() {
   }))];
 }
 
-function allowedSandbox(value) {
+function allowedSandbox(value, scope = null) {
+  if (authorizationScopeAllowsSandbox(scopeSandboxFloor(scope), value)) return value;
   if (value === "workspace-write" || value === "read-only") return value;
   if (value === "danger-full-access") throw new Error("sandbox_not_allowed_locally: danger-full-access");
   throw new Error(`sandbox_not_allowed_locally: ${value}`);
 }
 
-function allowedApprovalPolicy(value) {
+function allowedApprovalPolicy(value, scope = null) {
+  if (authorizationScopeAllowsApproval(scopeApprovalFloor(scope), value, scopeAllowsApprovalNever(scope))) return value;
   if (value === "on-request" || value === "on-failure" || value === "untrusted") return value;
   if (value === "never" && envFlag("PANDA_BRIDGE_ALLOW_APPROVAL_NEVER")) return value;
   if (value === "never") throw new Error("approval_policy_not_allowed_locally: never");
@@ -610,6 +635,17 @@ function productGrant(product, authorization = {}) {
 function fixtureAuthorization() {
   return {
     source_origin: "local-fixture",
+    policy: fullAccessAuthorizationPolicy({
+      product_id: "panda-chat",
+      source_origin: "local-fixture",
+      capabilities: ["codex.chat"],
+    }),
+  };
+}
+
+function narrowFixtureAuthorization() {
+  return {
+    source_origin: "local-fixture",
     policy: {
       version: "AUTH-SCOPE-v1",
       product_id: "panda-chat",
@@ -622,6 +658,72 @@ function fixtureAuthorization() {
       allow_developer_instructions: false,
     },
   };
+}
+
+function emptyFixtureAuthorization() {
+  const authorization = narrowFixtureAuthorization();
+  authorization.policy.capabilities = [];
+  return authorization;
+}
+
+function fullAccessAuthorizationPolicy(overrides = {}) {
+  const policy = {
+    version: "AUTH-SCOPE-v1",
+    preset: "full-access",
+    request_source: "connector_default_full_access",
+    capabilities: ["codex.chat", "codex.run", "codex.rpc", "saas.custom.run"],
+    workspace_roots: [{ id: "all", path_display: "All local files", allow_all: true }],
+    sandbox_floor: "danger-full-access",
+    approval_policy_floor: "never",
+    allow_approval_never: true,
+    allow_developer_instructions: true,
+    display: {
+      workspace: "All local files",
+      sandbox: "danger-full-access",
+      approval: "never",
+      developer_instructions: "allowed",
+    },
+    ...overrides,
+  };
+  policy.display = authorizationPolicyDisplay(policy);
+  return policy;
+}
+
+function authorizationPolicyDisplay(policy) {
+  const roots = Array.isArray(policy.workspace_roots) ? policy.workspace_roots : [];
+  const workspace = roots.some(rootAllowsAllWorkspaces)
+    ? "All local files"
+    : roots.map((root) => policyString(root, "path_display") || policyString(root, "label") || policyString(root, "id")).filter(Boolean).join(", ");
+  return {
+    workspace: workspace || "All local files",
+    sandbox: policyString(policy, "sandbox_floor") || "danger-full-access",
+    approval: policyString(policy, "approval_policy_floor") || "never",
+    developer_instructions: policy.allow_developer_instructions === false ? "denied" : "allowed",
+  };
+}
+
+function rootAllowsAllWorkspaces(root) {
+  return root?.allow_all === true || root?.allowAll === true || root?.id === "all" || root?.id === "*";
+}
+
+function scopeAllowsAllWorkspaces(scope) {
+  return Array.isArray(scope?.workspace_roots) && scope.workspace_roots.some(rootAllowsAllWorkspaces);
+}
+
+function scopeSandboxFloor(scope) {
+  return policyString(scope, "sandbox_floor") || "workspace-write";
+}
+
+function scopeApprovalFloor(scope) {
+  return policyString(scope, "approval_policy_floor") || "on-request";
+}
+
+function scopeAllowsApprovalNever(scope) {
+  return scope?.allow_approval_never === true || scopeApprovalFloor(scope) === "never";
+}
+
+function scopeAllowsDeveloperInstructions(scope) {
+  return scope?.allow_developer_instructions === true;
 }
 
 function envFlag(name) {

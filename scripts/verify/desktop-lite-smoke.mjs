@@ -25,7 +25,16 @@ const server = createServer(async (incoming, outgoing) => {
       headers: incomingHeaders(incoming.headers),
       body: body.length && incoming.method !== "GET" && incoming.method !== "HEAD" ? body : undefined,
     });
-    const response = await worker.fetch(request, { ...env, BRIDGE_WEB_ORIGIN: `http://127.0.0.1:${port}`, BRIDGE_PUBLIC_API_BASE: `http://127.0.0.1:${port}` });
+    const response = await worker.fetch(request, {
+      ...env,
+      BRIDGE_WEB_ORIGIN: `http://127.0.0.1:${port}`,
+      BRIDGE_PUBLIC_API_BASE: `http://127.0.0.1:${port}`,
+      BRIDGE_PRODUCT_ALLOWED_ORIGINS: JSON.stringify({
+        "panda-chat": [`http://127.0.0.1:${port}`],
+        "panda-dev": [`http://127.0.0.1:${port}`],
+        "panda-spec": [`http://127.0.0.1:${port}`],
+      }),
+    });
     outgoing.writeHead(response.status, Object.fromEntries(response.headers.entries()));
     outgoing.end(response.body ? Buffer.from(await response.arrayBuffer()) : undefined);
   } catch (error) {

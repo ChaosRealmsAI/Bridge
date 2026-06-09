@@ -16,6 +16,10 @@ const env = {
   BRIDGE_LOCAL_MEMORY: "1",
   BRIDGE_WEB_ORIGIN: "http://chat.local.test",
   BRIDGE_ALLOWED_ORIGINS: "http://chat.local.test http://dev.local.test http://127.0.0.1",
+  BRIDGE_PRODUCT_ALLOWED_ORIGINS: JSON.stringify({
+    "panda-chat": ["http://chat.local.test"],
+    "panda-dev": ["http://dev.local.test"],
+  }),
   BRIDGE_PUBLIC_API_BASE: "http://127.0.0.1:0",
   BRIDGE_DEVICE_MAX_QUEUED_JOBS: "50",
   BRIDGE_ACCOUNT_MAX_ACTIVE_JOBS: "50",

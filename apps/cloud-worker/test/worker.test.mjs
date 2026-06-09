@@ -5,6 +5,12 @@ import worker from "../src/index.js";
 const env = {
   BRIDGE_LOCAL_MEMORY: "1",
   BRIDGE_WEB_ORIGIN: "http://local.test",
+  BRIDGE_PRODUCT_ALLOWED_ORIGINS: JSON.stringify({
+    "panda-chat": ["http://local.test", "http://chat.local.test"],
+    "panda-dev": ["http://dev.local.test"],
+    "panda-spec": ["http://spec.local.test"],
+    otherline: ["https://otherline.cc"],
+  }),
   BRIDGE_OTHERLINE_DELEGATION_SECRET: "otherline-delegation-test-secret",
   BRIDGE_PRODUCT_DELEGATION_SECRETS: JSON.stringify({ "panda-dev": "panda-dev-delegation-test-secret" }),
 };
@@ -201,7 +207,7 @@ assert.equal(oversized.payload.error, "request_body_too_large");
 assert.equal(oversized.payload.limit_bytes, 1024);
 delete env.BRIDGE_MAX_JSON_BODY_BYTES;
 
-env.BRIDGE_ALLOWED_ORIGINS = "http://chat.local.test http://dev.local.test";
+env.BRIDGE_ALLOWED_ORIGINS = "http://chat.local.test http://dev.local.test http://spec.local.test";
 const allowedOriginRaw = await apiRaw("POST", "/v1/sessions/guest", { display_name: "Allowed Origin" }, "", { origin: "http://chat.local.test" });
 assert.equal(allowedOriginRaw.response.status, 201);
 assert.equal(allowedOriginRaw.response.headers.get("access-control-allow-origin"), "http://chat.local.test");
@@ -217,7 +223,7 @@ assert.match(jar.cookie, /^pb_session=/);
 const products = await api("GET", "/v1/products");
 assert.ok(products.items.some((item) => item.id === "panda-chat" && item.capabilities.includes("codex.chat")));
 assert.ok(products.items.some((item) => item.id === "panda-dev" && item.capabilities.includes("codex.rpc")));
-assert.ok(products.items.some((item) => item.id === "otherline" && item.capabilities.length === 1 && item.capabilities.includes("codex.chat")));
+assert.ok(products.items.some((item) => item.id === "otherline" && item.capabilities.includes("saas.custom.run")));
 const pairing = await api("POST", "/v1/devices/pairing-codes", { device_name: "Local Test Device" });
 const claim = await api("POST", "/v1/connectors/claim", {
   code: pairing.code,
@@ -316,10 +322,39 @@ const intent = await api("POST", "/v1/connect-intents", { product_id: "panda-cha
 assert.ok(intent.token);
 assert.equal(intent.product.name, "Panda Chat");
 assert.equal(intent.connect_intent.source_origin, "http://chat.local.test");
+assert.equal(intent.connect_intent.policy.workspace_roots[0].allow_all, true);
+assert.equal(intent.connect_intent.policy.sandbox_floor, "danger-full-access");
+assert.equal(intent.connect_intent.policy.approval_policy_floor, "never");
 const inspected = await api("GET", `/v1/connect-intents/${encodeURIComponent(intent.token)}`);
 assert.equal(inspected.connect_intent.product_id, "panda-chat");
 assert.equal(inspected.connect_intent.source_origin, "http://chat.local.test");
+assert.equal(inspected.connect_intent.policy.workspace_roots[0].id, "all");
 assert.equal(inspected.account.display_name, "Tester");
+const crossProductIntent = await apiRaw("POST", "/v1/connect-intents", { product_id: "panda-dev", device_name: "Wrong Origin" }, "", { origin: "http://chat.local.test" });
+assert.equal(crossProductIntent.response.status, 403);
+assert.equal(crossProductIntent.payload.error, "product_origin_mismatch");
+const maliciousDisplayIntent = await api("POST", "/v1/connect-intents", {
+  product_id: "panda-chat",
+  device_name: "Malicious Display",
+  policy: {
+    workspace_roots: [{ id: "all", path_display: "All local files", allow_all: true }],
+    sandbox_floor: "danger-full-access",
+    approval_policy_floor: "never",
+    allow_developer_instructions: true,
+    display: { workspace: "Tiny project", sandbox: "read-only", approval: "on-request", developer_instructions: "denied" },
+  },
+}, "", { origin: "http://chat.local.test" });
+assert.equal(maliciousDisplayIntent.connect_intent.policy.display.workspace, "All local files");
+assert.equal(maliciousDisplayIntent.connect_intent.policy.display.sandbox, "danger-full-access");
+assert.equal(maliciousDisplayIntent.connect_intent.policy.display.approval, "never");
+assert.equal(maliciousDisplayIntent.connect_intent.policy.display.developer_instructions, "allowed");
+const invalidCapabilitiesIntent = await apiRaw("POST", "/v1/connect-intents", {
+  product_id: "panda-chat",
+  policy: { capabilities: ["codex.typo"] },
+}, "", { origin: "http://chat.local.test" });
+assert.equal(invalidCapabilitiesIntent.response.status, 400);
+assert.equal(invalidCapabilitiesIntent.payload.error, "invalid_authorization_policy");
+assert.equal(invalidCapabilitiesIntent.payload.field, "capabilities");
 const browserIntentClaim = await apiRaw("POST", `/v1/connect-intents/${encodeURIComponent(intent.token)}/claim`, {
   device_name: "Browser Must Not Claim",
   capabilities: { codex: ["codex.chat"] },
@@ -336,7 +371,9 @@ assert.equal(intentClaim.product.id, "panda-chat");
 assert.equal(intentClaim.authorization.source_origin, "http://chat.local.test");
 assert.equal(intentClaim.authorization.policy.version, "AUTH-SCOPE-v1");
 assert.equal(intentClaim.authorization.policy.product_id, "panda-chat");
-assert.deepEqual(intentClaim.authorization.policy.capabilities, ["codex.chat", "codex.run"]);
+assert.ok(intentClaim.authorization.policy.capabilities.includes("saas.custom.run"));
+assert.equal(intentClaim.authorization.policy.workspace_roots[0].allow_all, true);
+assert.equal(intentClaim.authorization.policy.allow_approval_never, true);
 assert.match(intentClaim.device_token, /^pbd_/);
 assert.ok(intentClaim.token_expires_at);
 const consumedIntentInspect = await apiRaw("GET", `/v1/connect-intents/${encodeURIComponent(intent.token)}`);
@@ -472,8 +509,64 @@ const chatRpc = await apiRaw("POST", "/v1/products/panda-chat/jobs", {
   input: { calls: [{ method: "initialize" }] },
   policy: { token_budget: 1000, timeout_ms: 60000 },
 });
-assert.equal(chatRpc.response.status, 403);
-assert.equal(chatRpc.payload.error, "scope_insufficient");
+assert.equal(chatRpc.response.status, 201);
+assert.equal(chatRpc.payload.job.kind, "codex.rpc");
+
+const narrowSpecIntent = await api("POST", "/v1/connect-intents", {
+  product_id: "panda-spec",
+  device_name: "Narrow Spec Device",
+  policy: {
+    capabilities: ["codex.chat"],
+    workspace_roots: [{ id: "default", path_display: "[local]/default" }],
+    sandbox_floor: "read-only",
+    approval_policy_floor: "on-request",
+    allow_approval_never: false,
+    allow_developer_instructions: false,
+  },
+}, "", { origin: "http://spec.local.test" });
+const narrowSpecClaim = await nativeClaimIntent(narrowSpecIntent.token, {
+  device_name: "Narrow Spec Device",
+  capabilities: { codex: ["codex.chat"] },
+}, intentClaim.device_token);
+assert.deepEqual(narrowSpecClaim.authorization.policy.capabilities, ["codex.chat"]);
+const narrowSpecDenied = await apiRaw("POST", "/v1/products/panda-spec/jobs", {
+  kind: "codex.run",
+  device_id: intentClaim.device.id,
+  product_id: "panda-spec",
+  workspace_ref: "default",
+  input: { prompt: "must be denied by auth scope" },
+  policy: { token_budget: 1000, timeout_ms: 60000 },
+}, "", { origin: "http://spec.local.test" });
+assert.equal(narrowSpecDenied.response.status, 403);
+assert.equal(narrowSpecDenied.payload.error, "authorization_scope_denied");
+assert.equal(narrowSpecDenied.payload.denied, "capability");
+const emptyCapabilitiesIntent = await api("POST", "/v1/connect-intents", {
+  product_id: "panda-spec",
+  device_name: "Empty Capabilities Device",
+  policy: {
+    capabilities: [],
+    workspace_roots: [{ id: "default", path_display: "[local]/default" }],
+    sandbox_floor: "read-only",
+    approval_policy_floor: "on-request",
+    allow_developer_instructions: false,
+  },
+}, "", { origin: "http://spec.local.test" });
+const emptyCapabilitiesClaim = await nativeClaimIntent(emptyCapabilitiesIntent.token, {
+  device_name: "Empty Capabilities Device",
+  capabilities: { codex: ["codex.chat"] },
+}, intentClaim.device_token);
+assert.deepEqual(emptyCapabilitiesClaim.authorization.policy.capabilities, []);
+const emptyCapabilitiesDenied = await apiRaw("POST", "/v1/products/panda-spec/jobs", {
+  kind: "codex.chat",
+  device_id: intentClaim.device.id,
+  product_id: "panda-spec",
+  workspace_ref: "default",
+  input: { prompt: "empty caps deny all" },
+  policy: { sandbox: "read-only", token_budget: 1000, timeout_ms: 60000 },
+}, "", { origin: "http://spec.local.test" });
+assert.equal(emptyCapabilitiesDenied.response.status, 403);
+assert.equal(emptyCapabilitiesDenied.payload.error, "authorization_scope_denied");
+assert.equal(emptyCapabilitiesDenied.payload.denied, "capability");
 
 const unauthorizedDevJob = await apiRaw("POST", "/v1/products/panda-dev/jobs", {
   kind: "codex.run",
@@ -482,7 +575,7 @@ const unauthorizedDevJob = await apiRaw("POST", "/v1/products/panda-dev/jobs", {
   workspace_ref: "default",
   input: { prompt: "dev before authorization" },
   policy: { token_budget: 1000, timeout_ms: 60000 },
-});
+}, "", { origin: "http://dev.local.test" });
 assert.equal(unauthorizedDevJob.response.status, 403);
 assert.equal(unauthorizedDevJob.payload.error, "product_not_authorized");
 
@@ -591,7 +684,7 @@ assert.equal(delegatedIntentInspect.authorization.status, "active");
 const missingImportProof = await delegatedApiRaw("POST", "/v1/products/otherline/delegated/authorization/claim", {}, otherlineClaim.account.id, otherlineClaim.device.id);
 assert.equal(missingImportProof.response.status, 400);
 assert.equal(missingImportProof.payload.error, "authorization_import_proof_required");
-const importProof = await api("POST", "/v1/products/otherline/authorization/import-proof", { device_id: otherlineClaim.device.id });
+const importProof = await api("POST", "/v1/products/otherline/authorization/import-proof", { device_id: otherlineClaim.device.id }, "", { origin: "https://otherline.cc" });
 assert.match(importProof.proof.token, /^pbip_/);
 assert.equal(importProof.authorization.product_id, "otherline");
 const claimedAuthorization = await delegatedApi("POST", "/v1/products/otherline/delegated/authorization/claim", {
@@ -605,7 +698,7 @@ const reusedImportProof = await delegatedApiRaw("POST", "/v1/products/otherline/
 }, otherlineClaim.account.id, otherlineClaim.device.id);
 assert.equal(reusedImportProof.response.status, 409);
 assert.equal(reusedImportProof.payload.error, "invalid_authorization_import_proof");
-const mismatchImportProof = await api("POST", "/v1/products/otherline/authorization/import-proof", { device_id: otherlineClaim.device.id });
+const mismatchImportProof = await api("POST", "/v1/products/otherline/authorization/import-proof", { device_id: otherlineClaim.device.id }, "", { origin: "https://otherline.cc" });
 const missingDelegation = await apiRaw("POST", "/v1/products/otherline/delegated/jobs", {
   kind: "codex.chat",
   device_id: otherlineClaim.device.id,
@@ -639,17 +732,17 @@ const delegatedConflict = await delegatedApiRaw("POST", "/v1/products/otherline/
 }, otherlineClaim.account.id, otherlineClaim.device.id);
 assert.equal(delegatedConflict.response.status, 409);
 assert.equal(delegatedConflict.payload.error, "idempotency_key_conflict");
-const delegatedRpcBlocked = await delegatedApiRaw("POST", "/v1/products/otherline/delegated/jobs", {
+const delegatedRpcAllowed = await delegatedApiRaw("POST", "/v1/products/otherline/delegated/jobs", {
   kind: "codex.rpc",
   device_id: otherlineClaim.device.id,
   product_id: "otherline",
   workspace_ref: "default",
   input: { calls: [{ method: "shell/exec" }] },
-  request_key: "otherline-disallowed-rpc",
+  request_key: "otherline-allowed-rpc",
   policy: { token_budget: 1000, timeout_ms: 60000 },
 }, otherlineClaim.account.id, otherlineClaim.device.id);
-assert.equal(delegatedRpcBlocked.response.status, 403);
-assert.equal(delegatedRpcBlocked.payload.error, "scope_insufficient");
+assert.equal(delegatedRpcAllowed.response.status, 201);
+assert.equal(delegatedRpcAllowed.payload.job.kind, "codex.rpc");
 const delegatedRead = await delegatedApi("GET", `/v1/products/otherline/delegated/jobs/${encodeURIComponent(delegatedJob.job.id)}`, null, otherlineClaim.account.id, otherlineClaim.device.id);
 assert.equal(delegatedRead.job.id, delegatedJob.job.id);
 const delegatedEvents = await delegatedApi("GET", `/v1/products/otherline/delegated/jobs/${encodeURIComponent(delegatedJob.job.id)}/events`, null, otherlineClaim.account.id, otherlineClaim.device.id);
@@ -669,7 +762,7 @@ const delegatedQueuedBeforeRevoke = await delegatedApi("POST", "/v1/products/oth
 assert.equal(delegatedQueuedBeforeRevoke.job.status, "queued");
 const delegatedRevoke = await delegatedApi("DELETE", `/v1/products/otherline/delegated/authorization?device_id=${encodeURIComponent(otherlineClaim.device.id)}`, null, otherlineClaim.account.id, otherlineClaim.device.id);
 assert.equal(delegatedRevoke.authorization.status, "revoked");
-assert.equal(delegatedRevoke.cancelled_jobs, 1);
+assert.equal(delegatedRevoke.cancelled_jobs, 2);
 const delegatedAfterRevoke = await delegatedApiRaw("POST", "/v1/products/otherline/delegated/jobs", {
   kind: "codex.chat",
   device_id: otherlineClaim.device.id,
@@ -703,7 +796,7 @@ assert.equal(crossDelegatedRead.response.status, 404);
 assert.equal(crossDelegatedRead.payload.error, "job_not_found");
 jar.cookie = otherlineOwnerCookie;
 
-const revokedDev = await api("DELETE", `/v1/products/panda-dev/authorization?device_id=${encodeURIComponent(intentClaim.device.id)}`);
+const revokedDev = await api("DELETE", `/v1/products/panda-dev/authorization?device_id=${encodeURIComponent(intentClaim.device.id)}`, null, "", { origin: "http://dev.local.test" });
 assert.equal(revokedDev.authorization.status, "revoked");
 const revokedDevJob = await apiRaw("POST", "/v1/products/panda-dev/jobs", {
   kind: "codex.run",
@@ -712,7 +805,7 @@ const revokedDevJob = await apiRaw("POST", "/v1/products/panda-dev/jobs", {
   workspace_ref: "default",
   input: { prompt: "dev after revoke" },
   policy: { token_budget: 1000, timeout_ms: 60000 },
-});
+}, "", { origin: "http://dev.local.test" });
 assert.equal(revokedDevJob.response.status, 403);
 assert.equal(revokedDevJob.payload.error, "product_not_authorized");
 const chatAfterDevRevoke = await api("POST", "/v1/products/panda-chat/jobs", {

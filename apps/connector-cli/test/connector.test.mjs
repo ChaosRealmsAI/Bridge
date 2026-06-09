@@ -11,6 +11,26 @@ const payload = JSON.parse(result.stdout);
 assert.equal(payload.ok, true);
 assert.match(payload.reply, /hello/);
 
+const fullAccess = spawnSync("node", [
+  "apps/connector-cli/src/cli.mjs",
+  "run-fixture",
+  "--fake-codex",
+  "--prompt",
+  "hello",
+  "--sandbox",
+  "danger-full-access",
+  "--approval-policy",
+  "never",
+], {
+  cwd: new URL("../../..", import.meta.url).pathname,
+  encoding: "utf8",
+});
+
+assert.equal(fullAccess.status, 0, fullAccess.stderr);
+const fullAccessPayload = JSON.parse(fullAccess.stdout);
+assert.equal(fullAccessPayload.ok, true);
+assert.match(fullAccessPayload.reply, /hello/);
+
 const denied = spawnSync("node", [
   "apps/connector-cli/src/cli.mjs",
   "run-fixture",
@@ -19,6 +39,7 @@ const denied = spawnSync("node", [
   "hello",
   "--sandbox",
   "danger-full-access",
+  "--narrow-grant",
 ], {
   cwd: new URL("../../..", import.meta.url).pathname,
   encoding: "utf8",
@@ -39,6 +60,7 @@ const grantDenied = spawnSync("node", [
   "hello",
   "--approval-policy",
   "never",
+  "--narrow-grant",
 ], {
   cwd: new URL("../../..", import.meta.url).pathname,
   encoding: "utf8",
@@ -51,5 +73,24 @@ assert.equal(grantDeniedPayload.ok, false);
 assert.equal(grantDeniedPayload.error, "local_policy_denied");
 assert.equal(grantDeniedPayload.denied, "approvalPolicy");
 assert.equal(grantDeniedPayload.reason, "approval_policy_not_allowed_locally");
+
+const emptyGrantDenied = spawnSync("node", [
+  "apps/connector-cli/src/cli.mjs",
+  "run-fixture",
+  "--fake-codex",
+  "--prompt",
+  "hello",
+  "--empty-grant",
+], {
+  cwd: new URL("../../..", import.meta.url).pathname,
+  encoding: "utf8",
+});
+
+assert.equal(emptyGrantDenied.status, 0, emptyGrantDenied.stderr);
+const emptyGrantDeniedPayload = JSON.parse(emptyGrantDenied.stdout);
+assert.equal(emptyGrantDeniedPayload.ok, false);
+assert.equal(emptyGrantDeniedPayload.error, "local_policy_denied");
+assert.equal(emptyGrantDeniedPayload.denied, "capability");
+assert.equal(emptyGrantDeniedPayload.reason, "capability_not_authorized_locally");
 
 console.log("[connector.test] pass");
