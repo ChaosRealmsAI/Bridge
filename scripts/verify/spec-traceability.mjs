@@ -213,8 +213,8 @@ if (evidenceVersion === "v15-productized-onboarding") {
   for (const marker of ["PANDA_BRIDGE_VERIFY", "open_deep_link", "click_allow_intent", "click_revoke_authorization", "GET /v1/screenshot"]) {
     assert.ok(cliDoc.includes(marker), `Desktop AI CLI doc missing installed-app control marker ${marker}`);
   }
-  for (const marker of ["synthetic_status_png", "npm run verify:desktop-ai-cli"]) {
-    assert.ok(cliDoc.includes(marker), `Desktop AI CLI doc missing screenshot fallback marker ${marker}`);
+  for (const marker of ["builtin_app_png", "desktop_builtin_renderer", "npm run verify:desktop-ai-cli"]) {
+    assert.ok(cliDoc.includes(marker), `Desktop AI CLI doc missing built-in screenshot marker ${marker}`);
   }
   assert.ok(cliDoc.includes("PANDA_BRIDGE_ALLOW_HEADLESS_CONNECT=1"), "CLI doc must mention explicit headless connect flag");
   assert.ok(userDoc.includes("Local Authorization Record"), "Desktop user guide must explain local authorization record");

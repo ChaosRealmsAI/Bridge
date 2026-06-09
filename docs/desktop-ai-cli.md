@@ -137,23 +137,21 @@ GET /v1/snapshot
 GET /v1/screenshot
 ```
 
-`/v1/screenshot` always returns a PNG path on success. Desktop first tries the
-native macOS screenshot path. If the OS blocks capture, Desktop generates a
-code-rendered `synthetic_status_png` image from the current redacted status and
-events:
+`/v1/screenshot` is a Desktop built-in screenshot interface. Desktop renders an
+app-owned `builtin_app_png` image from the current redacted app state and events:
 
 ```json
 {
   "ok": true,
-  "path": ".../desktop-...-synthetic.png",
-  "method": "synthetic_status_png",
-  "fallback": true,
-  "native_error": "screencapture failed: exit status: 1"
+  "path": ".../desktop-...-builtin.png",
+  "method": "builtin_app_png",
+  "source": "desktop_builtin_renderer"
 }
 ```
 
-This keeps evidence deterministic in CI or locked-down macOS sessions while
-still preserving native screenshots when the OS allows them.
+This keeps evidence deterministic and makes screenshot capture part of the app
+contract itself. The verification script only calls this interface; it does not
+implement screenshot capture.
 
 ### Control Actions
 
