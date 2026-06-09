@@ -120,7 +120,9 @@ reuse another product's deep link, authorization, or job.
 
 Automated verifiers should use the Desktop CLI contract in
 [`desktop-ai-cli.md`](desktop-ai-cli.md). The CLI can start the installed app,
-open deep links, take screenshots, trigger click-equivalent allow/revoke/refresh
+open deep links, take PNG screenshots, trigger click-equivalent allow/revoke/refresh
 actions through a one-time token, read redacted Desktop status, run explicit
 test-only headless authorization, poll jobs, revoke product authorization, and
-write evidence without reading private credential files.
+write evidence without reading private credential files. If native OS capture is
+blocked, Desktop generates a code-rendered redacted status PNG so the screenshot
+evidence path still exists.

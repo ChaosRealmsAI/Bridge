@@ -7,7 +7,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::{
     collections::HashSet,
     env, fs,
-    io::{BufRead, BufReader, Read, Write},
+    io::{BufRead, BufReader, BufWriter, Read, Write},
     net::{TcpListener, TcpStream},
     path::{Path, PathBuf},
     process::{Child, ChildStdin, Command, Stdio},
@@ -707,9 +707,7 @@ fn handle_verify_stream(
         }
         ("GET", "/v1/events") => json!({ "items": state_events(&state) }),
         ("GET", "/v1/snapshot") => verify_snapshot(&state),
-        ("GET", "/v1/screenshot") => desktop_screenshot().unwrap_or_else(
-            |error| json!({ "ok": false, "error": error, "snapshot": verify_snapshot(&state) }),
-        ),
+        ("GET", "/v1/screenshot") => desktop_screenshot(&state)?,
         ("POST", "/v1/actions") => {
             let body_value: Value =
                 serde_json::from_str(body).map_err(|error| error.to_string())?;
@@ -799,11 +797,11 @@ fn verify_snapshot(state: &AppState) -> Value {
     })
 }
 
-fn desktop_screenshot() -> Result<Value, String> {
+fn desktop_screenshot(state: &AppState) -> Result<Value, String> {
     let dir = state_dir()?.join("verify-screenshots");
     fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
     let path = dir.join(format!("desktop-{}.png", next_event_seq()));
-    if cfg!(target_os = "macos") {
+    let native_error = if cfg!(target_os = "macos") {
         let _ = Command::new("osascript")
             .args(["-e", "tell application \"Panda Bridge\" to activate"])
             .status();
@@ -813,11 +811,405 @@ fn desktop_screenshot() -> Result<Value, String> {
             .status()
             .map_err(|error| error.to_string())?;
         if status.success() {
-            return Ok(json!({ "ok": true, "path": path.to_string_lossy() }));
+            return Ok(json!({
+                "ok": true,
+                "path": path.to_string_lossy(),
+                "method": "native_screencapture",
+                "fallback": false
+            }));
         }
-        return Err(format!("screencapture failed: {status}"));
+        Some(format!("screencapture failed: {status}"))
+    } else {
+        Some("native screenshot is only implemented on macOS".to_string())
+    };
+    let fallback_path = dir.join(format!("desktop-{}-synthetic.png", next_event_seq()));
+    let snapshot = verify_snapshot(state);
+    write_synthetic_screenshot(
+        &fallback_path,
+        &snapshot,
+        native_error
+            .as_deref()
+            .unwrap_or("native screenshot unavailable"),
+    )?;
+    Ok(json!({
+        "ok": true,
+        "path": fallback_path.to_string_lossy(),
+        "method": "synthetic_status_png",
+        "fallback": true,
+        "native_error": native_error,
+        "snapshot": snapshot
+    }))
+}
+
+const SYNTHETIC_SCREENSHOT_WIDTH: usize = 1200;
+const SYNTHETIC_SCREENSHOT_HEIGHT: usize = 760;
+
+fn write_synthetic_screenshot(
+    path: &Path,
+    snapshot: &Value,
+    native_error: &str,
+) -> Result<(), String> {
+    let mut canvas = Canvas::new(
+        SYNTHETIC_SCREENSHOT_WIDTH,
+        SYNTHETIC_SCREENSHOT_HEIGHT,
+        [246, 248, 252],
+    );
+    canvas.fill_rect(0, 0, SYNTHETIC_SCREENSHOT_WIDTH, 86, [18, 24, 38]);
+    canvas.fill_rect(0, 86, SYNTHETIC_SCREENSHOT_WIDTH, 4, [54, 211, 153]);
+    canvas.draw_text(34, 28, "PANDA BRIDGE DESKTOP", [255, 255, 255], 4);
+    canvas.draw_text(
+        34,
+        104,
+        "VERIFY SCREENSHOT GENERATED IN DESKTOP CODE",
+        [24, 32, 48],
+        3,
+    );
+
+    let status = snapshot.get("status").unwrap_or(&Value::Null);
+    let product_count = status
+        .get("authorized_products")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or(0);
+    let device_name = status
+        .get("device_name")
+        .and_then(Value::as_str)
+        .unwrap_or("unbound");
+    let device_id = status
+        .get("device_id")
+        .and_then(Value::as_str)
+        .unwrap_or("none");
+    let worker = status
+        .get("worker_running")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let realtime = status
+        .get("realtime_connected")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let codex = status
+        .get("codex_available")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+
+    let rows = vec![
+        format!("CAPTURED: {}", now_string()),
+        format!("METHOD: SYNTHETIC_STATUS_PNG  NATIVE: {}", native_error),
+        format!("DEVICE: {}", device_name),
+        format!("DEVICE ID: {}", device_id),
+        format!(
+            "WORKER: {}  REALTIME: {}  CODEX: {}",
+            worker, realtime, codex
+        ),
+        format!("AUTHORIZED PRODUCTS: {}", product_count),
+    ];
+    let mut y = 154;
+    for row in rows {
+        canvas.draw_text(42, y, &truncate_ascii(&row, 88), [38, 50, 70], 2);
+        y += 30;
     }
-    Err("desktop screenshot is only implemented on macOS".to_string())
+
+    canvas.fill_rect(34, 344, 1132, 2, [203, 213, 225]);
+    canvas.draw_text(42, 374, "LOCAL AUTHORIZATION RECORDS", [24, 32, 48], 3);
+    y = 426;
+    if let Some(products) = status.get("authorized_products").and_then(Value::as_array) {
+        if products.is_empty() {
+            canvas.draw_text(
+                54,
+                y,
+                "NO AUTHORIZED PRODUCTS IN THIS SESSION",
+                [100, 116, 139],
+                2,
+            );
+        } else {
+            for product in products.iter().take(7) {
+                let id = product
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown");
+                let origin = product
+                    .get("origin")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown");
+                let capabilities = product
+                    .get("capabilities")
+                    .and_then(Value::as_array)
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .collect::<Vec<_>>()
+                            .join(",")
+                    })
+                    .unwrap_or_else(|| "none".to_string());
+                canvas.draw_text(
+                    54,
+                    y,
+                    &truncate_ascii(&format!("PRODUCT {}  ORIGIN {}", id, origin), 88),
+                    [15, 118, 110],
+                    2,
+                );
+                y += 26;
+                canvas.draw_text(
+                    78,
+                    y,
+                    &truncate_ascii(&format!("CAPABILITIES {}", capabilities), 84),
+                    [51, 65, 85],
+                    2,
+                );
+                y += 34;
+            }
+        }
+    }
+
+    canvas.fill_rect(34, 688, 1132, 1, [203, 213, 225]);
+    canvas.draw_text(
+        42,
+        714,
+        "TOKEN PROTECTED VERIFY CONTROL - REDACTED STATUS ONLY",
+        [100, 116, 139],
+        2,
+    );
+    write_png(
+        path,
+        canvas.width as u32,
+        canvas.height as u32,
+        &canvas.pixels,
+    )
+}
+
+fn write_png(path: &Path, width: u32, height: u32, pixels: &[u8]) -> Result<(), String> {
+    let file = fs::File::create(path).map_err(|error| error.to_string())?;
+    let writer = BufWriter::new(file);
+    let mut encoder = png::Encoder::new(writer, width, height);
+    encoder.set_color(png::ColorType::Rgb);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut png_writer = encoder.write_header().map_err(|error| error.to_string())?;
+    png_writer
+        .write_image_data(pixels)
+        .map_err(|error| error.to_string())
+}
+
+struct Canvas {
+    width: usize,
+    height: usize,
+    pixels: Vec<u8>,
+}
+
+impl Canvas {
+    fn new(width: usize, height: usize, color: [u8; 3]) -> Self {
+        let mut canvas = Self {
+            width,
+            height,
+            pixels: vec![0; width * height * 3],
+        };
+        canvas.fill_rect(0, 0, width, height, color);
+        canvas
+    }
+
+    fn fill_rect(&mut self, x: usize, y: usize, width: usize, height: usize, color: [u8; 3]) {
+        let max_x = (x + width).min(self.width);
+        let max_y = (y + height).min(self.height);
+        for yy in y.min(self.height)..max_y {
+            for xx in x.min(self.width)..max_x {
+                let index = (yy * self.width + xx) * 3;
+                self.pixels[index] = color[0];
+                self.pixels[index + 1] = color[1];
+                self.pixels[index + 2] = color[2];
+            }
+        }
+    }
+
+    fn draw_text(&mut self, x: usize, y: usize, text: &str, color: [u8; 3], scale: usize) {
+        let mut cursor = x;
+        for ch in text.chars() {
+            if cursor + 6 * scale >= self.width {
+                break;
+            }
+            let glyph = glyph_rows(ch.to_ascii_uppercase());
+            for (row, bits) in glyph.iter().enumerate() {
+                for (col, bit) in bits.chars().enumerate() {
+                    if bit == '1' {
+                        self.fill_rect(cursor + col * scale, y + row * scale, scale, scale, color);
+                    }
+                }
+            }
+            cursor += 6 * scale;
+        }
+    }
+}
+
+fn truncate_ascii(value: &str, max: usize) -> String {
+    let mut out: String = value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_graphic() || ch == ' ' {
+                ch
+            } else {
+                '?'
+            }
+        })
+        .collect();
+    if out.len() > max {
+        out.truncate(max.saturating_sub(3));
+        out.push_str("...");
+    }
+    out
+}
+
+fn glyph_rows(ch: char) -> [&'static str; 7] {
+    match ch {
+        'A' => [
+            "01110", "10001", "10001", "11111", "10001", "10001", "10001",
+        ],
+        'B' => [
+            "11110", "10001", "10001", "11110", "10001", "10001", "11110",
+        ],
+        'C' => [
+            "01111", "10000", "10000", "10000", "10000", "10000", "01111",
+        ],
+        'D' => [
+            "11110", "10001", "10001", "10001", "10001", "10001", "11110",
+        ],
+        'E' => [
+            "11111", "10000", "10000", "11110", "10000", "10000", "11111",
+        ],
+        'F' => [
+            "11111", "10000", "10000", "11110", "10000", "10000", "10000",
+        ],
+        'G' => [
+            "01111", "10000", "10000", "10111", "10001", "10001", "01111",
+        ],
+        'H' => [
+            "10001", "10001", "10001", "11111", "10001", "10001", "10001",
+        ],
+        'I' => [
+            "11111", "00100", "00100", "00100", "00100", "00100", "11111",
+        ],
+        'J' => [
+            "00111", "00010", "00010", "00010", "10010", "10010", "01100",
+        ],
+        'K' => [
+            "10001", "10010", "10100", "11000", "10100", "10010", "10001",
+        ],
+        'L' => [
+            "10000", "10000", "10000", "10000", "10000", "10000", "11111",
+        ],
+        'M' => [
+            "10001", "11011", "10101", "10101", "10001", "10001", "10001",
+        ],
+        'N' => [
+            "10001", "11001", "10101", "10011", "10001", "10001", "10001",
+        ],
+        'O' => [
+            "01110", "10001", "10001", "10001", "10001", "10001", "01110",
+        ],
+        'P' => [
+            "11110", "10001", "10001", "11110", "10000", "10000", "10000",
+        ],
+        'Q' => [
+            "01110", "10001", "10001", "10001", "10101", "10010", "01101",
+        ],
+        'R' => [
+            "11110", "10001", "10001", "11110", "10100", "10010", "10001",
+        ],
+        'S' => [
+            "01111", "10000", "10000", "01110", "00001", "00001", "11110",
+        ],
+        'T' => [
+            "11111", "00100", "00100", "00100", "00100", "00100", "00100",
+        ],
+        'U' => [
+            "10001", "10001", "10001", "10001", "10001", "10001", "01110",
+        ],
+        'V' => [
+            "10001", "10001", "10001", "10001", "10001", "01010", "00100",
+        ],
+        'W' => [
+            "10001", "10001", "10001", "10101", "10101", "10101", "01010",
+        ],
+        'X' => [
+            "10001", "10001", "01010", "00100", "01010", "10001", "10001",
+        ],
+        'Y' => [
+            "10001", "10001", "01010", "00100", "00100", "00100", "00100",
+        ],
+        'Z' => [
+            "11111", "00001", "00010", "00100", "01000", "10000", "11111",
+        ],
+        '0' => [
+            "01110", "10001", "10011", "10101", "11001", "10001", "01110",
+        ],
+        '1' => [
+            "00100", "01100", "00100", "00100", "00100", "00100", "01110",
+        ],
+        '2' => [
+            "01110", "10001", "00001", "00010", "00100", "01000", "11111",
+        ],
+        '3' => [
+            "11110", "00001", "00001", "01110", "00001", "00001", "11110",
+        ],
+        '4' => [
+            "00010", "00110", "01010", "10010", "11111", "00010", "00010",
+        ],
+        '5' => [
+            "11111", "10000", "10000", "11110", "00001", "00001", "11110",
+        ],
+        '6' => [
+            "01110", "10000", "10000", "11110", "10001", "10001", "01110",
+        ],
+        '7' => [
+            "11111", "00001", "00010", "00100", "01000", "01000", "01000",
+        ],
+        '8' => [
+            "01110", "10001", "10001", "01110", "10001", "10001", "01110",
+        ],
+        '9' => [
+            "01110", "10001", "10001", "01111", "00001", "00001", "01110",
+        ],
+        ' ' => [
+            "00000", "00000", "00000", "00000", "00000", "00000", "00000",
+        ],
+        ':' => [
+            "00000", "00100", "00100", "00000", "00100", "00100", "00000",
+        ],
+        '-' => [
+            "00000", "00000", "00000", "11111", "00000", "00000", "00000",
+        ],
+        '_' => [
+            "00000", "00000", "00000", "00000", "00000", "00000", "11111",
+        ],
+        '.' => [
+            "00000", "00000", "00000", "00000", "00000", "01100", "01100",
+        ],
+        '/' => [
+            "00001", "00010", "00010", "00100", "01000", "01000", "10000",
+        ],
+        '@' => [
+            "01110", "10001", "10111", "10101", "10111", "10000", "01111",
+        ],
+        ',' => [
+            "00000", "00000", "00000", "00000", "01100", "00100", "01000",
+        ],
+        '+' => [
+            "00000", "00100", "00100", "11111", "00100", "00100", "00000",
+        ],
+        '(' => [
+            "00010", "00100", "01000", "01000", "01000", "00100", "00010",
+        ],
+        ')' => [
+            "01000", "00100", "00010", "00010", "00010", "00100", "01000",
+        ],
+        '#' => [
+            "01010", "11111", "01010", "01010", "11111", "01010", "00000",
+        ],
+        '?' => [
+            "01110", "10001", "00001", "00010", "00100", "00000", "00100",
+        ],
+        _ => [
+            "11111", "00001", "00010", "00100", "01000", "00000", "00100",
+        ],
+    }
 }
 
 fn activate_desktop_app() -> Result<(), String> {
@@ -2272,7 +2664,7 @@ fn execute_job_warm(
     match session
         .as_mut()
         .ok_or("codex warm session unavailable")?
-            .run_job(credentials, job)
+        .run_job(credentials, job)
     {
         Ok(mut result) => {
             if let Value::Object(ref mut map) = result {
@@ -2301,12 +2693,7 @@ fn validate_local_job_authorization(
             job.product_id, job.kind
         ));
     }
-    if grant
-        .policy
-        .get("version")
-        .and_then(Value::as_str)
-        != Some("AUTH-SCOPE-v1")
-    {
+    if grant.policy.get("version").and_then(Value::as_str) != Some("AUTH-SCOPE-v1") {
         return Err("authorization_scope_missing_locally".to_string());
     }
     validate_authorization_scope(&grant.policy, job)?;
@@ -2334,18 +2721,18 @@ fn validate_authorization_scope(scope: &Value, job: &BridgeJob) -> Result<(), St
         return Err(format!("workspace_not_allowed_locally: {workspace_ref}"));
     }
 
-    let requested_sandbox = policy_string(&job.policy, "sandbox")
-        .unwrap_or_else(|| "workspace-write".to_string());
-    let sandbox_floor = policy_string(scope, "sandbox_floor")
-        .unwrap_or_else(|| "workspace-write".to_string());
+    let requested_sandbox =
+        policy_string(&job.policy, "sandbox").unwrap_or_else(|| "workspace-write".to_string());
+    let sandbox_floor =
+        policy_string(scope, "sandbox_floor").unwrap_or_else(|| "workspace-write".to_string());
     if !authorization_scope_allows_sandbox(&sandbox_floor, &requested_sandbox) {
         return Err(format!("sandbox_not_allowed_locally: {requested_sandbox}"));
     }
 
-    let requested_approval = policy_string(&job.policy, "approvalPolicy")
-        .unwrap_or_else(|| "on-request".to_string());
-    let approval_floor = policy_string(scope, "approval_policy_floor")
-        .unwrap_or_else(|| "on-request".to_string());
+    let requested_approval =
+        policy_string(&job.policy, "approvalPolicy").unwrap_or_else(|| "on-request".to_string());
+    let approval_floor =
+        policy_string(scope, "approval_policy_floor").unwrap_or_else(|| "on-request".to_string());
     let allow_never = scope
         .get("allow_approval_never")
         .and_then(Value::as_bool)
@@ -2445,7 +2832,10 @@ fn local_policy_denial(error: &str) -> (&'static str, &'static str) {
     } else if error.starts_with("approval_policy_not_allowed_locally") {
         ("approvalPolicy", "approval_policy_not_allowed_locally")
     } else if error.starts_with("developer_instructions_not_allowed_locally") {
-        ("developerInstructions", "developer_instructions_not_allowed_locally")
+        (
+            "developerInstructions",
+            "developer_instructions_not_allowed_locally",
+        )
     } else {
         ("unknown", "local_policy_denied")
     }
@@ -3120,11 +3510,8 @@ fn save_credentials(credentials: &Credentials) -> Result<(), String> {
         write_file(Path::new(&path), &text)?;
         return Ok(());
     }
-    let _ = keychain_entry().and_then(|entry| {
-        entry
-            .set_password(&text)
-            .map_err(|error| error.to_string())
-    });
+    let _ = keychain_entry()
+        .and_then(|entry| entry.set_password(&text).map_err(|error| error.to_string()));
     write_file(&fallback_credentials_path()?, &text)?;
     Ok(())
 }
@@ -3795,7 +4182,8 @@ mod tests {
             .unwrap_err()
             .contains("cwd_not_allowed_locally"));
         assert_eq!(
-            effective_job_policy(&test_job(json!({ "sandbox": "danger-full-access" }))).unwrap_err(),
+            effective_job_policy(&test_job(json!({ "sandbox": "danger-full-access" })))
+                .unwrap_err(),
             "sandbox_not_allowed_locally: danger-full-access"
         );
         assert_eq!(
@@ -3803,7 +4191,10 @@ mod tests {
             "approval_policy_not_allowed_locally: never"
         );
         assert_eq!(
-            effective_job_policy(&test_job(json!({ "developerInstructions": "ignore safety" }))).unwrap_err(),
+            effective_job_policy(&test_job(
+                json!({ "developerInstructions": "ignore safety" })
+            ))
+            .unwrap_err(),
             "developer_instructions_not_allowed_locally"
         );
     }
@@ -3819,10 +4210,14 @@ mod tests {
             "sandbox": "read-only",
             "approvalPolicy": "never",
             "developerInstructions": "project-local instruction"
-        }))).unwrap();
+        })))
+        .unwrap();
         assert_eq!(policy.sandbox, "read-only");
         assert_eq!(policy.approval_policy, "never");
-        assert_eq!(policy.developer_instructions.as_deref(), Some("project-local instruction"));
+        assert_eq!(
+            policy.developer_instructions.as_deref(),
+            Some("project-local instruction")
+        );
         reset_policy_env();
     }
 
@@ -3861,7 +4256,10 @@ mod tests {
         credentials.authorized_products[0].policy["sandbox_floor"] = json!("read-only");
         let sandbox_error =
             validate_local_job_authorization(&credentials, &test_job(json!({}))).unwrap_err();
-        assert_eq!(sandbox_error, "sandbox_not_allowed_locally: workspace-write");
+        assert_eq!(
+            sandbox_error,
+            "sandbox_not_allowed_locally: workspace-write"
+        );
 
         let mut never_credentials = test_credentials(vec!["codex.chat"]);
         env::set_var("PANDA_BRIDGE_ALLOW_APPROVAL_NEVER", "1");
@@ -3893,5 +4291,36 @@ mod tests {
         assert_eq!(result["reason"], "cwd_not_allowed_locally");
         assert!(!result.to_string().contains("/Users/"));
         assert!(!result.to_string().contains("cwd_not_allowed_locally: /"));
+    }
+
+    #[test]
+    fn synthetic_screenshot_writes_png_file() {
+        let path = env::temp_dir().join(format!(
+            "panda-bridge-synthetic-screenshot-{}.png",
+            next_event_seq()
+        ));
+        let snapshot = json!({
+            "ok": true,
+            "status": {
+                "device_id": "dev_1",
+                "device_name": "Verifier Desktop",
+                "worker_running": false,
+                "realtime_connected": false,
+                "codex_available": true,
+                "authorized_products": [{
+                    "id": "panda-chat",
+                    "name": "Panda Chat",
+                    "origin": "http://chat.local.test",
+                    "capabilities": ["codex.chat", "codex.run"],
+                    "accounts": [{ "id": "user_1", "device_id": "dev_1", "authorized_at": "unix:1" }]
+                }]
+            },
+            "events": []
+        });
+        write_synthetic_screenshot(&path, &snapshot, "native unavailable").unwrap();
+        let bytes = fs::read(&path).unwrap();
+        assert!(bytes.starts_with(b"\x89PNG\r\n\x1a\n"));
+        assert!(bytes.len() > 1024);
+        let _ = fs::remove_file(path);
     }
 }

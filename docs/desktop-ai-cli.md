@@ -137,9 +137,23 @@ GET /v1/snapshot
 GET /v1/screenshot
 ```
 
-`/v1/screenshot` activates the installed app on macOS and captures a PNG path.
-If screenshots are unavailable, it returns a JSON failure with the current
-snapshot.
+`/v1/screenshot` always returns a PNG path on success. Desktop first tries the
+native macOS screenshot path. If the OS blocks capture, Desktop generates a
+code-rendered `synthetic_status_png` image from the current redacted status and
+events:
+
+```json
+{
+  "ok": true,
+  "path": ".../desktop-...-synthetic.png",
+  "method": "synthetic_status_png",
+  "fallback": true,
+  "native_error": "screencapture failed: exit status: 1"
+}
+```
+
+This keeps evidence deterministic in CI or locked-down macOS sessions while
+still preserving native screenshots when the OS allows them.
 
 ### Control Actions
 
@@ -217,4 +231,5 @@ The canonical repository check is:
 
 ```bash
 npm run verify:productized-onboarding
+npm run verify:desktop-ai-cli
 ```

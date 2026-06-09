@@ -113,6 +113,7 @@ npm run pandart:local
 npm run check
 npm run verify:sdk-examples
 npm run verify:productized-onboarding
+npm run verify:desktop-ai-cli
 npm run verify:spec
 npm run verify:local
 npm run verify:desktop-lite
@@ -176,13 +177,16 @@ npm run verify:sdk-examples
 
 ```bash
 npm run verify:productized-onboarding
+npm run verify:desktop-ai-cli
 ```
 
 该验证用本地 memory Bridge、SDK 调用方和 Desktop AI CLI 覆盖用户下载后
 授权、本地授权记录、多产品独立授权、单产品撤销、job 调用和 token redaction。
 安装后的 Desktop 还支持 `PANDA_BRIDGE_VERIFY=1` 控制面，AI 可以通过一次性
 token 启动/激活 app、打开 deep link、截图、触发 allow/revoke/refresh
-等点击等价动作；详见 [Desktop AI 可操作 CLI](docs/desktop-ai-cli.md)。
+等点击等价动作；`verify:desktop-ai-cli` 会从代码里执行这些动作，并断言
+截图接口返回 PNG。如果系统截图被权限拦截，Desktop 会生成
+`synthetic_status_png` 证据图。详见 [Desktop AI 可操作 CLI](docs/desktop-ai-cli.md)。
 
 队列和性能可观察性：
 

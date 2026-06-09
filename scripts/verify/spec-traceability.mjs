@@ -199,6 +199,7 @@ assert.equal(sdkPublicCopy, sdkSource, "public web SDK copy drifted from package
 if (evidenceVersion === "v15-productized-onboarding") {
   const packageJson = readJson("package.json");
   assert.equal(packageJson.scripts?.["verify:productized-onboarding"], "node scripts/verify/productized-onboarding.mjs", "missing productized onboarding script");
+  assert.equal(packageJson.scripts?.["verify:desktop-ai-cli"], "node scripts/verify/desktop-ai-cli-control.mjs", "missing Desktop AI CLI script");
   const productDoc = readFileSync(resolve(root, "docs/product-integration.md"), "utf8");
   const userDoc = readFileSync(resolve(root, "docs/desktop-user-guide.md"), "utf8");
   const cliDoc = readFileSync(resolve(root, "docs/desktop-ai-cli.md"), "utf8");
@@ -212,11 +213,15 @@ if (evidenceVersion === "v15-productized-onboarding") {
   for (const marker of ["PANDA_BRIDGE_VERIFY", "open_deep_link", "click_allow_intent", "click_revoke_authorization", "GET /v1/screenshot"]) {
     assert.ok(cliDoc.includes(marker), `Desktop AI CLI doc missing installed-app control marker ${marker}`);
   }
+  for (const marker of ["synthetic_status_png", "npm run verify:desktop-ai-cli"]) {
+    assert.ok(cliDoc.includes(marker), `Desktop AI CLI doc missing screenshot fallback marker ${marker}`);
+  }
   assert.ok(cliDoc.includes("PANDA_BRIDGE_ALLOW_HEADLESS_CONNECT=1"), "CLI doc must mention explicit headless connect flag");
   assert.ok(userDoc.includes("Local Authorization Record"), "Desktop user guide must explain local authorization record");
   assert.ok(sdkReadme.includes("scope_insufficient"), "SDK README must document capability enforcement");
   assert.ok(sdkReadme.includes("desktop_claim_required"), "SDK README must document browser claim rejection");
   assert.ok(exists("spec/verification/evidence/v15-productized-onboarding/productized-onboarding.json"), "v15 productized onboarding evidence missing");
+  assert.ok(exists("scripts/verify/desktop-ai-cli-control.mjs"), "Desktop AI CLI verification script missing");
 }
 
 const migrationTexts = readdirSync(resolve(root, "supabase/migrations"))
