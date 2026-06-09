@@ -80,6 +80,14 @@
     .acct .rv{margin-left:auto;font-size:12.5px;color:var(--muted);cursor:pointer;font-weight:550;flex:none}
     .acct .rv:hover{color:var(--red)}
     .acctempty{text-align:center;color:var(--faint);font-size:13.5px;padding:34px 16px;line-height:1.7;border:1px dashed var(--line);border-radius:12px;background:var(--card)}
+    .grant{background:var(--card);border:.5px solid var(--line);border-radius:12px;padding:14px 15px;margin:18px 0 8px}
+    .grantgrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 18px}
+    .gk{font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--faint);margin-bottom:3px}
+    .gv{font-size:12.5px;font-weight:550;color:var(--text);min-width:0;overflow-wrap:anywhere;line-height:1.45}
+    .chips{display:flex;flex-wrap:wrap;gap:6px}
+    .chip{font-size:11.5px;font-weight:650;padding:4px 7px;border-radius:7px;background:var(--accent-soft);color:var(--accent);border:.5px solid rgba(10,132,255,.2)}
+    .subline{font-size:11.5px;color:var(--muted);margin-top:3px;overflow-wrap:anywhere}
+    @media (max-width: 620px){.app{grid-template-columns:180px 1fr}.detail{padding:20px 18px}.grantgrid{grid-template-columns:1fr}}
 
     .segtheme{display:flex;gap:10px;margin-bottom:6px}
     .themecard{flex:1;border:1.5px solid var(--line);border-radius:13px;padding:8px 8px 9px;cursor:pointer;text-align:center;transition:.14s;background:var(--card)}
@@ -238,10 +246,17 @@
       ui.ready = !!(s.device_id && s.codex_available && hasAuthorizedProduct);
       ui.connected = !!(s.device_id && hasAuthorizedProduct);
       ui.products = list.map(p=>({ id:p.id, name:p.name||p.id,
+        origin:p.origin||null,
+        capabilities:Array.isArray(p.capabilities)?p.capabilities:[],
+        policy:p.policy&&typeof p.policy==="object"?p.policy:{},
+        authorized_at:p.authorized_at||"",
         accounts: Array.isArray(p.accounts) ? p.accounts.map(a=>({
             id:a.id||a.account_id||null,
             email:a.email||a.display_name||a,
-            device_id:a.device_id||null
+            display_name:a.display_name||null,
+            device_id:a.device_id||null,
+            origin:a.origin||p.origin||null,
+            authorized_at:a.authorized_at||p.authorized_at||""
           }))
           : (s.account_display ? [{ id:s.account_id||null, email:s.account_display, device_id:s.device_id||null }] : []) }));
     }
@@ -288,12 +303,48 @@
           <div class="big" style="background:${colorFor(p.id)}">${ini(p.name)}</div>
           <div><h2>${p.name}</h2><p>${tag(p)}</p></div>
           <button class="open" onclick="openWeb()">${t('open')} ↗</button></div>
+        <div class="grant">${grantView(p)}</div>
         <div class="lbl">${t('accounts')} · ${p.accounts.length}<span class="add" onclick="addAccount('${p.id}')">＋ ${t('addAccount')}</span></div>
         ${p.accounts.length ? p.accounts.map((a,ai)=>`<div class="acct">
             <div class="av">${av(a.email)}</div>
-            <div style="min-width:0"><div class="em">${a.email}</div><div class="ok">${t('acctOk')}</div></div>
+            <div style="min-width:0"><div class="em">${a.email}</div><div class="ok">${t('acctOk')}</div>
+              <div class="subline">Device ${esc(shortId(a.device_id)||"unknown")} · ${esc(formatTime(a.authorized_at)||"authorized")}</div></div>
             <span class="rv" onclick="revoke('${p.id}',${ai})">${t('signOut')}</span></div>`).join("")
           : `<div class="acctempty">${t('noAccts',{name:p.name,add:t('addAccount')})}</div>`}`;
+    }
+
+    function grantView(p){
+      const policy=p.policy||{};
+      const caps=Array.isArray(p.capabilities)&&p.capabilities.length?p.capabilities:policy.capabilities||[];
+      return `<div class="grantgrid">
+          <div><div class="gk">Origin</div><div class="gv">${esc(p.origin||policy.source_origin||"unknown")}</div></div>
+          <div><div class="gk">Scope</div><div class="gv">${chips(caps)}</div></div>
+          <div><div class="gk">Workspace</div><div class="gv">${esc(policy.display?.workspace||workspaceSummary(policy)||"default workspace")}</div></div>
+          <div><div class="gk">Sandbox</div><div class="gv">${esc(policy.display?.sandbox||policy.sandbox_floor||"workspace-write")}</div></div>
+          <div><div class="gk">Approval</div><div class="gv">${esc(policy.display?.approval||policy.approval_policy_floor||"on-request")}</div></div>
+          <div><div class="gk">Authorized</div><div class="gv">${esc(formatTime(p.authorized_at)||"unknown")}</div></div>
+        </div>`;
+    }
+
+    function chips(items){
+      const list=Array.isArray(items)&&items.length?items:["codex.chat"];
+      return `<div class="chips">${list.map(item=>`<span class="chip">${esc(item)}</span>`).join("")}</div>`;
+    }
+
+    function workspaceSummary(policy){
+      const roots=Array.isArray(policy.workspace_roots)?policy.workspace_roots:[];
+      return roots.map(item=>item.path_display||item.id).filter(Boolean).join(", ");
+    }
+
+    function shortId(value){ const s=String(value||""); return s.length>14?`${s.slice(0,7)}...${s.slice(-5)}`:s; }
+    function formatTime(value){
+      if(!value) return "";
+      if(/^unix:\d+$/.test(String(value))){
+        value=Number(String(value).slice(5))*1000;
+      }
+      const d=new Date(value);
+      if(Number.isNaN(d.getTime())) return value;
+      try{return d.toLocaleString(curLang(),{year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit"});}catch(e){return value;}
     }
 
     function requestView(p){
@@ -385,15 +436,15 @@
       const mock = { account_display:"chaos.realms.ai@gmail.com", device_id:"dev_macbookpro_8f21", device_name:"MacBook Pro",
         api_base:"https://api.bridge.otherline.cc", cloud_origin:"bridge.otherline.cc", worker_running:true, realtime_connected:true, codex_available:true,
         authorized_products:[
-          {id:"panda_chat",name:"Panda Chat",accounts:[{email:"chaos.realms.ai@gmail.com"},{email:"panda-final@bridge.otherline.cc"}]},
-          {id:"panda_dev",name:"Panda Dev",accounts:[{email:"dev@otherline.cc"}]},
-          {id:"panda_spec",name:"Panda Spec",accounts:[]} ] };
+          {id:"panda-chat",name:"Panda Chat",origin:"https://bridge.otherline.cc",capabilities:["codex.chat","codex.run"],authorized_at:new Date().toISOString(),policy:{version:"AUTH-SCOPE-v1",source_origin:"https://bridge.otherline.cc",capabilities:["codex.chat","codex.run"],workspace_roots:[{id:"default",path_display:"[local]/default"}],sandbox_floor:"workspace-write",approval_policy_floor:"on-request",display:{workspace:"[local]/default",sandbox:"workspace-write or stricter",approval:"on-request or stricter"}},accounts:[{id:"acct_demo",email:"chaos.realms.ai@gmail.com",device_id:"dev_macbookpro_8f21",authorized_at:new Date().toISOString()},{id:"acct_final",email:"panda-final@bridge.otherline.cc",device_id:"dev_macbookpro_8f21",authorized_at:new Date().toISOString()}]},
+          {id:"panda-dev",name:"Panda Dev",origin:"https://dev.otherline.cc",capabilities:["codex.chat","codex.run","codex.rpc"],authorized_at:new Date().toISOString(),policy:{version:"AUTH-SCOPE-v1",source_origin:"https://dev.otherline.cc",capabilities:["codex.chat","codex.run","codex.rpc"],workspace_roots:[{id:"default",path_display:"[local]/default"}],sandbox_floor:"workspace-write",approval_policy_floor:"on-request",display:{workspace:"[local]/default",sandbox:"workspace-write or stricter",approval:"on-request or stricter"}},accounts:[{id:"acct_dev",email:"dev@otherline.cc",device_id:"dev_macbookpro_8f21",authorized_at:new Date().toISOString()}]},
+          {id:"panda-spec",name:"Panda Spec",origin:"https://spec.otherline.cc",capabilities:["codex.chat","codex.run"],authorized_at:new Date().toISOString(),policy:{version:"AUTH-SCOPE-v1",source_origin:"https://spec.otherline.cc",capabilities:["codex.chat","codex.run"],workspace_roots:[{id:"default",path_display:"[local]/default"}],sandbox_floor:"workspace-write",approval_policy_floor:"on-request",display:{workspace:"[local]/default",sandbox:"workspace-write or stricter",approval:"on-request or stricter"}},accounts:[]} ] };
       window.ipc = { postMessage(raw){
         const { id, command } = JSON.parse(raw);
         const reply = (ok, payload)=> setTimeout(()=>window.PandaBridge.receive({ type:"response", id, ok, result: payload }), 70);
         if (command==="status") return reply(true, JSON.parse(JSON.stringify(mock)));
-        if (command==="preview_intent") return reply(true, { product_id:"panda_chat", product_name:"Panda Chat", user_display_name:"team-demo@otherline.cc", cloud_origin:"bridge.otherline.cc", capabilities:["codex.chat"], local_policy:{ default_workspace:"/Users/demo/project", sandbox_allowed:["workspace-write","read-only"], approval_default:"on-request", approval_never:"denied_by_default", developer_instructions:"denied_by_default" } });
-        if (command==="claim_intent"){ mock.authorized_products[0].accounts.push({email:"team-demo@otherline.cc"}); return reply(true, { product_id:"panda_chat", product_name:"Panda Chat", account_display:"team-demo@otherline.cc", authorized_products:mock.authorized_products }); }
+        if (command==="preview_intent") return reply(true, { product_id:"panda-chat", product_name:"Panda Chat", user_display_name:"team-demo@otherline.cc", cloud_origin:"bridge.otherline.cc", capabilities:["codex.chat"], local_policy:{ default_workspace:"/Users/demo/project", sandbox_allowed:["workspace-write","read-only"], approval_default:"on-request", approval_never:"denied_by_default", developer_instructions:"denied_by_default" } });
+        if (command==="claim_intent"){ mock.authorized_products[0].accounts.push({id:"acct_team",email:"team-demo@otherline.cc",device_id:"dev_macbookpro_8f21",authorized_at:new Date().toISOString()}); return reply(true, { product_id:"panda-chat", product_name:"Panda Chat", account_display:"team-demo@otherline.cc", authorized_products:mock.authorized_products }); }
         if (command==="revoke_authorization"){
           const { params } = JSON.parse(raw);
           mock.authorized_products = mock.authorized_products.filter(p=>p.id!==params.product_id);

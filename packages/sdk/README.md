@@ -26,7 +26,9 @@ panda-spec
 ```
 
 Each product gets its own authorization record. Product capabilities may be
-shown as metadata, but Bridge does not use them to reject job kinds or policy.
+shown to the user and are enforced by Bridge Cloud for job kinds. For example,
+`panda-chat` can create `codex.chat` and `codex.run` jobs, while a product
+without `codex.rpc` receives `scope_insufficient` for RPC jobs.
 
 Product ID is also the main source boundary. Bridge records the request
 `source_origin` for connect intents, authorizations, and jobs, and Cloud only
@@ -39,7 +41,7 @@ authorization.
 import { createBridgeClient } from "@panda-bridge/sdk";
 
 const bridge = createBridgeClient({
-  apiBase: "https://bridge.otherline.cc",
+  apiBase: "https://api.bridge.otherline.cc",
   productId: "panda-chat",
 });
 
@@ -52,7 +54,9 @@ const intent = await bridge.connect.createIntent({
   deviceName: "MacBook Pro",
 });
 
-// Desktop claims intent through Panda Bridge Desktop, not through browser code.
+// Show intent.deep_link to the user. Panda Bridge Desktop claims it after the
+// user approves the desktop authorization view. Browser code must not call
+// connect.claim; browser attempts receive desktop_claim_required.
 
 const devices = await bridge.devices.list();
 const device = devices.items.find((item) => item.status === "online");
@@ -104,11 +108,24 @@ product authorization, codex jobs, job status/events/wait/stream/cancel, and
 queue summary. It also checks account isolation and writes redacted evidence
 under `spec/verification/evidence/v6-sdk-call-examples-account-stability/`.
 
+## Productized Onboarding Example
+
+From the repository root, run:
+
+```bash
+npm run verify:productized-onboarding
+```
+
+This verification starts a local memory Bridge fixture, uses the SDK as a
+product caller, operates Panda Bridge Desktop through the documented AI CLI,
+checks the local authorization record, creates jobs, revokes one product, and
+asserts another product remains authorized.
+
 ## Multi-Product Example
 
 ```js
 const devBridge = createBridgeClient({
-  apiBase: "https://bridge.otherline.cc",
+  apiBase: "https://api.bridge.otherline.cc",
   productId: "panda-dev",
 });
 
@@ -117,6 +134,7 @@ await devBridge.auth.password("user@example.com", "account-password");
 const authorization = await devBridge.products.authorization(device.id);
 if (!authorization.authorization) {
   await devBridge.connect.createIntent({ deviceName: "Developer Mac" });
+  // Show the returned deep_link and wait for Desktop approval.
 }
 
 const rpc = await devBridge.codex.rpc({
@@ -152,6 +170,10 @@ Recommended product behavior:
 - Cancel jobs when the user navigates away from work that should not continue.
 - Handle `device_offline`, `product_not_authorized`, `device_not_found`, and
   `too_many_login_attempts`.
+- Handle `scope_insufficient` when the product creates a job kind outside its
+  registered capabilities.
+- Treat `desktop_claim_required` as a product implementation bug: browser UI
+  tried to use a native-only Desktop claim route.
 - Handle request safety errors such as `request_body_too_large`,
   `invalid_json`, and `invalid_content_type`; SDK errors include `status` and
   `payload`.
@@ -159,14 +181,22 @@ Recommended product behavior:
 ## Security Rules
 
 - Browser code never receives desktop `device_token`.
+- Browser code never consumes connect intents; Desktop native claim is required.
 - Browser code never calls Codex app-server directly.
 - Jobs require the session account to own the device.
 - Jobs require active product authorization on that device.
-- Job `kind`, `policy`, `workspace_ref`, and payload are passed through to
-  Desktop; SaaS owns permission, capability, and strategy decisions.
+- Job `kind` must be included in the product's registered capabilities.
+- Job `policy`, `workspace_ref`, and payload are passed to Desktop, and Desktop
+  rejects requests outside the visible local authorization scope.
 - Unsupported product IDs are rejected by Bridge Cloud.
 - Official source origins are enforced; unsupported origins are rejected or
   receive no credentialed CORS access.
 - Duplicate `request_key` submissions are idempotent.
 - Desktop revalidates local product authorization and install identity before
   executing.
+
+## Product Documentation
+
+- Product integration guide: `docs/product-integration.md`
+- Desktop user guide: `docs/desktop-user-guide.md`
+- AI-operable Desktop CLI: `docs/desktop-ai-cli.md`

@@ -747,7 +747,20 @@ fn run_verify_action(
             open_url(&url)?;
             json!({ "ok": true, "message": "opened web" })
         }
-        "claim_intent" => {
+        "open_deep_link" => {
+            let url = required_param(params, "url")?;
+            let _ = proxy.send_event(UserEvent::UiEvent(json!({
+                "type": "event",
+                "event": "deep_link",
+                "url": url
+            })));
+            json!({ "ok": true, "message": "opened deep link" })
+        }
+        "activate_app" => {
+            activate_desktop_app()?;
+            json!({ "ok": true, "message": "activated app" })
+        }
+        "claim_intent" | "click_allow_intent" => {
             let api = string_param(params, "api").unwrap_or_else(|| DEFAULT_API.to_string());
             let intent = required_param(params, "intent")?;
             let device_name = string_param(params, "device_name").unwrap_or_else(device_name);
@@ -755,7 +768,7 @@ fn run_verify_action(
             let _ = start_worker(state, proxy.clone());
             serde_json::to_value(claim).map_err(|error| error.to_string())?
         }
-        "revoke_authorization" => {
+        "revoke_authorization" | "click_revoke_authorization" => {
             let product_id = required_param(params, "product_id")?;
             let account_id = string_param(params, "account_id");
             let device_id = string_param(params, "device_id");
@@ -766,7 +779,7 @@ fn run_verify_action(
                 device_id.as_deref(),
             )?
         }
-        "refresh_status" => {
+        "refresh_status" | "click_refresh_status" => {
             serde_json::to_value(status(state)).map_err(|error| error.to_string())?
         }
         other => return Err(format!("unknown verify action: {other}")),
@@ -805,6 +818,20 @@ fn desktop_screenshot() -> Result<Value, String> {
         return Err(format!("screencapture failed: {status}"));
     }
     Err("desktop screenshot is only implemented on macOS".to_string())
+}
+
+fn activate_desktop_app() -> Result<(), String> {
+    if cfg!(target_os = "macos") {
+        let status = Command::new("osascript")
+            .args(["-e", "tell application \"Panda Bridge\" to activate"])
+            .status()
+            .map_err(|error| error.to_string())?;
+        if status.success() {
+            return Ok(());
+        }
+        return Err(format!("activate app failed: {status}"));
+    }
+    Ok(())
 }
 
 fn verify_control_state_path() -> Result<PathBuf, String> {
@@ -3559,8 +3586,8 @@ fn device_name() -> String {
 }
 
 fn now_string() -> String {
-    // Enough for audit/debug; Cloud remains source of truth for server time.
-    format!("{:?}", std::time::SystemTime::now())
+    // Stable and parseable without adding a time formatting dependency.
+    format!("unix:{}", unix_seconds())
 }
 
 fn unix_seconds() -> u64 {

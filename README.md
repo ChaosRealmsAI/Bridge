@@ -43,6 +43,13 @@ Panda Bridge
    - 给业务 SaaS 使用。
    - 负责创建 job、查询状态、订阅流式结果。
 
+## 产品化接入文档
+
+- [调用方产品接入指南](docs/product-integration.md)
+- [Desktop 用户使用说明](docs/desktop-user-guide.md)
+- [Desktop AI 可操作 CLI](docs/desktop-ai-cli.md)
+- [SDK README](packages/sdk/README.md)
+
 ## 关键结论
 
 Bridge Desktop 需要本地安装。
@@ -105,6 +112,7 @@ npm run build:web
 npm run pandart:local
 npm run check
 npm run verify:sdk-examples
+npm run verify:productized-onboarding
 npm run verify:spec
 npm run verify:local
 npm run verify:desktop-lite
@@ -163,6 +171,18 @@ npm run verify:sdk-examples
 这个示例模块位于 `examples/sdk-call-examples/`，覆盖当前 SDK helper
 调用面，并在本地 memory fixture 中验证账号/session、share/join、设备、
 产品授权、job/events/stream/cancel、queue summary 和证据 redaction。
+
+产品化接入端到端复验：
+
+```bash
+npm run verify:productized-onboarding
+```
+
+该验证用本地 memory Bridge、SDK 调用方和 Desktop AI CLI 覆盖用户下载后
+授权、本地授权记录、多产品独立授权、单产品撤销、job 调用和 token redaction。
+安装后的 Desktop 还支持 `PANDA_BRIDGE_VERIFY=1` 控制面，AI 可以通过一次性
+token 启动/激活 app、打开 deep link、截图、触发 allow/revoke/refresh
+等点击等价动作；详见 [Desktop AI 可操作 CLI](docs/desktop-ai-cli.md)。
 
 队列和性能可观察性：
 

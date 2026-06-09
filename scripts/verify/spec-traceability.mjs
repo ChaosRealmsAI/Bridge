@@ -5,11 +5,15 @@ import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const root = resolve(".");
-const evidenceVersion = process.env.PANDA_BRIDGE_SPEC_VERSION || "v14-security-permission-control";
+const currentVersionData = (await import(pathToFileURL(resolve(root, "spec/js/版本简档.js")).href)).default;
+const evidenceVersion = process.env.PANDA_BRIDGE_SPEC_VERSION || currentVersionData.currentVersion?.id || "v14-security-permission-control";
 const evidencePath = resolve(root, "spec/verification/evidence", evidenceVersion, "spec-traceability-summary.json");
 
 const requiredFiles = [
   "README.md",
+  "docs/product-integration.md",
+  "docs/desktop-user-guide.md",
+  "docs/desktop-ai-cli.md",
   "安全评审报告.md",
   "spec/README.md",
   "spec/bdd/_schema.json",
@@ -177,7 +181,7 @@ assert.ok(
   Array.isArray(version.currentVersion?.evidenceReport?.artifacts) && version.currentVersion.evidenceReport.artifacts.length >= 8,
   "evidenceReport.artifacts must list concrete evidence",
 );
-assert.ok(exists(`spec/verification/evidence/${evidenceVersion}/summary.json`), "v14 evidence summary missing");
+assert.ok(exists(`spec/verification/evidence/${evidenceVersion}/summary.json`), `${evidenceVersion} evidence summary missing`);
 
 assert.equal(version.currentVersion?.foundationSwitches?.capDirection, 1, "CAP switch must be 1");
 assert.equal(version.currentVersion?.foundationSwitches?.trueRunSee, 1, "true-run-see switch must be 1");
@@ -191,6 +195,29 @@ for (const marker of ["P1-2", "P1-3", "P1-4", "P2-1", "P2-2", "P2-3", "P2-4", "P
 const sdkSource = readFileSync(resolve(root, "packages/sdk/src/index.js"), "utf8");
 const sdkPublicCopy = readFileSync(resolve(root, "apps/web-chat/public/sdk/index.js"), "utf8");
 assert.equal(sdkPublicCopy, sdkSource, "public web SDK copy drifted from packages/sdk/src/index.js");
+
+if (evidenceVersion === "v15-productized-onboarding") {
+  const packageJson = readJson("package.json");
+  assert.equal(packageJson.scripts?.["verify:productized-onboarding"], "node scripts/verify/productized-onboarding.mjs", "missing productized onboarding script");
+  const productDoc = readFileSync(resolve(root, "docs/product-integration.md"), "utf8");
+  const userDoc = readFileSync(resolve(root, "docs/desktop-user-guide.md"), "utf8");
+  const cliDoc = readFileSync(resolve(root, "docs/desktop-ai-cli.md"), "utf8");
+  const sdkReadme = readFileSync(resolve(root, "packages/sdk/README.md"), "utf8");
+  for (const marker of ["connect.createIntent", "preflight", "product_not_authorized", "desktop_claim_required"]) {
+    assert.ok(productDoc.includes(marker), `product integration doc missing ${marker}`);
+  }
+  for (const marker of ["headless-status", "headless-connect", "headless-poll", "headless-revoke-authorization"]) {
+    assert.ok(cliDoc.includes(marker), `Desktop AI CLI doc missing ${marker}`);
+  }
+  for (const marker of ["PANDA_BRIDGE_VERIFY", "open_deep_link", "click_allow_intent", "click_revoke_authorization", "GET /v1/screenshot"]) {
+    assert.ok(cliDoc.includes(marker), `Desktop AI CLI doc missing installed-app control marker ${marker}`);
+  }
+  assert.ok(cliDoc.includes("PANDA_BRIDGE_ALLOW_HEADLESS_CONNECT=1"), "CLI doc must mention explicit headless connect flag");
+  assert.ok(userDoc.includes("Local Authorization Record"), "Desktop user guide must explain local authorization record");
+  assert.ok(sdkReadme.includes("scope_insufficient"), "SDK README must document capability enforcement");
+  assert.ok(sdkReadme.includes("desktop_claim_required"), "SDK README must document browser claim rejection");
+  assert.ok(exists("spec/verification/evidence/v15-productized-onboarding/productized-onboarding.json"), "v15 productized onboarding evidence missing");
+}
 
 const migrationTexts = readdirSync(resolve(root, "supabase/migrations"))
   .filter((file) => file.endsWith(".sql"))
@@ -233,6 +260,7 @@ const summary = {
   rls_tables: createdTables.length,
   official_origins: officialOrigins.length,
   sdk_copy_drift: false,
+  productized_docs: evidenceVersion === "v15-productized-onboarding",
 };
 writeFileSync(evidencePath, `${JSON.stringify(summary, null, 2)}\n`);
 console.log(JSON.stringify(summary, null, 2));
