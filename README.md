@@ -53,22 +53,23 @@ Bridge Desktop 需要本地安装。
 
 ## 能力边界
 
-Bridge 全链只做认证、授权关系检查和透明转发。SaaS 决定要发什么
-`kind`、`policy`、`workspace_ref` 和 payload；Bridge 不做 kind 白名单、
-策略默认注入、额度上限或 workspace 改写。
+Bridge Cloud 负责认证、授权关系、产品 capability 和队列边界。Bridge
+Desktop 是本机权限最终执行者：SaaS 可以请求 `kind`、`policy`、
+`workspace_ref` 和 payload，但本机只会在用户授权可见范围和本机白名单内执行。
 
-授权表示某个 product 可以连接并使用这台设备，不表示 Bridge Cloud 或 SDK
-会替 SaaS 裁剪能力。
+授权表示某个 product 可以在可见 scope 内使用这台设备；越权 cwd、sandbox、
+approval policy 或 developer instructions 会被 Desktop 拒绝。
 
 ## Spec
 
 本仓库的文档事实源已经切到新版 spec 模式。先读：
 
 - [spec 使用说明](spec/README.md)
-- [全局能力清单](spec/gate/capability-map.html)
-- [当前产品路线](spec/gate/routes/v8-pandart-real-codex-model-e2e.md)
-- [架构总览](spec/architecture/architecture.md)
-- [质量门禁](spec/quality/gates.md)
+- [BDD 行为契约](spec/bdd/_index.json)
+- [版本简档](spec/js/版本简档.js)
+- [缺陷池](spec/js/缺陷池.js)
+- [技术文档](spec/js/技术文档.js)
+- [质量标准](spec/js/质量标准.js)
 
 ## 当前实现
 

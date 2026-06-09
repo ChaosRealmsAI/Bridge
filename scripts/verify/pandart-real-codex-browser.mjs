@@ -145,6 +145,7 @@ async function selectDeviceByName(page, name) {
 function runDesktop(args, timeoutMs) {
   const env = {
     ...process.env,
+    PANDA_BRIDGE_ALLOW_HEADLESS_CONNECT: "1",
     PANDA_BRIDGE_DESKTOP_STATE: statePath,
     PANDA_BRIDGE_CODEX_CWD: resolve("."),
     PATH: strippedPath,

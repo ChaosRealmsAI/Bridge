@@ -8,7 +8,7 @@ import { resolve } from "node:path";
 const appUrl = (process.env.PANDA_BRIDGE_APP_URL || "https://bridge.otherline.cc").replace(/\/$/, "");
 const evidenceDir = resolve("spec/verification/evidence/real-codex-queue");
 const productId = process.env.PANDA_BRIDGE_REAL_QUEUE_PRODUCT_ID || process.env.PANDA_BRIDGE_PRODUCT_ID || "panda-chat";
-const productOrigin = process.env.PANDA_BRIDGE_REAL_QUEUE_ORIGIN || (productId === "otherline" ? "https://test.otherline.cc" : "https://bridge.otherline.cc");
+const productOrigin = process.env.PANDA_BRIDGE_REAL_QUEUE_ORIGIN || (productId === "otherline" ? "https://app.test.example" : "https://bridge.otherline.cc");
 const temp = mkdtempSync(resolve(tmpdir(), "panda-bridge-real-queue-"));
 const desktopState = resolve(temp, "desktop-state.json");
 const controlState = resolve(temp, "verify-control.json");
@@ -29,7 +29,11 @@ for (const name of [
   ...Array.from({ length: 5 }, (_, index) => `job-${index + 1}-events.json`),
 ]) rmSync(resolve(evidenceDir, name), { force: true });
 
-run("npm", ["run", "desktop:install:mac"]);
+if (process.env.PANDA_BRIDGE_SKIP_DESKTOP_INSTALL === "1") {
+  assert.ok(existsSync(appExecutable), `Installed Panda Bridge executable not found: ${appExecutable}`);
+} else {
+  run("npm", ["run", "desktop:install:mac"]);
+}
 stopDesktop();
 
 const desktop = spawn(appExecutable, [], {

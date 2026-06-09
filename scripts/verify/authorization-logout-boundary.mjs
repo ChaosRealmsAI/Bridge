@@ -51,6 +51,7 @@ try {
   let cookie = "";
   const fetchJar = async (url, init = {}) => {
     const headers = new Headers(init.headers || {});
+    headers.set("origin", apiBase);
     if (cookie) headers.set("cookie", cookie);
     const response = await fetch(url, { ...init, headers });
     const setCookie = response.headers.get("set-cookie");
@@ -143,6 +144,8 @@ try {
   assert.equal(final.status, "succeeded");
   assert.match(final.result.reply, /authorization logout restored/);
 
+  const runningRevocation = await verifyRunningRevocationLateAck(bridge, apiBase);
+
   const summary = redact({
     ok: true,
     version: VERSION,
@@ -169,7 +172,8 @@ try {
       restored_job_id: restoredJob.job.id,
       final_status: final.status,
     },
-    source_access: "Desktop headless operation surface plus SDK-as-user calls; no storage or implementation state reads.",
+    running_revocation: runningRevocation,
+    source_access: "Desktop headless operation surface, SDK-as-user calls, and public connector HTTP routes; no storage or implementation state reads.",
     checked_at: new Date().toISOString(),
   });
   writeFileSync(resolve(evidenceDir, "authorization-logout-boundary.json"), JSON.stringify(summary, null, 2) + "\n");
@@ -189,6 +193,7 @@ function runDesktop(args) {
     const child = spawn("cargo", ["run", "--quiet", "--manifest-path", "apps/desktop/Cargo.toml", "--", ...args], {
       env: {
         ...process.env,
+        PANDA_BRIDGE_ALLOW_HEADLESS_CONNECT: "1",
         PANDA_BRIDGE_DESKTOP_STATE: statePath,
         PANDA_BRIDGE_FAKE_CODEX: "1",
       },
@@ -214,6 +219,97 @@ function runDesktop(args) {
       resolveChild({ status, signal, stdout, stderr, error });
     });
   });
+}
+
+async function verifyRunningRevocationLateAck(bridge, apiBase) {
+  const deviceName = "Authorization Logout Running Connector";
+  const pairing = await bridge.devices.createPairingCode(deviceName);
+  const connectorClaim = await connectorRequest(apiBase, "POST", "/v1/connectors/claim", {
+    code: pairing.code,
+    device_name: deviceName,
+    capabilities: { codex: ["codex.chat", "codex.run"] },
+  });
+  assert.equal(connectorClaim.status, 201, JSON.stringify(connectorClaim.payload));
+
+  const intent = await bridge.connect.createIntent({ deviceName });
+  const intentClaim = await connectorRequest(apiBase, "POST", `/v1/connect-intents/${encodeURIComponent(intent.token)}/claim`, {
+    device_name: deviceName,
+    capabilities: { codex: ["codex.chat", "codex.run"] },
+    policy: {
+      capabilities: ["codex.chat", "codex.run"],
+      workspace_roots: [{ ref: "default", label: "Default", path: process.cwd() }],
+      sandbox_floor: "workspace-write",
+      approval_policy_floor: "on-request",
+      allow_approval_never: false,
+      allow_developer_instructions: false,
+    },
+  }, connectorClaim.payload.device_token, { origin: null, localClient: "connector-cli" });
+  assert.equal(intentClaim.status, 201, JSON.stringify(intentClaim.payload));
+
+  const deviceId = intentClaim.payload.device.id;
+  const token = intentClaim.payload.device_token;
+  const runningJob = await bridge.codex.run({
+    deviceId,
+    prompt: "running before authorization revoke",
+    requestKey: "v9-running-before-authorization-revoke",
+    tokenBudget: 1000,
+    timeoutMs: 60000,
+  });
+  assert.equal(runningJob.job.status, "queued");
+
+  const accept = await connectorRequest(apiBase, "POST", `/v1/connectors/jobs/${encodeURIComponent(runningJob.job.id)}/accept`, {
+    transport: "public-http",
+  }, token);
+  assert.equal(accept.status, 200, JSON.stringify(accept.payload));
+  assert.equal(accept.payload.accepted, true);
+  assert.equal(accept.payload.job.status, "running");
+
+  const revoke = await bridge.products.revokeAuthorization(deviceId);
+  assert.equal(revoke.authorization.status, "revoked");
+  assert.equal(revoke.cancelled_jobs, 1);
+
+  const lateAck = await connectorRequest(apiBase, "POST", `/v1/connectors/jobs/${encodeURIComponent(runningJob.job.id)}/ack`, {
+    status: "succeeded",
+    result: { ok: true, reply: "late ack must not win" },
+  }, token);
+  assert.equal(lateAck.status, 403, JSON.stringify(lateAck.payload));
+  assert.equal(lateAck.payload.error, "product_not_authorized");
+  assert.equal(lateAck.payload.job.status, "cancelled");
+
+  const after = await bridge.jobs.get(runningJob.job.id);
+  assert.equal(after.job.status, "cancelled");
+  assert.equal(after.job.result.error, "product_not_authorized");
+  assert.equal(after.job.result.reply, undefined);
+
+  return {
+    device_id: deviceId,
+    job_id: runningJob.job.id,
+    accepted_status: accept.payload.job.status,
+    revoke_cancelled_jobs: revoke.cancelled_jobs,
+    late_ack_status: lateAck.status,
+    late_ack_error: lateAck.payload.error,
+    final_status: after.job.status,
+  };
+}
+
+async function connectorRequest(apiBase, method, path, body = null, token = "", options = {}) {
+  const headers = new Headers({ accept: "application/json" });
+  const origin = Object.hasOwn(options, "origin") ? options.origin : apiBase;
+  if (origin) headers.set("origin", origin);
+  if (body) headers.set("content-type", "application/json");
+  if (token) headers.set("authorization", `Bearer ${token}`);
+  if (options.localClient) headers.set("x-panda-bridge-local-client", options.localClient);
+  const response = await fetch(`${apiBase}${path}`, {
+    method,
+    headers,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const text = await response.text();
+  return {
+    status: response.status,
+    ok: response.ok,
+    payload: text ? JSON.parse(text) : {},
+  };
 }
 
 async function expectSdkError(operation, status, errorCode) {

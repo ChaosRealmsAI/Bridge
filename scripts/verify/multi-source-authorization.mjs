@@ -266,6 +266,7 @@ function runDesktop(args) {
     const child = spawn("cargo", ["run", "--quiet", "--manifest-path", "apps/desktop/Cargo.toml", "--", ...args], {
       env: {
         ...process.env,
+        PANDA_BRIDGE_ALLOW_HEADLESS_CONNECT: "1",
         PANDA_BRIDGE_DESKTOP_STATE: statePath,
         PANDA_BRIDGE_FAKE_CODEX: "1",
       },

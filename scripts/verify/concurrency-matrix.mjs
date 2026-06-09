@@ -38,7 +38,7 @@ const chatClaim = await api(owner, "POST", `/v1/connect-intents/${encodeURICompo
   device_name: "Concurrency Matrix Device",
   install_id: "concurrency-install",
   capabilities: { codex: ["codex.chat", "codex.run", "codex.rpc"] },
-}, "http://chat.local.test", { authorization: "" });
+}, "", { "x-panda-bridge-local-client": "connector-cli" });
 const deviceId = chatClaim.device.id;
 const deviceToken = chatClaim.device_token;
 
@@ -50,8 +50,9 @@ await api(owner, "POST", `/v1/connect-intents/${encodeURIComponent(devIntent.tok
   device_name: "Concurrency Matrix Device",
   install_id: "concurrency-install",
   capabilities: { codex: ["codex.chat", "codex.run", "codex.rpc"] },
-}, "http://dev.local.test", {
+}, "", {
   authorization: `Bearer ${deviceToken}`,
+  "x-panda-bridge-local-client": "connector-cli",
   "x-panda-bridge-install-id": "concurrency-install",
 });
 

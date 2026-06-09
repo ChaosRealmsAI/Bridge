@@ -45,6 +45,7 @@ try {
   let cookie = "";
   const fetchJar = async (url, init = {}) => {
     const headers = new Headers(init.headers || {});
+    headers.set("origin", apiBase);
     if (cookie) headers.set("cookie", cookie);
     const response = await fetch(url, { ...init, headers });
     const setCookie = response.headers.get("set-cookie");
@@ -70,6 +71,7 @@ try {
   let mobileCookie = "";
   const mobileFetch = async (url, init = {}) => {
     const headers = new Headers(init.headers || {});
+    headers.set("origin", apiBase);
     if (mobileCookie) headers.set("cookie", mobileCookie);
     const response = await fetch(url, { ...init, headers });
     const setCookie = response.headers.get("set-cookie");
@@ -123,7 +125,7 @@ try {
 function runDesktop(args, extraEnv = {}) {
   return new Promise((resolveChild) => {
     const child = spawn("cargo", ["run", "--quiet", "--manifest-path", "apps/desktop/Cargo.toml", "--", ...args], {
-      env: { ...process.env, ...extraEnv },
+      env: { ...process.env, PANDA_BRIDGE_ALLOW_HEADLESS_CONNECT: "1", ...extraEnv },
     });
     let stdout = "";
     let stderr = "";

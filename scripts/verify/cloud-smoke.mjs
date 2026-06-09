@@ -8,6 +8,7 @@ import { createBridgeClient } from "../../packages/sdk/src/index.js";
 
 const apiBase = (process.env.PANDA_BRIDGE_API_BASE || "https://api.bridge.otherline.cc").replace(/\/$/, "");
 const productId = process.env.PANDA_BRIDGE_PRODUCT_ID || "panda-chat";
+const productOrigin = process.env.PANDA_BRIDGE_PRODUCT_ORIGIN || (productId === "panda-dev" ? "https://dev.otherline.cc" : "https://bridge.otherline.cc");
 const temp = mkdtempSync(resolve(tmpdir(), "panda-bridge-cloud-smoke-"));
 const statePath = resolve(temp, "connector.json");
 const evidenceDir = resolve("spec/verification/evidence/cloud-smoke");
@@ -16,6 +17,7 @@ mkdirSync(evidenceDir, { recursive: true });
 let cookie = "";
 const fetchJar = async (url, init = {}) => {
   const headers = new Headers(init.headers || {});
+  headers.set("origin", productOrigin);
   if (cookie) headers.set("cookie", cookie);
   const response = await fetch(url, { ...init, headers });
   const setCookie = response.headers.get("set-cookie");

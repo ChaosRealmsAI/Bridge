@@ -6,6 +6,7 @@ const env = {
   BRIDGE_LOCAL_MEMORY: "1",
   BRIDGE_WEB_ORIGIN: "http://local.test",
   BRIDGE_OTHERLINE_DELEGATION_SECRET: "otherline-delegation-test-secret",
+  BRIDGE_PRODUCT_DELEGATION_SECRETS: JSON.stringify({ "panda-dev": "panda-dev-delegation-test-secret" }),
 };
 const jar = {};
 
@@ -15,6 +16,9 @@ async function apiRaw(method, path, body, token = "", extraHeaders = {}) {
   if (jar.cookie) headers.set("cookie", jar.cookie);
   if (token) headers.set("authorization", `Bearer ${token}`);
   for (const [key, value] of Object.entries(extraHeaders)) headers.set(key, value);
+  if (!["GET", "HEAD", "OPTIONS"].includes(method) && !headers.has("origin")) {
+    headers.set("origin", env.BRIDGE_WEB_ORIGIN);
+  }
   const response = await worker.fetch(new Request(`http://local.test${path}`, {
     method,
     headers,
@@ -31,10 +35,27 @@ async function apiRawText(method, path, bodyText, token = "", extraHeaders = {})
   if (token) headers.set("authorization", `Bearer ${token}`);
   if (jar.cookie) headers.set("cookie", jar.cookie);
   for (const [key, value] of Object.entries(extraHeaders)) headers.set(key, value);
+  if (!["GET", "HEAD", "OPTIONS"].includes(method) && !headers.has("origin")) {
+    headers.set("origin", env.BRIDGE_WEB_ORIGIN);
+  }
   const response = await worker.fetch(new Request(`http://local.test${path}`, {
     method,
     headers,
     body: bodyText && method !== "GET" && method !== "HEAD" ? bodyText : undefined,
+  }), env);
+  const payload = JSON.parse(await response.text());
+  return { response, payload };
+}
+
+async function apiMissingOrigin(method, path, body = null, token = "", extraHeaders = {}) {
+  const headers = new Headers({ accept: "application/json" });
+  if (body) headers.set("content-type", "application/json");
+  if (token) headers.set("authorization", `Bearer ${token}`);
+  for (const [key, value] of Object.entries(extraHeaders)) headers.set(key, value);
+  const response = await worker.fetch(new Request(`http://local.test${path}`, {
+    method,
+    headers,
+    body: body ? JSON.stringify(body) : undefined,
   }), env);
   const payload = JSON.parse(await response.text());
   return { response, payload };
@@ -46,39 +67,58 @@ async function api(method, path, body, token = "", extraHeaders = {}) {
   return payload;
 }
 
-async function delegatedApiRaw(method, path, body, userId, deviceId, nonce = randomUUID()) {
-  const bodyText = body ? JSON.stringify(body) : "";
-  return delegatedApiRawText(method, path, bodyText, userId, deviceId, nonce);
+async function nativeClaimIntentRaw(token, body, bearer = "", extraHeaders = {}) {
+  return apiMissingOrigin("POST", `/v1/connect-intents/${encodeURIComponent(token)}/claim`, body, bearer, {
+    "x-panda-bridge-local-client": "desktop",
+    ...extraHeaders,
+  });
 }
 
-async function delegatedApiRawText(method, path, bodyText, userId, deviceId, nonce = randomUUID()) {
+async function nativeClaimIntent(token, body, bearer = "", extraHeaders = {}) {
+  const { response, payload } = await nativeClaimIntentRaw(token, body, bearer, extraHeaders);
+  assert.ok(response.ok, `POST /v1/connect-intents/:token/claim: ${JSON.stringify(payload)}`);
+  return payload;
+}
+
+function delegationSecret(productId) {
+  if (productId === "otherline") return env.BRIDGE_OTHERLINE_DELEGATION_SECRET;
+  return JSON.parse(env.BRIDGE_PRODUCT_DELEGATION_SECRETS)[productId];
+}
+
+async function delegatedApiRaw(method, path, body, userId, deviceId, nonce = randomUUID(), options = {}) {
+  const bodyText = body ? JSON.stringify(body) : "";
+  return delegatedApiRawText(method, path, bodyText, userId, deviceId, nonce, options);
+}
+
+async function delegatedApiRawText(method, path, bodyText, userId, deviceId, nonce = randomUUID(), options = {}) {
+  const productId = options.productId || "otherline";
   const bodyHash = createHash("sha256").update(bodyText).digest("hex");
-  const timestamp = new Date().toISOString();
+  const timestamp = options.timestamp || new Date().toISOString();
   const signingPayload = [
     method.toUpperCase(),
-    path,
-    "otherline",
+    options.signaturePath || path,
+    productId,
     userId,
     deviceId,
     timestamp,
     nonce,
-    bodyHash,
+    options.bodyHash || bodyHash,
   ].join("\n");
-  const signature = createHmac("sha256", env.BRIDGE_OTHERLINE_DELEGATION_SECRET).update(signingPayload).digest("hex");
+  const signature = options.signature || createHmac("sha256", delegationSecret(productId)).update(signingPayload).digest("hex");
   return apiRawText(method, path, bodyText, "", {
-    "x-panda-bridge-product-id": "otherline",
+    "x-panda-bridge-product-id": productId,
     "x-panda-bridge-user-id": userId,
     "x-panda-bridge-device-id": deviceId,
     "x-panda-bridge-request-timestamp": timestamp,
     "x-panda-bridge-request-nonce": nonce,
-    "x-panda-bridge-body-sha256": bodyHash,
+    "x-panda-bridge-body-sha256": options.bodyHash || bodyHash,
     "x-panda-bridge-signature": signature,
     "content-type": "application/json",
   });
 }
 
-async function delegatedApi(method, path, body, userId, deviceId, nonce = randomUUID()) {
-  const { response, payload } = await delegatedApiRaw(method, path, body, userId, deviceId, nonce);
+async function delegatedApi(method, path, body, userId, deviceId, nonce = randomUUID(), options = {}) {
+  const { response, payload } = await delegatedApiRaw(method, path, body, userId, deviceId, nonce, options);
   assert.ok(response.ok, `${method} ${path}: ${JSON.stringify(payload)}`);
   return payload;
 }
@@ -93,6 +133,18 @@ assert.match(badOrigin.response.headers.get("content-security-policy"), /object-
 assert.equal(badOrigin.response.headers.get("x-frame-options"), "DENY");
 assert.equal(badOrigin.response.headers.get("referrer-policy"), "no-referrer");
 assert.equal(badOrigin.response.headers.get("strict-transport-security"), null);
+
+const missingOriginBrowserWrite = await apiMissingOrigin("POST", "/v1/sessions/guest", { display_name: "Missing Origin" });
+assert.equal(missingOriginBrowserWrite.response.status, 403);
+assert.equal(missingOriginBrowserWrite.payload.error, "invalid_origin");
+const missingOriginForgedBearer = await apiMissingOrigin("POST", "/v1/sessions/guest", { display_name: "Forged Bearer" }, "fake-token");
+assert.equal(missingOriginForgedBearer.response.status, 403);
+assert.equal(missingOriginForgedBearer.payload.error, "invalid_origin");
+const missingOriginForgedSignature = await apiMissingOrigin("POST", "/v1/sessions/guest", { display_name: "Forged Signature" }, "", {
+  "x-panda-bridge-signature": "fake-signature",
+});
+assert.equal(missingOriginForgedSignature.response.status, 403);
+assert.equal(missingOriginForgedSignature.payload.error, "invalid_origin");
 
 const assetRaw = await worker.fetch(new Request("http://local.test/"), env);
 assert.equal(assetRaw.status, 200);
@@ -165,7 +217,7 @@ assert.match(jar.cookie, /^pb_session=/);
 const products = await api("GET", "/v1/products");
 assert.ok(products.items.some((item) => item.id === "panda-chat" && item.capabilities.includes("codex.chat")));
 assert.ok(products.items.some((item) => item.id === "panda-dev" && item.capabilities.includes("codex.rpc")));
-assert.ok(products.items.some((item) => item.id === "otherline" && item.capabilities.includes("codex.rpc")));
+assert.ok(products.items.some((item) => item.id === "otherline" && item.capabilities.length === 1 && item.capabilities.includes("codex.chat")));
 const pairing = await api("POST", "/v1/devices/pairing-codes", { device_name: "Local Test Device" });
 const claim = await api("POST", "/v1/connectors/claim", {
   code: pairing.code,
@@ -176,8 +228,22 @@ const deniedBrowserAuth = await apiRaw("POST", "/v1/products/panda-chat/authoriz
 assert.equal(deniedBrowserAuth.response.status, 403);
 assert.equal(deniedBrowserAuth.payload.error, "desktop_authorization_required");
 
+const nativeIntent = await api("POST", "/v1/connect-intents", { product_id: "panda-chat", device_name: "Native No-Origin Device" });
+const nativeClaimWithoutHeader = await apiMissingOrigin("POST", `/v1/connect-intents/${encodeURIComponent(nativeIntent.token)}/claim`, {
+  device_name: "Native No-Origin Device",
+  capabilities: { codex: ["codex.chat"] },
+}, claim.device_token);
+assert.equal(nativeClaimWithoutHeader.response.status, 403);
+assert.equal(nativeClaimWithoutHeader.payload.error, "invalid_origin");
+const nativeClaimWithHeader = await apiMissingOrigin("POST", `/v1/connect-intents/${encodeURIComponent(nativeIntent.token)}/claim`, {
+  device_name: "Native No-Origin Device",
+  capabilities: { codex: ["codex.chat"] },
+}, claim.device_token, { "x-panda-bridge-local-client": "desktop" });
+assert.equal(nativeClaimWithHeader.response.status, 201);
+assert.equal(nativeClaimWithHeader.payload.device.id, claim.device.id);
+
 const localIntent = await api("POST", "/v1/connect-intents", { product_id: "panda-chat", device_name: "Local Test Device" });
-const localIntentClaim = await api("POST", `/v1/connect-intents/${encodeURIComponent(localIntent.token)}/claim`, {
+const localIntentClaim = await nativeClaimIntent(localIntent.token, {
   device_name: "Local Test Device",
   capabilities: { codex: ["codex.chat", "codex.run"] },
 }, claim.device_token);
@@ -254,7 +320,13 @@ const inspected = await api("GET", `/v1/connect-intents/${encodeURIComponent(int
 assert.equal(inspected.connect_intent.product_id, "panda-chat");
 assert.equal(inspected.connect_intent.source_origin, "http://chat.local.test");
 assert.equal(inspected.account.display_name, "Tester");
-const intentClaim = await api("POST", `/v1/connect-intents/${encodeURIComponent(intent.token)}/claim`, {
+const browserIntentClaim = await apiRaw("POST", `/v1/connect-intents/${encodeURIComponent(intent.token)}/claim`, {
+  device_name: "Browser Must Not Claim",
+  capabilities: { codex: ["codex.chat"] },
+});
+assert.equal(browserIntentClaim.response.status, 403);
+assert.equal(browserIntentClaim.payload.error, "desktop_claim_required");
+const intentClaim = await nativeClaimIntent(intent.token, {
   device_name: "Intent Test Device",
   capabilities: { codex: ["codex.chat", "codex.run"] },
 });
@@ -262,12 +334,15 @@ assert.equal(intentClaim.device.device_name, "Intent Test Device");
 assert.equal(intentClaim.account.display_name, "Tester");
 assert.equal(intentClaim.product.id, "panda-chat");
 assert.equal(intentClaim.authorization.source_origin, "http://chat.local.test");
+assert.equal(intentClaim.authorization.policy.version, "AUTH-SCOPE-v1");
+assert.equal(intentClaim.authorization.policy.product_id, "panda-chat");
+assert.deepEqual(intentClaim.authorization.policy.capabilities, ["codex.chat", "codex.run"]);
 assert.match(intentClaim.device_token, /^pbd_/);
 assert.ok(intentClaim.token_expires_at);
 const consumedIntentInspect = await apiRaw("GET", `/v1/connect-intents/${encodeURIComponent(intent.token)}`);
 assert.equal(consumedIntentInspect.response.status, 400);
 assert.equal(consumedIntentInspect.payload.error, "invalid_connect_intent");
-const consumedIntentClaim = await apiRaw("POST", `/v1/connect-intents/${encodeURIComponent(intent.token)}/claim`, {
+const consumedIntentClaim = await nativeClaimIntentRaw(intent.token, {
   device_name: "Consumed Intent Device",
   capabilities: { codex: ["codex.chat"] },
 });
@@ -276,7 +351,7 @@ assert.equal(consumedIntentClaim.payload.error, "invalid_connect_intent");
 env.BRIDGE_CONNECT_INTENT_TTL_MS = "1";
 const expiringIntent = await api("POST", "/v1/connect-intents", { product_id: "panda-chat", device_name: "Expiring Intent" });
 await new Promise((resolve) => setTimeout(resolve, 5));
-const expiredIntentClaim = await apiRaw("POST", `/v1/connect-intents/${encodeURIComponent(expiringIntent.token)}/claim`, {
+const expiredIntentClaim = await nativeClaimIntentRaw(expiringIntent.token, {
   device_name: "Expired Intent Device",
   capabilities: { codex: ["codex.chat"] },
 });
@@ -335,13 +410,33 @@ const queuedBeforeConnectorRevoke = await api("POST", "/v1/products/panda-chat/j
   policy: { token_budget: 1000, timeout_ms: 60000 },
 });
 assert.equal(queuedBeforeConnectorRevoke.job.status, "queued");
+const runningBeforeConnectorRevoke = await api("POST", "/v1/products/panda-chat/jobs", {
+  kind: "codex.chat",
+  device_id: intentClaim.device.id,
+  product_id: "panda-chat",
+  workspace_ref: "default",
+  input: { prompt: "running before connector revoke" },
+  request_key: "running-before-connector-revoke",
+  policy: { token_budget: 1000, timeout_ms: 60000 },
+});
+const runningBeforeConnectorRevokeAccept = await api("POST", `/v1/connectors/jobs/${runningBeforeConnectorRevoke.job.id}/accept`, { transport: "websocket" }, intentClaim.device_token);
+assert.equal(runningBeforeConnectorRevokeAccept.accepted, true);
+assert.equal(runningBeforeConnectorRevokeAccept.job.status, "running");
 const connectorRevokedChat = await api("DELETE", "/v1/connectors/products/panda-chat/authorization", null, intentClaim.device_token);
 assert.equal(connectorRevokedChat.authorization.status, "revoked");
 assert.equal(connectorRevokedChat.authorization.product_id, "panda-chat");
-assert.equal(connectorRevokedChat.cancelled_jobs, 1);
+assert.equal(connectorRevokedChat.cancelled_jobs, 2);
 const cancelledAfterConnectorRevoke = await api("GET", `/v1/jobs/${queuedBeforeConnectorRevoke.job.id}`);
 assert.equal(cancelledAfterConnectorRevoke.job.status, "cancelled");
 assert.equal(cancelledAfterConnectorRevoke.job.result.error, "product_not_authorized");
+const runningCancelledAfterConnectorRevoke = await api("GET", `/v1/jobs/${runningBeforeConnectorRevoke.job.id}`);
+assert.equal(runningCancelledAfterConnectorRevoke.job.status, "cancelled");
+assert.equal(runningCancelledAfterConnectorRevoke.job.result.error, "product_not_authorized");
+const lateRunningAck = await apiRaw("POST", `/v1/connectors/jobs/${runningBeforeConnectorRevoke.job.id}/ack`, { status: "succeeded", result: { ok: true, reply: "should not win" } }, intentClaim.device_token);
+assert.equal(lateRunningAck.response.status, 403);
+assert.equal(lateRunningAck.payload.error, "product_not_authorized");
+assert.equal(lateRunningAck.payload.job.status, "cancelled");
+assert.equal(lateRunningAck.payload.job.result.reply, undefined);
 await api("POST", "/v1/connectors/heartbeat", {}, intentClaim.device_token);
 const authAfterConnectorRevoke = await api("GET", `/v1/products/panda-chat/authorization?device_id=${encodeURIComponent(intentClaim.device.id)}`);
 assert.equal(authAfterConnectorRevoke.authorization, null);
@@ -359,7 +454,7 @@ assert.equal(jobAfterConnectorRevoke.payload.error, "product_not_authorized");
 const connectorJobsAfterRevoke = await api("GET", "/v1/connectors/jobs", null, intentClaim.device_token);
 assert.equal(connectorJobsAfterRevoke.items.length, 0);
 const reconnectIntent = await api("POST", "/v1/connect-intents", { product_id: "panda-chat", device_name: "Intent Test Device" }, "", { origin: "http://chat.local.test" });
-const reconnectClaim = await api("POST", `/v1/connect-intents/${encodeURIComponent(reconnectIntent.token)}/claim`, {
+const reconnectClaim = await nativeClaimIntent(reconnectIntent.token, {
   device_name: "Intent Test Device",
   capabilities: { codex: ["codex.chat", "codex.run"] },
 }, intentClaim.device_token);
@@ -377,9 +472,8 @@ const chatRpc = await apiRaw("POST", "/v1/products/panda-chat/jobs", {
   input: { calls: [{ method: "initialize" }] },
   policy: { token_budget: 1000, timeout_ms: 60000 },
 });
-assert.equal(chatRpc.response.status, 201);
-assert.equal(chatRpc.payload.job.status, "queued");
-assert.equal(chatRpc.payload.job.kind, "codex.rpc");
+assert.equal(chatRpc.response.status, 403);
+assert.equal(chatRpc.payload.error, "scope_insufficient");
 
 const unauthorizedDevJob = await apiRaw("POST", "/v1/products/panda-dev/jobs", {
   kind: "codex.run",
@@ -394,9 +488,9 @@ assert.equal(unauthorizedDevJob.payload.error, "product_not_authorized");
 
 const devIntent = await api("POST", "/v1/connect-intents", { product_id: "panda-dev", device_name: "Intent Test Device" }, "", { origin: "http://dev.local.test" });
 assert.equal(devIntent.connect_intent.source_origin, "http://dev.local.test");
-const devClaim = await api("POST", `/v1/connect-intents/${encodeURIComponent(devIntent.token)}/claim`, {
+const devClaim = await nativeClaimIntent(devIntent.token, {
   device_name: "Intent Test Device",
-  capabilities: { codex: ["codex.chat", "codex.run", "codex.rpc"] },
+  capabilities: { codex: ["codex.chat"] },
 }, intentClaim.device_token);
 assert.equal(devClaim.device.id, intentClaim.device.id);
 assert.equal(devClaim.product.id, "panda-dev");
@@ -414,9 +508,9 @@ assert.equal(devRpcJob.job.source_origin, "http://dev.local.test");
 
 const otherlineIntent = await api("POST", "/v1/connect-intents", { product_id: "otherline", device_name: "Intent Test Device" }, "", { origin: "https://otherline.cc" });
 assert.equal(otherlineIntent.product.id, "otherline");
-const otherlineClaim = await api("POST", `/v1/connect-intents/${encodeURIComponent(otherlineIntent.token)}/claim`, {
+const otherlineClaim = await nativeClaimIntent(otherlineIntent.token, {
   device_name: "Intent Test Device",
-  capabilities: { codex: ["codex.chat", "codex.run", "codex.rpc"] },
+  capabilities: { codex: ["codex.chat"] },
 }, intentClaim.device_token);
 assert.equal(otherlineClaim.device.id, intentClaim.device.id);
 assert.equal(otherlineClaim.authorization.product_id, "otherline");
@@ -426,6 +520,74 @@ assert.equal(delegatedMalformedJson.payload.error, "invalid_json");
 const delegatedAuthorization = await delegatedApi("GET", `/v1/products/otherline/delegated/authorization?device_id=${encodeURIComponent(otherlineClaim.device.id)}`, null, otherlineClaim.account.id, otherlineClaim.device.id);
 assert.equal(delegatedAuthorization.authorization.product_id, "otherline");
 assert.equal(delegatedAuthorization.device.status, "online");
+
+const replayNonce = randomUUID();
+const replayPath = `/v1/products/otherline/delegated/authorization?device_id=${encodeURIComponent(otherlineClaim.device.id)}`;
+const replayFirst = await delegatedApiRaw("GET", replayPath, null, otherlineClaim.account.id, otherlineClaim.device.id, replayNonce);
+assert.equal(replayFirst.response.status, 200);
+const replaySecond = await delegatedApiRaw("GET", replayPath, null, otherlineClaim.account.id, otherlineClaim.device.id, replayNonce);
+assert.equal(replaySecond.response.status, 401);
+assert.equal(replaySecond.payload.error, "product_delegation_replay");
+const signedWithoutQuery = await delegatedApiRaw("GET", replayPath, null, otherlineClaim.account.id, otherlineClaim.device.id, randomUUID(), {
+  signaturePath: "/v1/products/otherline/delegated/authorization",
+});
+assert.equal(signedWithoutQuery.response.status, 401);
+assert.equal(signedWithoutQuery.payload.error, "product_delegation_signature_invalid");
+const staleTimestamp = await delegatedApiRaw("GET", replayPath, null, otherlineClaim.account.id, otherlineClaim.device.id, randomUUID(), {
+  timestamp: "2020-01-01T00:00:00.000Z",
+});
+assert.equal(staleTimestamp.response.status, 401);
+assert.equal(staleTimestamp.payload.error, "product_delegation_timestamp_invalid");
+const badBodyHash = await delegatedApiRaw("POST", "/v1/products/otherline/delegated/jobs", {
+  kind: "codex.chat",
+  device_id: otherlineClaim.device.id,
+  product_id: "otherline",
+  workspace_ref: "default",
+  input: { prompt: "bad body hash" },
+  request_key: "otherline-bad-body-hash",
+  policy: { token_budget: 1000, timeout_ms: 60000 },
+}, otherlineClaim.account.id, otherlineClaim.device.id, randomUUID(), {
+  bodyHash: "0".repeat(64),
+});
+assert.equal(badBodyHash.response.status, 401);
+assert.equal(badBodyHash.payload.error, "product_delegation_body_hash_invalid");
+
+const externalDelegatedUser = randomUUID();
+const otherlineScopedUser = await delegatedApi("POST", "/v1/products/otherline/delegated/connect-intents", {
+  account: { display_name: "Same External User" },
+  device_name: "Otherline Scoped User",
+}, externalDelegatedUser, "pending");
+const devScopedUser = await delegatedApi("POST", "/v1/products/panda-dev/delegated/connect-intents", {
+  account: { display_name: "Same External User" },
+  device_name: "Dev Scoped User",
+}, externalDelegatedUser, "pending", randomUUID(), { productId: "panda-dev" });
+assert.notEqual(otherlineScopedUser.account.id, devScopedUser.account.id);
+assert.equal(otherlineScopedUser.account.display_name, "Same External User");
+assert.equal(devScopedUser.account.display_name, "Same External User");
+assert.equal(otherlineScopedUser.connect_intent.source_origin, "https://otherline.cc");
+assert.equal(devScopedUser.connect_intent.source_origin, "https://bridge.otherline.cc");
+
+const delegatedIntent = await delegatedApi("POST", "/v1/products/otherline/delegated/connect-intents", {
+  account: { display_name: "Delegated Otherline User" },
+  device_name: "Delegated Intent Device",
+}, otherlineClaim.account.id, "pending");
+assert.match(delegatedIntent.token, /^pbi_/);
+assert.notEqual(delegatedIntent.account.id, otherlineClaim.account.id);
+assert.equal(delegatedIntent.product.id, "otherline");
+assert.equal(delegatedIntent.connect_intent.source_origin, "https://otherline.cc");
+const delegatedIntentClaim = await nativeClaimIntent(delegatedIntent.token, {
+  device_name: "Delegated Intent Device",
+  capabilities: { codex: ["codex.chat"] },
+}, otherlineClaim.device_token);
+assert.notEqual(delegatedIntentClaim.device.id, otherlineClaim.device.id);
+assert.equal(delegatedIntentClaim.authorization.product_id, "otherline");
+assert.equal(delegatedIntentClaim.authorization.policy.version, "AUTH-SCOPE-v1");
+assert.equal(delegatedIntentClaim.authorization.policy.source_origin, "https://otherline.cc");
+const delegatedIntentInspect = await delegatedApi("GET", `/v1/products/otherline/delegated/connect-intents/${encodeURIComponent(delegatedIntent.token)}`, null, otherlineClaim.account.id, "pending");
+assert.ok(delegatedIntentInspect.connect_intent.consumed_at);
+assert.equal(delegatedIntentInspect.connect_intent.device_id, delegatedIntentClaim.device.id);
+assert.equal(delegatedIntentInspect.device.id, delegatedIntentClaim.device.id);
+assert.equal(delegatedIntentInspect.authorization.status, "active");
 const missingImportProof = await delegatedApiRaw("POST", "/v1/products/otherline/delegated/authorization/claim", {}, otherlineClaim.account.id, otherlineClaim.device.id);
 assert.equal(missingImportProof.response.status, 400);
 assert.equal(missingImportProof.payload.error, "authorization_import_proof_required");
@@ -445,7 +607,7 @@ assert.equal(reusedImportProof.response.status, 409);
 assert.equal(reusedImportProof.payload.error, "invalid_authorization_import_proof");
 const mismatchImportProof = await api("POST", "/v1/products/otherline/authorization/import-proof", { device_id: otherlineClaim.device.id });
 const missingDelegation = await apiRaw("POST", "/v1/products/otherline/delegated/jobs", {
-  kind: "codex.run",
+  kind: "codex.chat",
   device_id: otherlineClaim.device.id,
   product_id: "otherline",
   workspace_ref: "default",
@@ -456,17 +618,18 @@ const missingDelegation = await apiRaw("POST", "/v1/products/otherline/delegated
 assert.equal(missingDelegation.response.status, 401);
 assert.equal(missingDelegation.payload.error, "product_delegation_unauthorized");
 const delegatedJobBody = {
-  kind: "codex.run",
+  kind: "codex.chat",
   device_id: otherlineClaim.device.id,
   product_id: "otherline",
   workspace_ref: "default",
   input: { prompt: "delegated hello" },
-  request_key: "otherline-delegated-run",
+  request_key: "otherline-delegated-chat",
   policy: { token_budget: 1000, timeout_ms: 60000 },
 };
 const delegatedJob = await delegatedApi("POST", "/v1/products/otherline/delegated/jobs", delegatedJobBody, otherlineClaim.account.id, otherlineClaim.device.id);
 assert.equal(delegatedJob.job.status, "queued");
 assert.equal(delegatedJob.job.product_id, "otherline");
+assert.equal(delegatedJob.job.source_origin, "https://otherline.cc");
 const delegatedDuplicate = await delegatedApi("POST", "/v1/products/otherline/delegated/jobs", delegatedJobBody, otherlineClaim.account.id, otherlineClaim.device.id);
 assert.equal(delegatedDuplicate.reused, true);
 assert.equal(delegatedDuplicate.job.id, delegatedJob.job.id);
@@ -476,7 +639,7 @@ const delegatedConflict = await delegatedApiRaw("POST", "/v1/products/otherline/
 }, otherlineClaim.account.id, otherlineClaim.device.id);
 assert.equal(delegatedConflict.response.status, 409);
 assert.equal(delegatedConflict.payload.error, "idempotency_key_conflict");
-const delegatedRpcPassthrough = await delegatedApiRaw("POST", "/v1/products/otherline/delegated/jobs", {
+const delegatedRpcBlocked = await delegatedApiRaw("POST", "/v1/products/otherline/delegated/jobs", {
   kind: "codex.rpc",
   device_id: otherlineClaim.device.id,
   product_id: "otherline",
@@ -485,9 +648,8 @@ const delegatedRpcPassthrough = await delegatedApiRaw("POST", "/v1/products/othe
   request_key: "otherline-disallowed-rpc",
   policy: { token_budget: 1000, timeout_ms: 60000 },
 }, otherlineClaim.account.id, otherlineClaim.device.id);
-assert.equal(delegatedRpcPassthrough.response.status, 201);
-assert.equal(delegatedRpcPassthrough.payload.job.status, "queued");
-assert.equal(delegatedRpcPassthrough.payload.job.input.calls[0].method, "shell/exec");
+assert.equal(delegatedRpcBlocked.response.status, 403);
+assert.equal(delegatedRpcBlocked.payload.error, "scope_insufficient");
 const delegatedRead = await delegatedApi("GET", `/v1/products/otherline/delegated/jobs/${encodeURIComponent(delegatedJob.job.id)}`, null, otherlineClaim.account.id, otherlineClaim.device.id);
 assert.equal(delegatedRead.job.id, delegatedJob.job.id);
 const delegatedEvents = await delegatedApi("GET", `/v1/products/otherline/delegated/jobs/${encodeURIComponent(delegatedJob.job.id)}/events`, null, otherlineClaim.account.id, otherlineClaim.device.id);
@@ -495,6 +657,38 @@ assert.ok(delegatedEvents.items.some((item) => item.type === "queued"));
 const delegatedCancel = await delegatedApi("POST", `/v1/products/otherline/delegated/jobs/${encodeURIComponent(delegatedJob.job.id)}/cancel`, {}, otherlineClaim.account.id, otherlineClaim.device.id);
 assert.equal(delegatedCancel.cancelled, true);
 assert.equal(delegatedCancel.job.status, "cancelled");
+const delegatedQueuedBeforeRevoke = await delegatedApi("POST", "/v1/products/otherline/delegated/jobs", {
+  kind: "codex.chat",
+  device_id: otherlineClaim.device.id,
+  product_id: "otherline",
+  workspace_ref: "default",
+  input: { prompt: "delegated queued before revoke" },
+  request_key: "otherline-delegated-before-revoke",
+  policy: { token_budget: 1000, timeout_ms: 60000 },
+}, otherlineClaim.account.id, otherlineClaim.device.id);
+assert.equal(delegatedQueuedBeforeRevoke.job.status, "queued");
+const delegatedRevoke = await delegatedApi("DELETE", `/v1/products/otherline/delegated/authorization?device_id=${encodeURIComponent(otherlineClaim.device.id)}`, null, otherlineClaim.account.id, otherlineClaim.device.id);
+assert.equal(delegatedRevoke.authorization.status, "revoked");
+assert.equal(delegatedRevoke.cancelled_jobs, 1);
+const delegatedAfterRevoke = await delegatedApiRaw("POST", "/v1/products/otherline/delegated/jobs", {
+  kind: "codex.chat",
+  device_id: otherlineClaim.device.id,
+  product_id: "otherline",
+  workspace_ref: "default",
+  input: { prompt: "delegated after revoke" },
+  request_key: "otherline-delegated-after-revoke",
+  policy: { token_budget: 1000, timeout_ms: 60000 },
+}, otherlineClaim.account.id, otherlineClaim.device.id);
+assert.equal(delegatedAfterRevoke.response.status, 403);
+assert.equal(delegatedAfterRevoke.payload.error, "product_not_authorized");
+const delegatedReconnect = await delegatedApi("POST", "/v1/products/otherline/delegated/connect-intents", {
+  account: { display_name: "Delegated Otherline User" },
+  device_name: "Delegated Intent Device",
+}, otherlineClaim.account.id, "pending");
+await nativeClaimIntent(delegatedReconnect.token, {
+  device_name: "Delegated Intent Device",
+  capabilities: { codex: ["codex.chat"] },
+}, otherlineClaim.device_token);
 
 const otherlineOwnerCookie = jar.cookie;
 jar.cookie = "";
@@ -533,7 +727,7 @@ assert.equal(chatAfterDevRevoke.job.status, "queued");
 assert.equal(chatAfterDevRevoke.job.product_id, "panda-chat");
 
 const devConcurrencyIntent = await api("POST", "/v1/connect-intents", { product_id: "panda-dev", device_name: "Intent Test Device" }, "", { origin: "http://dev.local.test" });
-await api("POST", `/v1/connect-intents/${encodeURIComponent(devConcurrencyIntent.token)}/claim`, {
+await nativeClaimIntent(devConcurrencyIntent.token, {
   device_name: "Intent Test Device",
   capabilities: { codex: ["codex.chat", "codex.run", "codex.rpc"] },
 }, intentClaim.device_token);
@@ -601,7 +795,7 @@ assert.equal(crossQueueSummary.devices.some((item) => item.device.id === intentC
 jar.cookie = ownerConcurrencyCookie;
 
 const installBoundIntent = await api("POST", "/v1/connect-intents", { product_id: "panda-chat", device_name: "Install Bound Device" });
-const installBoundClaim = await apiRaw("POST", `/v1/connect-intents/${encodeURIComponent(installBoundIntent.token)}/claim`, {
+const installBoundClaim = await nativeClaimIntentRaw(installBoundIntent.token, {
   device_name: "Install Bound Device",
   install_id: "install-one",
   capabilities: { codex: ["codex.chat"] },
@@ -694,7 +888,7 @@ const passwordDevices = await api("GET", "/v1/devices");
 assert.ok(passwordDevices.items.some((item) => item.id === passwordClaim.device.id));
 env.BRIDGE_DEVICE_MAX_QUEUED_JOBS = "1";
 const queueLimitIntent = await api("POST", "/v1/connect-intents", { product_id: "panda-chat", device_name: "Queue Limit Device" });
-const queueLimitClaim = await api("POST", `/v1/connect-intents/${encodeURIComponent(queueLimitIntent.token)}/claim`, {
+const queueLimitClaim = await nativeClaimIntent(queueLimitIntent.token, {
   device_name: "Queue Limit Device",
   capabilities: { codex: ["codex.chat"] },
 });
@@ -810,6 +1004,7 @@ assert.equal(expiredSession.payload.authenticated, false);
 const expiredSessionDevices = await apiRaw("GET", "/v1/devices");
 assert.equal(expiredSessionDevices.response.status, 401);
 assert.equal(expiredSessionDevices.payload.error, "unauthorized");
+await worker.scheduled({}, env, {});
 delete env.BRIDGE_SESSION_TTL_MS;
 
 console.log("[worker.test] pass");

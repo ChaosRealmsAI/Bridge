@@ -4,7 +4,7 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "check": "cargo check --manifest-path Cargo.toml",
+    "check": "cargo test --manifest-path Cargo.toml",
     "build": "cargo build --manifest-path Cargo.toml",
     "run": "cargo run --manifest-path Cargo.toml --"
   }

@@ -411,6 +411,7 @@ function connectionFixture(apiBase, account) {
         name: "Panda Chat",
         origin: "http://chat.local.test",
         capabilities: ["codex.chat", "codex.run"],
+        policy: authScopeFixture(),
         accounts: [
           {
             id: account.id,
@@ -477,6 +478,20 @@ function sendWs(socket, payload) {
     header.writeBigUInt64BE(BigInt(data.length), 2);
   }
   socket.write(Buffer.concat([header, data]));
+}
+
+function authScopeFixture() {
+  return {
+    version: "AUTH-SCOPE-v1",
+    product_id: "panda-chat",
+    source_origin: "http://chat.local.test",
+    capabilities: ["codex.chat", "codex.run"],
+    workspace_roots: [{ id: "default", path_display: "[local]/default" }],
+    sandbox_floor: "workspace-write",
+    approval_policy_floor: "on-request",
+    allow_approval_never: false,
+    allow_developer_instructions: false,
+  };
 }
 
 function fetchWithOrigin(origin, accountId) {

@@ -60,7 +60,12 @@ const server = createServer(async (incoming, outgoing) => {
       headers: incomingHeaders(incoming.headers),
       body: shouldSendBody(incoming.method, body) ? body : undefined,
     });
-    const response = await worker.fetch(request, env);
+    const port = server.address().port;
+    const response = await worker.fetch(request, {
+      ...env,
+      BRIDGE_WEB_ORIGIN: `http://127.0.0.1:${port}`,
+      BRIDGE_PUBLIC_API_BASE: `http://127.0.0.1:${port}`,
+    });
     outgoing.writeHead(response.status, Object.fromEntries(response.headers.entries()));
     outgoing.end(response.body ? Buffer.from(await response.arrayBuffer()) : undefined);
   } catch (error) {
@@ -115,12 +120,20 @@ try {
   const intent = await owner.call("connect.createIntent", (client) => client.connect.createIntent({ deviceName: "SDK Examples Fixture Device" }));
   const intentPreview = await owner.call("connect.intent", (client) => client.connect.intent(intent.token));
   assert.equal(intentPreview.connect_intent.product_id, "panda-chat");
-  const claim = await owner.call("connect.claim", (client) => client.connect.claim(intent.token, {
+  await expectSdkError(
+    () => owner.call("connect.claim", (client) => client.connect.claim(intent.token, {
+      deviceName: "Browser SDK Must Not Claim",
+      capabilities: { runtime: "browser-forbidden" },
+    })),
+    403,
+    "desktop_claim_required",
+  );
+  const claim = await nativeClaimIntent(intent.token, {
     deviceName: "SDK Examples Fixture Device",
     appVersion: "sdk-examples-v0.1",
     capabilities: { runtime: "fixture", examples: true },
     localState: { platform: "local-fixture", temp_dir_present: Boolean(temp) },
-  }));
+  });
   let deviceId = claim.device.id;
   let deviceToken = claim.device_token;
   assert.ok(deviceId);
@@ -150,12 +163,12 @@ try {
   );
   const revokedDeviceId = deviceId;
   const restoreIntent = await owner.call("connect.createIntent", (client) => client.connect.createIntent({ deviceName: "SDK Examples Restored Fixture Device" }));
-  const restoreClaim = await owner.call("connect.claim", (client) => client.connect.claim(restoreIntent.token, {
+  const restoreClaim = await nativeClaimIntent(restoreIntent.token, {
     deviceName: "SDK Examples Restored Fixture Device",
     appVersion: "sdk-examples-v0.1",
     capabilities: { runtime: "fixture", examples: true },
     localState: { platform: "local-fixture", restored_after_revoke: true },
-  }));
+  });
   deviceId = restoreClaim.device.id;
   deviceToken = restoreClaim.device_token;
   const restoredAuthorization = await owner.call("products.authorization", (client) => client.products.authorization(deviceId));
@@ -183,21 +196,23 @@ try {
   const runFinal = await owner.call("jobs.get", (client) => client.jobs.get(runJob.job.id));
   assert.equal(runFinal.job.status, "succeeded");
 
-  const rpcJob = await owner.call("codex.rpc", (client) => client.codex.rpc({ deviceId, calls: [{ method: "initialize", params: {} }], requestKey: `v6-rpc-${runId}` }));
-  await completeConnectorJobs(deviceToken, "rpc");
-  const rpcFinal = await owner.call("jobs.get", (client) => client.jobs.get(rpcJob.job.id));
-  assert.equal(rpcFinal.job.status, "succeeded");
+  const rpcDenied = await expectSdkError(
+    () => owner.call("codex.rpc", (client) => client.codex.rpc({ deviceId, calls: [{ method: "initialize", params: {} }], requestKey: `v6-rpc-${runId}` })),
+    403,
+    "scope_insufficient",
+  );
 
-  const customJob = await owner.call("jobs.create", (client) => client.jobs.create({
-    kind: "saas.custom.run",
-    deviceId,
-    input: { task: "sdk examples custom" },
-    requestKey: `v6-custom-${runId}`,
-    policy: { timeout_ms: 60000 },
-  }));
-  await completeConnectorJobs(deviceToken, "custom");
-  const customFinal = await owner.call("jobs.get", (client) => client.jobs.get(customJob.job.id));
-  assert.equal(customFinal.job.status, "succeeded");
+  const customDenied = await expectSdkError(
+    () => owner.call("jobs.create", (client) => client.jobs.create({
+      kind: "saas.custom.run",
+      deviceId,
+      input: { task: "sdk examples custom" },
+      requestKey: `v6-custom-${runId}`,
+      policy: { timeout_ms: 60000 },
+    })),
+    403,
+    "scope_insufficient",
+  );
 
   const cancelJob = await owner.call("jobs.create", (client) => client.jobs.create({
     kind: "codex.run",
@@ -209,7 +224,7 @@ try {
   assert.equal(cancelled.job.status, "cancelled");
 
   const queueSummary = await owner.call("queue.summary", (client) => client.queue.summary());
-  assert.equal(queueSummary.counts.succeeded, 4);
+  assert.equal(queueSummary.counts.succeeded, 2);
   assert.equal(queueSummary.counts.cancelled, 1);
 
   const otherEmail = `sdk-examples-other-${runId}@example.local`;
@@ -272,8 +287,8 @@ try {
   const jobs = [
     jobSummary("codex.chat", chatJob.job, chatFinal, chatEvents.items, streamEvents),
     jobSummary("codex.run", runJob.job, runFinal.job, (await owner.call("jobs.events", (client) => client.jobs.events(runJob.job.id))).items, []),
-    jobSummary("codex.rpc", rpcJob.job, rpcFinal.job, (await owner.call("jobs.events", (client) => client.jobs.events(rpcJob.job.id))).items, []),
-    jobSummary("jobs.create", customJob.job, customFinal.job, (await owner.call("jobs.events", (client) => client.jobs.events(customJob.job.id))).items, []),
+    deniedJobSummary("codex.rpc", "codex.rpc", rpcDenied),
+    deniedJobSummary("jobs.create", "saas.custom.run", customDenied),
     jobSummary("jobs.cancel", cancelJob.job, cancelled.job, (await owner.call("jobs.events", (client) => client.jobs.events(cancelJob.job.id))).items, []),
   ];
 
@@ -330,6 +345,7 @@ function sdkContext(label) {
   let activeHelper = "untracked";
   const fetchJar = async (url, init = {}) => {
     const headers = new Headers(init.headers || {});
+    headers.set("origin", apiBase);
     if (cookie) headers.set("cookie", cookie);
     const response = await fetch(url, { ...init, headers });
     const setCookie = response.headers.get("set-cookie");
@@ -392,6 +408,7 @@ async function connectorRequest(deviceToken, method, path, body = null) {
     method,
     headers: {
       accept: "application/json",
+      origin: apiBase,
       authorization: `Bearer ${deviceToken}`,
       ...(body ? { "content-type": "application/json" } : {}),
     },
@@ -401,6 +418,31 @@ async function connectorRequest(deviceToken, method, path, body = null) {
   const payload = text ? JSON.parse(text) : {};
   connectorCalls.push({ method, path: redactPath(path), status: response.status });
   assert.ok(response.ok, `${method} ${path}: ${JSON.stringify(payload)}`);
+  return payload;
+}
+
+async function nativeClaimIntent(token, input = {}) {
+  const body = {
+    device_name: input.deviceName || input.device_name || "Panda Bridge Desktop",
+    app_version: input.appVersion || input.app_version || null,
+    capabilities: input.capabilities || {},
+    local_state: input.localState || input.local_state || {},
+    policy: input.policy || {},
+  };
+  const path = `/v1/connect-intents/${encodeURIComponent(token)}/claim`;
+  const response = await fetch(`${apiBase}${path}`, {
+    method: "POST",
+    headers: {
+      accept: "application/json",
+      "content-type": "application/json",
+      "x-panda-bridge-local-client": "connector-cli",
+    },
+    body: JSON.stringify(body),
+  });
+  const text = await response.text();
+  const payload = text ? JSON.parse(text) : {};
+  connectorCalls.push({ method: "POST", path: redactPath(path), status: response.status, native_claim: true });
+  assert.ok(response.ok, `POST ${path}: ${JSON.stringify(payload)}`);
   return payload;
 }
 
@@ -431,6 +473,18 @@ function jobSummary(helper, createdJob, finalJob, events, streamEvents) {
     event_types: [...new Set((events || []).map((item) => item.type))],
     event_count: (events || []).length,
     stream_event_count: (streamEvents || []).length,
+  };
+}
+
+function deniedJobSummary(helper, kind, error) {
+  return {
+    helper,
+    kind,
+    status: "rejected",
+    error: error.payload?.error || error.message,
+    http_status: error.status,
+    event_count: 0,
+    stream_event_count: 0,
   };
 }
 

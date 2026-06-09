@@ -23,7 +23,12 @@ const server = createServer(async (incoming, outgoing) => {
       headers: incomingHeaders(incoming.headers),
       body: shouldSendBody(incoming.method, body) ? body : undefined,
     });
-    const response = await worker.fetch(request, env);
+    const port = server.address().port;
+    const response = await worker.fetch(request, {
+      ...env,
+      BRIDGE_WEB_ORIGIN: `http://127.0.0.1:${port}`,
+      BRIDGE_PUBLIC_API_BASE: `http://127.0.0.1:${port}`,
+    });
     outgoing.writeHead(response.status, Object.fromEntries(response.headers.entries()));
     outgoing.end(response.body ? Buffer.from(await response.arrayBuffer()) : undefined);
   } catch (error) {
@@ -51,6 +56,7 @@ try {
   let cookie = "";
   const fetchJar = async (url, init = {}) => {
     const headers = new Headers(init.headers || {});
+    headers.set("origin", apiBase);
     if (cookie) headers.set("cookie", cookie);
     const response = await fetch(url, { ...init, headers });
     const setCookie = response.headers.get("set-cookie");
@@ -60,7 +66,7 @@ try {
 
   const invalidContentType = await fetch(`${apiBase}/v1/sessions/guest`, {
     method: "POST",
-    headers: { "content-type": "text/plain" },
+    headers: { "content-type": "text/plain", origin: apiBase },
     body: JSON.stringify({ display_name: "Bad Type" }),
   });
   const invalidContentTypePayload = await invalidContentType.json();
@@ -69,7 +75,7 @@ try {
 
   const malformedJson = await fetch(`${apiBase}/v1/sessions/guest`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", origin: apiBase },
     body: "{\"display_name\":",
   });
   const malformedJsonPayload = await malformedJson.json();
@@ -81,7 +87,7 @@ try {
   const oversizedBody = JSON.stringify({ display_name: "x".repeat(1400) });
   const oversized = await fetch(`${apiBase}/v1/sessions/guest`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", origin: apiBase },
     body: oversizedBody,
   });
   const oversizedPayload = await oversized.json();
@@ -204,6 +210,7 @@ try {
   let otherCookie = "";
   const otherFetchJar = async (url, init = {}) => {
     const headers = new Headers(init.headers || {});
+    headers.set("origin", apiBase);
     if (otherCookie) headers.set("cookie", otherCookie);
     const response = await fetch(url, { ...init, headers });
     const setCookie = response.headers.get("set-cookie");

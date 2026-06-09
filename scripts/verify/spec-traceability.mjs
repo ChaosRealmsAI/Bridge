@@ -2,136 +2,220 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
 const root = resolve(".");
-const evidenceVersion = process.env.PANDA_BRIDGE_SPEC_VERSION || "current";
+const evidenceVersion = process.env.PANDA_BRIDGE_SPEC_VERSION || "v14-security-permission-control";
 const evidencePath = resolve(root, "spec/verification/evidence", evidenceVersion, "spec-traceability-summary.json");
 
-const coreFiles = [
+const requiredFiles = [
   "README.md",
+  "安全评审报告.md",
   "spec/README.md",
+  "spec/bdd/_schema.json",
+  "spec/bdd/_index.json",
+  "spec/js/用户纠错.js",
+  "spec/js/需求池.js",
+  "spec/js/缺陷池.js",
+  "spec/js/产品能力.js",
+  "spec/js/版本简档.js",
+  "spec/js/路线图.js",
+  "spec/js/技术文档.js",
+  "spec/js/资源清单.js",
+  "spec/js/质量标准.js",
+  "spec/js/验证环境.js",
+  "spec/js/过程日志.js",
+  "spec/js/变更记录.js",
+  "spec/js/版本简档烟雾测试.js",
+];
+
+const auditToBddMap = {
+  "BUG-AUDIT-P1-2": ["OH-001"],
+  "BUG-AUDIT-P1-3": ["PC-002", "PC-003"],
+  "BUG-AUDIT-P1-4": ["DA-004"],
+  "BUG-AUDIT-P2-1": ["RR-002", "RR-003"],
+  "BUG-AUDIT-P2-2": ["PC-004"],
+  "BUG-AUDIT-P2-3": ["PC-001"],
+  "BUG-AUDIT-P2-4": ["OH-002"],
+  "BUG-AUDIT-P2-5": ["OH-006"],
+  "BUG-AUDIT-P2-6": ["DA-001", "DA-005", "OH-003"],
+  "BUG-AUDIT-P2-7": ["OH-003"],
+  "BUG-AUDIT-P2-8": ["OH-004"],
+  "BUG-AUDIT-P2-9": ["OH-005"],
+  "BUG-AUDIT-P2-NONCE": ["DA-002"],
+};
+
+const explicitOriginExceptions = {
+  "apps/cloud-worker/wrangler.test.toml": [
+    "https://bridge.otherline.cc",
+    "https://panda.otherline.cc",
+    "https://pandart.cc",
+    "https://www.pandart.cc",
+    "https://dev.otherline.cc",
+    "https://spec.otherline.cc",
+    "https://otherline.cc",
+  ],
+};
+
+const legacyFactSources = [
   "spec/_index.json",
-  "spec/principles.md",
-  "spec/changelog.md",
+  "spec/gate",
+  "spec/goal",
+  "spec/implementation",
+  "spec/architecture",
+  "spec/quality",
+  "spec/design",
   "spec/devlog.md",
-  "spec/gate/capability-map.html",
-  "spec/gate/bdd/_index.json",
-  "spec/architecture/architecture.md",
-  "spec/design/ux.md",
-  "spec/quality/gates.md",
+  "spec/changelog.md",
+  "spec/principles.md",
 ];
 
-const forbiddenPaths = [
-  "knowledge",
-  ".codex/goals",
-  "spec/evidence",
-  "spec/prototypes",
-  "spec/product",
-  "spec/protocol",
-  "spec/security",
-  "spec/integrations",
-  "spec/roadmap",
-  "spec/concurrency-fault-model.md",
-  "spec/performance-optimization-plan.md",
-];
+const exists = (file) => existsSync(resolve(root, file));
+const readJson = (file) => JSON.parse(readFileSync(resolve(root, file), "utf8"));
+const importJs = async (file) => (await import(pathToFileURL(resolve(root, file)).href)).default;
 
-const read = (path) => readFileSync(resolve(root, path), "utf8");
-const exists = (path) => existsSync(resolve(root, path));
-
-for (const file of coreFiles) {
+for (const file of requiredFiles) {
   assert.ok(exists(file), `missing required spec file: ${file}`);
 }
 
-for (const path of forbiddenPaths) {
-  assert.equal(exists(path), false, `legacy documentation path should be absent: ${path}`);
+for (const file of legacyFactSources) {
+  assert.equal(exists(file), false, `legacy spec fact source must stay deleted: ${file}`);
 }
 
-for (const path of ["apps", "packages", "scripts", "supabase/migrations", "package-lock.json"]) {
-  assert.ok(exists(path), `product source path must remain: ${path}`);
+for (const dir of ["apps", "packages", "scripts", "supabase/migrations"]) {
+  assert.ok(exists(dir), `product source path must remain: ${dir}`);
 }
 
-for (const dir of ["spec/gate", "spec/architecture", "spec/design", "spec/implementation", "spec/quality", "spec/verification", "spec/goal"]) {
-  assert.ok(exists(dir), `new spec directory missing: ${dir}`);
-}
+const bddIndex = readJson("spec/bdd/_index.json");
+assert.ok(Array.isArray(bddIndex.modules) && bddIndex.modules.length >= 4, "BDD index must list security modules");
 
-const readme = read("README.md");
-for (const link of ["spec/README.md", "spec/gate/capability-map.html", "spec/architecture/architecture.md", "spec/quality/gates.md"]) {
-  assert.ok(readme.includes(link), `README missing spec link: ${link}`);
-}
-
-const index = JSON.parse(read("spec/_index.json"));
-const versions = Array.isArray(index.versions) ? index.versions : [];
-assert.ok(versions.length > 0, "spec index must list at least one version");
-
-const indexedFiles = new Set();
-for (const version of versions) {
-  if (version.goal_file) indexedFiles.add(version.goal_file);
-  if (version.roadmap) indexedFiles.add(version.roadmap);
-  if (version.verification) indexedFiles.add(version.verification);
-  for (const file of version.bdd_files || []) indexedFiles.add(file);
-}
-
-for (const file of indexedFiles) {
-  assert.ok(exists(file), `indexed spec file missing: ${file}`);
-}
-
-const routeFiles = readdirSync(resolve(root, "spec/gate/routes"))
-  .filter((file) => file.endsWith(".md"))
-  .map((file) => `spec/gate/routes/${file}`)
+const bddFiles = readdirSync(resolve(root, "spec/bdd"))
+  .filter((file) => file.endsWith(".json") && !file.startsWith("_"))
+  .map((file) => `spec/bdd/${file}`)
   .sort();
-assert.ok(routeFiles.length > 0, "expected at least one route file");
-const routeText = routeFiles.map((file) => read(file)).join("\n\n");
-const routeIds = [...routeText.matchAll(/^## (ROUTE-[A-Z0-9-]+)：/gm)].map((match) => match[1]);
-const uniqueRouteIds = new Set(routeIds);
-assert.equal(uniqueRouteIds.size, routeIds.length, "route ids must be unique");
 
-const capHtml = read("spec/gate/capability-map.html");
-const capIds = [...capHtml.matchAll(/<code>(CAP-[A-Z0-9-]+)<\/code>/g)].map((match) => match[1]);
-assert.ok(capIds.length >= 10, "expected at least ten capability rows");
-const uniqueCapIds = new Set(capIds);
-assert.equal(uniqueCapIds.size, capIds.length, "capability ids must be unique");
+assert.deepEqual(
+  bddIndex.modules.map((item) => `spec/bdd/${item.file}`).sort(),
+  bddFiles,
+  "BDD index must exactly match module files",
+);
 
-const bddFiles = readdirSync(resolve(root, "spec/gate/bdd"))
-  .filter((file) => file.endsWith(".json") && file !== "_index.json")
-  .map((file) => `spec/gate/bdd/${file}`)
-  .sort();
-const bddItems = bddFiles.flatMap((file) => JSON.parse(read(file)).items.map((item) => ({ ...item, file })));
-const uniqueBddIds = new Set(bddItems.map((item) => item.id));
-assert.equal(uniqueBddIds.size, bddItems.length, "BDD ids must be unique");
-
-for (const version of versions) {
-  assert.ok(version.version, "index version missing version slug");
-  assert.ok(Array.isArray(version.routes) && version.routes.length, `${version.version} missing routes`);
-  for (const routeId of version.routes) {
-    assert.ok(uniqueRouteIds.has(routeId), `${version.version} references unknown route ${routeId}`);
+const bddDocs = bddFiles.map((file) => ({ file, doc: readJson(file) }));
+const scenarioIds = [];
+const scenariosById = new Map();
+const capRefs = new Set();
+for (const { file, doc } of bddDocs) {
+  for (const key of ["id", "module", "userStory", "scenarios", "implementationStatus", "verificationStatus", "guardStatus"]) {
+    assert.ok(doc[key] !== undefined, `${file} missing ${key}`);
   }
-  for (const capId of version.capability_ids || []) {
-    assert.ok(uniqueCapIds.has(capId), `${version.version} references unknown capability ${capId}`);
+  assert.equal(doc.implementationStatus, "done", `${file} implementationStatus must be done`);
+  assert.equal(doc.verificationStatus, "verified", `${file} verificationStatus must be verified`);
+  assert.equal(doc.guardStatus, "guarded", `${file} guardStatus must be guarded`);
+  assert.ok(Array.isArray(doc.scenarios) && doc.scenarios.length > 0, `${file} must include scenarios`);
+  for (const capRef of doc.capabilityRefs || []) capRefs.add(capRef);
+  for (const scenario of doc.scenarios) {
+    for (const key of ["id", "kind", "title", "given", "when", "then", "status"]) {
+      assert.ok(scenario[key] !== undefined, `${file} scenario missing ${key}`);
+    }
+    assert.ok(Array.isArray(scenario.guards) && scenario.guards.length > 0, `${scenario.id} must include concrete guards`);
+    assert.equal(scenario.status, "verified", `${scenario.id} status must be verified`);
+    scenarioIds.push(scenario.id);
+    scenariosById.set(scenario.id, scenario);
+  }
+}
+assert.equal(new Set(scenarioIds).size, scenarioIds.length, "BDD scenario ids must be unique");
+
+const capabilities = await importJs("spec/js/产品能力.js");
+const capIds = new Set(capabilities.modules.flatMap((module) => module.capabilities.map((cap) => cap.id)));
+for (const cap of capabilities.modules.flatMap((module) => module.capabilities)) {
+  if (cap.versions?.includes(evidenceVersion)) assert.equal(cap.status, "done", `${cap.id} status must be done`);
+}
+for (const capRef of capRefs) {
+  assert.ok(capIds.has(capRef), `BDD references unknown capability: ${capRef}`);
+}
+
+const bugPool = await importJs("spec/js/缺陷池.js");
+const bugIds = bugPool.bugs.map((bug) => bug.id);
+assert.ok(bugIds.includes("BUG-AUDIT-P1-3"), "audit P1-3 must remain tracked");
+assert.ok(bugIds.includes("BUG-AUDIT-P2-NONCE"), "nonce residual must remain tracked");
+assert.equal(new Set(bugIds).size, bugIds.length, "bug ids must be unique");
+const bugsById = new Map(bugPool.bugs.map((bug) => [bug.id, bug]));
+for (const bug of bugPool.bugs) {
+  assert.ok(Array.isArray(bug.bddRefs) && bug.bddRefs.length, `${bug.id} missing bddRefs`);
+  assert.equal(bug.status, "closed", `${bug.id} status must be closed`);
+  for (const ref of bug.bddRefs) assert.ok(scenarioIds.includes(ref), `${bug.id} references unknown BDD scenario ${ref}`);
+}
+for (const [bugId, expectedRefs] of Object.entries(auditToBddMap)) {
+  const bug = bugsById.get(bugId);
+  assert.ok(bug, `explicit audit map missing bug ${bugId}`);
+  assert.deepEqual([...bug.bddRefs].sort(), [...expectedRefs].sort(), `${bugId} must map to exact BDD refs`);
+  for (const ref of expectedRefs) {
+    assert.ok(scenariosById.get(ref)?.guards?.length > 0, `${bugId} scenario ${ref} missing guard`);
   }
 }
 
-for (const item of bddItems) {
-  assert.ok(item.id, `BDD item in ${item.file} missing id`);
-  assert.ok(Array.isArray(item.route_ids) && item.route_ids.length, `${item.id} missing route_ids`);
-  assert.ok(Array.isArray(item.capability_ids) && item.capability_ids.length, `${item.id} missing capability_ids`);
-  for (const routeId of item.route_ids) {
-    assert.ok(uniqueRouteIds.has(routeId), `${item.id} references unknown route ${routeId}`);
+const version = await importJs("spec/js/版本简档.js");
+assert.equal(version.currentVersion?.status, "done", "current version status must be done");
+const roadmap = await importJs("spec/js/路线图.js");
+const currentMilestone = roadmap.milestones?.find((item) => item.id === evidenceVersion);
+assert.ok(currentMilestone, `roadmap missing milestone ${evidenceVersion}`);
+assert.equal(currentMilestone.status, "done", `roadmap milestone ${evidenceVersion} status must be done`);
+const plan = version.currentVersion?.implementationPlan;
+assert.equal(plan?.planSkill, "codex-plan-mode-prompt", "implementationPlan.planSkill mismatch");
+assert.ok(Array.isArray(plan.tasks) && plan.tasks.length >= 10, "implementationPlan.tasks must be populated");
+for (const task of plan.tasks) {
+  for (const key of ["id", "title", "checked", "status", "executor", "goalMd", "evidenceMd"]) {
+    assert.ok(task[key] !== undefined, `task ${task.id || "unknown"} missing ${key}`);
   }
-  for (const capId of item.capability_ids) {
-    assert.ok(uniqueCapIds.has(capId), `${item.id} references unknown capability ${capId}`);
-  }
+  assert.ok(["主 agent", "codexctl"].includes(task.executor), `task ${task.id} invalid executor`);
+  if (task.executor === "codexctl") assert.ok(task.executorCommand, `task ${task.id} missing executorCommand`);
+  assert.equal(task.checked, true, `task ${task.id} must be checked`);
+  assert.equal(task.status, "done", `task ${task.id} status must be done`);
+}
+assert.equal(version.currentVersion?.evidenceReport?.status, "complete", "evidenceReport.status must be complete");
+assert.ok(
+  Array.isArray(version.currentVersion?.evidenceReport?.artifacts) && version.currentVersion.evidenceReport.artifacts.length >= 8,
+  "evidenceReport.artifacts must list concrete evidence",
+);
+assert.ok(exists(`spec/verification/evidence/${evidenceVersion}/summary.json`), "v14 evidence summary missing");
+
+assert.equal(version.currentVersion?.foundationSwitches?.capDirection, 1, "CAP switch must be 1");
+assert.equal(version.currentVersion?.foundationSwitches?.trueRunSee, 1, "true-run-see switch must be 1");
+assert.equal(version.currentVersion?.foundationSwitches?.adversarialPosture, 1, "adversarial switch must be 1");
+
+const auditText = readFileSync(resolve(root, "安全评审报告.md"), "utf8");
+for (const marker of ["P1-2", "P1-3", "P1-4", "P2-1", "P2-2", "P2-3", "P2-4", "P2-5", "P2-6", "P2-7", "P2-8", "P2-9"]) {
+  assert.ok(auditText.includes(marker), `audit report missing marker ${marker}`);
 }
 
-for (const capId of capIds) {
-  assert.ok(routeText.includes(capId) || bddItems.some((item) => item.capability_ids.includes(capId)), `capability lacks route/BDD trace: ${capId}`);
+const sdkSource = readFileSync(resolve(root, "packages/sdk/src/index.js"), "utf8");
+const sdkPublicCopy = readFileSync(resolve(root, "apps/web-chat/public/sdk/index.js"), "utf8");
+assert.equal(sdkPublicCopy, sdkSource, "public web SDK copy drifted from packages/sdk/src/index.js");
+
+const migrationTexts = readdirSync(resolve(root, "supabase/migrations"))
+  .filter((file) => file.endsWith(".sql"))
+  .map((file) => readFileSync(resolve(root, "supabase/migrations", file), "utf8").toLowerCase())
+  .join("\n");
+const createTableMatches = [...migrationTexts.matchAll(/create\s+table\s+if\s+not\s+exists\s+public\.(bridge_[a-z0-9_]+)/g)];
+const rlsMatches = [...migrationTexts.matchAll(/alter\s+table\s+if\s+exists\s+public\.(bridge_[a-z0-9_]+)\s+enable\s+row\s+level\s+security/g)];
+const createdTables = [...new Set(createTableMatches.map((match) => match[1]))].sort();
+const rlsTables = new Set(rlsMatches.map((match) => match[1]));
+assert.ok(createdTables.length >= 10, "RLS check did not find bridge table migrations");
+for (const table of createdTables) {
+  assert.ok(rlsTables.has(table), `missing enable row level security for public.${table}`);
 }
 
-const bddIndex = JSON.parse(read("spec/gate/bdd/_index.json"));
-for (const module of bddIndex.modules || []) {
-  const file = `spec/gate/bdd/${module.file}`;
-  assert.ok(bddFiles.includes(file), `BDD index references unknown file: ${file}`);
-  const count = JSON.parse(read(file)).items.length;
-  assert.equal(count, module.count, `BDD index count mismatch for ${file}`);
+const { officialProductOrigins } = await import(pathToFileURL(resolve(root, "apps/cloud-worker/src/products.js")).href);
+const officialOrigins = officialProductOrigins().sort();
+for (const wranglerFile of ["apps/cloud-worker/wrangler.toml", "apps/cloud-worker/wrangler.test.toml"]) {
+  const text = readFileSync(resolve(root, wranglerFile), "utf8");
+  const match = text.match(/BRIDGE_ALLOWED_ORIGINS\s*=\s*"([^"]*)"/);
+  assert.ok(match, `${wranglerFile} missing BRIDGE_ALLOWED_ORIGINS`);
+  const allowed = new Set(match[1].split(/\s+/).filter(Boolean));
+  const exceptions = new Set(explicitOriginExceptions[wranglerFile] || []);
+  for (const origin of officialOrigins) {
+    assert.ok(allowed.has(origin) || exceptions.has(origin), `${wranglerFile} missing official origin ${origin}`);
+  }
 }
 
 mkdirSync(dirname(evidencePath), { recursive: true });
@@ -139,15 +223,16 @@ const summary = {
   ok: true,
   evidence_version: evidenceVersion,
   checked_at: new Date().toISOString(),
-  indexed_versions: versions.map((item) => item.version),
-  indexed_files: indexedFiles.size,
-  forbidden_paths_absent: forbiddenPaths.length,
-  capability_count: capIds.length,
-  route_count: routeIds.length,
-  route_ids: routeIds,
   bdd_files: bddFiles,
-  bdd_count: bddItems.length,
-  spec_dirs: readdirSync(resolve(root, "spec")).sort(),
+  bdd_scenarios: scenarioIds.length,
+  capabilities: capIds.size,
+  audit_bugs: bugIds.length,
+  explicit_audit_map: Object.keys(auditToBddMap).length,
+  tasks: plan.tasks.length,
+  legacy_fact_sources_absent: legacyFactSources.length,
+  rls_tables: createdTables.length,
+  official_origins: officialOrigins.length,
+  sdk_copy_drift: false,
 };
 writeFileSync(evidencePath, `${JSON.stringify(summary, null, 2)}\n`);
 console.log(JSON.stringify(summary, null, 2));

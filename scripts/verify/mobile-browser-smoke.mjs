@@ -92,7 +92,7 @@ try {
 function runDesktop(args, extraEnv = {}) {
   return new Promise((resolveChild) => {
     const child = spawn("cargo", ["run", "--quiet", "--manifest-path", "apps/desktop/Cargo.toml", "--", ...args], {
-      env: { ...process.env, ...extraEnv },
+      env: { ...process.env, PANDA_BRIDGE_ALLOW_HEADLESS_CONNECT: "1", ...extraEnv },
     });
     let stdout = "";
     let stderr = "";

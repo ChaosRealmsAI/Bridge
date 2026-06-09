@@ -32,6 +32,7 @@ try {
     install_id: "cloud-concurrency-install",
     capabilities: { codex: ["codex.chat", "codex.run", "codex.rpc"] },
   }, "", {
+    "x-panda-bridge-local-client": "connector-cli",
     "x-panda-bridge-install-id": "cloud-concurrency-install",
   });
   deviceId = chatClaim.device.id;
@@ -47,6 +48,7 @@ try {
     capabilities: { codex: ["codex.chat", "codex.run", "codex.rpc"] },
   }, "", {
     authorization: `Bearer ${deviceToken}`,
+    "x-panda-bridge-local-client": "connector-cli",
     "x-panda-bridge-install-id": "cloud-concurrency-install",
   });
 

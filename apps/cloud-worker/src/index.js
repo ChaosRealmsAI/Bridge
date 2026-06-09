@@ -38,7 +38,7 @@ export default {
           ok: true,
           protocol: BRIDGE_PROTOCOL_VERSION,
           env: env.BRIDGE_ENV || "local",
-          storage: hasSupabase(env) && !env.BRIDGE_LOCAL_MEMORY ? "supabase" : "memory",
+          storage: storageKind(env),
         }, env);
       }
 
@@ -85,8 +85,13 @@ export default {
       if (productJobMatch && request.method === "POST") return await createProductJob(request, env, decodeURIComponent(productJobMatch[1]), ctx);
       const delegatedAuthorizationMatch = path.match(/^\/v1\/products\/([^/]+)\/delegated\/authorization$/);
       if (delegatedAuthorizationMatch && request.method === "GET") return await delegatedProductAuthorization(request, env, decodeURIComponent(delegatedAuthorizationMatch[1]));
+      if (delegatedAuthorizationMatch && request.method === "DELETE") return await revokeDelegatedProductAuthorization(request, env, decodeURIComponent(delegatedAuthorizationMatch[1]));
       const delegatedAuthorizationClaimMatch = path.match(/^\/v1\/products\/([^/]+)\/delegated\/authorization\/claim$/);
       if (delegatedAuthorizationClaimMatch && request.method === "POST") return await claimDelegatedProductAuthorization(request, env, decodeURIComponent(delegatedAuthorizationClaimMatch[1]));
+      const delegatedConnectIntentMatch = path.match(/^\/v1\/products\/([^/]+)\/delegated\/connect-intents$/);
+      if (delegatedConnectIntentMatch && request.method === "POST") return await createDelegatedConnectIntent(request, env, decodeURIComponent(delegatedConnectIntentMatch[1]));
+      const delegatedConnectIntentInspectMatch = path.match(/^\/v1\/products\/([^/]+)\/delegated\/connect-intents\/([^/]+)$/);
+      if (delegatedConnectIntentInspectMatch && request.method === "GET") return await getDelegatedConnectIntent(request, env, decodeURIComponent(delegatedConnectIntentInspectMatch[1]), decodeURIComponent(delegatedConnectIntentInspectMatch[2]));
       const delegatedProductJobMatch = path.match(/^\/v1\/products\/([^/]+)\/delegated\/jobs$/);
       if (delegatedProductJobMatch && request.method === "POST") return await createDelegatedProductJob(request, env, decodeURIComponent(delegatedProductJobMatch[1]), ctx);
       const delegatedJobEventsMatch = path.match(/^\/v1\/products\/([^/]+)\/delegated\/jobs\/([^/]+)\/events$/);
@@ -118,6 +123,14 @@ export default {
       if (error?.status) return json(publicErrorPayload(error), env, error.status);
       return json({ error: "internal_error" }, env, 500);
     }
+  },
+  async scheduled(_event, env = {}, ctx = {}) {
+    const cleanup = cleanupExpiredRows(env);
+    if (ctx?.waitUntil) {
+      ctx.waitUntil(cleanup);
+      return;
+    }
+    await cleanup;
   },
 };
 
@@ -234,6 +247,79 @@ export class BridgeDeviceRoom {
     } else {
       this.webs.delete(socketId);
     }
+  }
+}
+
+export class BridgeTestStore {
+  constructor(state, env) {
+    this.state = state;
+    this.env = env;
+  }
+
+  async fetch(request) {
+    if (request.method !== "POST") {
+      return new Response(JSON.stringify({ error: "not_found" }), { status: 404 });
+    }
+    const input = await request.json();
+    const result = await this.applyOperation(input);
+    return new Response(JSON.stringify(result, null, 2), {
+      status: result?.error ? result.status || 400 : 200,
+      headers: { "content-type": "application/json; charset=utf-8" },
+    });
+  }
+
+  async applyOperation(input) {
+    const tables = await this.state.storage.get("tables") || {};
+    const tableName = String(input.table || "");
+    if (!tableName) return { error: "missing_table", status: 400 };
+    const rows = Array.isArray(tables[tableName]) ? tables[tableName] : [];
+    tables[tableName] = rows;
+
+    if (input.op === "select") {
+      return { rows: selectRows(rows, object(input.filters), object(input.options)) };
+    }
+    if (input.op === "insert") {
+      const row = object(input.row);
+      const duplicate = uniqueConflict(tableName, rows, row);
+      if (duplicate) return { error: duplicate, status: 409 };
+      const next = { id: crypto.randomUUID(), ...structuredClone(row) };
+      rows.push(next);
+      await this.state.storage.put("tables", tables);
+      return { row: next };
+    }
+    if (input.op === "upsert") {
+      const row = object(input.row);
+      const conflictKey = String(input.conflictKey || "id");
+      const index = rows.findIndex((item) => item[conflictKey] === row[conflictKey]);
+      if (index >= 0) {
+        rows[index] = { ...rows[index], ...structuredClone(row) };
+        await this.state.storage.put("tables", tables);
+        return { row: rows[index] };
+      }
+      const next = { id: crypto.randomUUID(), ...structuredClone(row) };
+      rows.push(next);
+      await this.state.storage.put("tables", tables);
+      return { row: next };
+    }
+    if (input.op === "update") {
+      const id = String(input.id || "");
+      const index = rows.findIndex((row) => row.id === id);
+      if (index < 0) return { row: null };
+      rows[index] = { ...rows[index], ...structuredClone(object(input.patch)) };
+      await this.state.storage.put("tables", tables);
+      return { row: rows[index] };
+    }
+    if (input.op === "deleteExpired") {
+      const column = String(input.column || "expires_at");
+      const before = rows.length;
+      tables[tableName] = rows.filter((row) => {
+        const expiresAt = Date.parse(row[column] || "");
+        return !Number.isFinite(expiresAt) || expiresAt > Date.now();
+      });
+      await this.state.storage.put("tables", tables);
+      return { count: before - tables[tableName].length };
+    }
+    return { error: "unknown_operation", status: 400 };
   }
 }
 
@@ -532,6 +618,9 @@ async function getConnectIntent(request, env, token) {
 
 async function claimConnectIntent(request, env, token) {
   const body = await readJson(request, env);
+  if (!isNativeConnectIntentClaim(request)) {
+    return json({ error: "desktop_claim_required" }, env, 403);
+  }
   const store = storage(env);
   const intent = await connectIntentByToken(env, token);
   if (!intent || intent.consumed_at || Date.parse(intent.expires_at) < Date.now()) {
@@ -551,8 +640,8 @@ async function claimConnectIntent(request, env, token) {
   const { device, token: deviceToken, tokenExpiresAt } = reuseDevice
     ? await updateDeviceForIntent(env, reuseDevice.device, reuseDevice.raw_token, input)
     : await createDeviceWithToken(env, intent.user_id, input);
-  const policy = object(body.policy);
   const source_origin = clean(intent.source_origin, 300) || product.origin || sourceOrigin(env);
+  const policy = normalizeAuthorizationPolicy(object(body.policy), product, source_origin);
   const authorization = await upsertAuthorization(env, intent.user_id, device.id, product.id, policy, source_origin);
   await store.update("bridge_connect_intents", intent.id, { consumed_at: now(), device_id: device.id });
   await audit(env, intent.user_id, device.id, product.id, "connect_intent.claim", intent.id, { app_version: body.app_version || null, source_origin });
@@ -767,7 +856,7 @@ async function createDelegatedProductJob(request, env, productId, ctx = {}) {
   const rawBody = await readJsonText(request, env);
   const delegation = await requireProductDelegation(request, env, product, rawBody);
   const body = rawBody ? parseJsonText(rawBody) : {};
-  return await createAuthorizedProductJob(env, product, delegation.userId, delegation.sourceOrigin, body, ctx, {
+  return await createAuthorizedProductJob(env, product, delegation.bridgeUserId, delegation.sourceOrigin, body, ctx, {
     auditAction: "job.create.delegated",
     delegatedDeviceId: delegation.deviceId,
     delegationNonce: delegation.nonce,
@@ -780,10 +869,67 @@ async function delegatedProductAuthorization(request, env, productId) {
   const url = new URL(request.url);
   const deviceId = clean(url.searchParams.get("device_id"), 120);
   if (deviceId !== delegation.deviceId) return json({ error: "delegated_device_mismatch" }, env, 403);
-  const device = await ownedDevice(env, delegation.userId, deviceId);
+  const device = await ownedDevice(env, delegation.bridgeUserId, deviceId);
   if (!device || device.status === "revoked") return json({ error: "device_not_found" }, env, 404);
-  const authorization = await activeAuthorization(env, delegation.userId, device.id, product.id);
+  const authorization = await activeAuthorization(env, delegation.bridgeUserId, device.id, product.id);
   return json({ authorization, device: publicDevice(device, env), product }, env);
+}
+
+async function createDelegatedConnectIntent(request, env, productId) {
+  const product = requireOfficialProduct(productId, env);
+  const rawBody = await readJsonText(request, env);
+  const delegation = await requireProductDelegation(request, env, product, rawBody);
+  const body = rawBody ? parseJsonText(rawBody) : {};
+  const user = await ensureDelegatedUser(env, product.id, delegation.userId, object(body.account || body.user));
+  const deviceName = clean(body.device_name || body.deviceName, 120) || "Panda Bridge Desktop";
+  const token = randomToken("pbi_");
+  const row = await storage(env).insert("bridge_connect_intents", {
+    user_id: user.id,
+    device_id: null,
+    product_id: product.id,
+    source_origin: delegation.sourceOrigin,
+    device_name: deviceName,
+    token_hash: await sha256Hex(token),
+    expires_at: new Date(Date.now() + connectIntentTtlMs(env)).toISOString(),
+    consumed_at: null,
+    created_at: now(),
+  });
+  await audit(env, user.id, null, product.id, "connect_intent.create.delegated", row.id, {
+    device_name: deviceName,
+    source_origin: delegation.sourceOrigin,
+  });
+  return json({
+    token,
+    deep_link: `${desktopProtocol(env)}://connect?intent=${encodeURIComponent(token)}&api=${encodeURIComponent(publicApiBase(env))}`,
+    connect_intent: publicConnectIntent(row, user, env),
+    account: publicAccount(user),
+    product,
+    ttl_seconds: Math.trunc(connectIntentTtlMs(env) / 1000),
+  }, env, 201);
+}
+
+async function getDelegatedConnectIntent(request, env, productId, token) {
+  const product = requireOfficialProduct(productId, env);
+  const delegation = await requireProductDelegation(request, env, product, "");
+  const intent = await connectIntentByToken(env, token);
+  if (!intent || intent.product_id !== product.id || intent.user_id !== delegation.bridgeUserId) {
+    return json({ error: "connect_intent_not_found" }, env, 404);
+  }
+  if (!intent.consumed_at && Date.parse(intent.expires_at) < Date.now()) {
+    return json({ error: "invalid_connect_intent" }, env, 400);
+  }
+  const user = (await storage(env).select("bridge_users", { id: intent.user_id }))[0] || null;
+  const device = intent.device_id
+    ? (await storage(env).select("bridge_devices", { id: intent.device_id, user_id: intent.user_id }))[0] || null
+    : null;
+  const authorization = device ? await activeAuthorization(env, intent.user_id, device.id, product.id) : null;
+  return json({
+    connect_intent: publicConnectIntent(intent, user, env),
+    account: publicAccount(user),
+    device: publicDevice(device, env),
+    authorization,
+    product,
+  }, env);
 }
 
 async function claimDelegatedProductAuthorization(request, env, productId) {
@@ -801,16 +947,16 @@ async function claimDelegatedProductAuthorization(request, env, productId) {
   if (!proof || proof.consumed_at || Date.parse(proof.expires_at) <= Date.now()) {
     return json({ error: "invalid_authorization_import_proof" }, env, 409);
   }
-  if (proof.user_id !== delegation.userId || proof.device_id !== delegation.deviceId) {
+  if (proof.user_id !== delegation.bridgeUserId || proof.device_id !== delegation.deviceId) {
     return json({ error: "delegated_authorization_proof_mismatch" }, env, 403);
   }
   const consumedProof = await consumeAuthorizationImportProof(env, proof);
   if (!consumedProof) return json({ error: "invalid_authorization_import_proof" }, env, 409);
-  const device = await ownedDevice(env, delegation.userId, delegation.deviceId);
+  const device = await ownedDevice(env, delegation.bridgeUserId, delegation.deviceId);
   if (!device || device.status === "revoked") return json({ error: "device_not_found" }, env, 404);
-  const authorization = await activeAuthorization(env, delegation.userId, device.id, product.id);
+  const authorization = await activeAuthorization(env, delegation.bridgeUserId, device.id, product.id);
   if (!authorization || authorization.id !== proof.authorization_id) return json({ error: "product_not_authorized" }, env, 403);
-  await audit(env, delegation.userId, device.id, product.id, "authorization.claim.delegated", authorization.id, { source_origin: delegation.sourceOrigin });
+  await audit(env, delegation.bridgeUserId, device.id, product.id, "authorization.claim.delegated", authorization.id, { source_origin: delegation.sourceOrigin });
   return json({
     authorization,
     device: publicDevice(device, env),
@@ -819,10 +965,34 @@ async function claimDelegatedProductAuthorization(request, env, productId) {
   }, env);
 }
 
+async function revokeDelegatedProductAuthorization(request, env, productId) {
+  const product = requireOfficialProduct(productId, env);
+  const rawBody = await readJsonText(request, env);
+  const delegation = await requireProductDelegation(request, env, product, rawBody);
+  const url = new URL(request.url);
+  const deviceId = clean(url.searchParams.get("device_id") || delegation.deviceId, 120);
+  if (deviceId !== delegation.deviceId) return json({ error: "delegated_device_mismatch" }, env, 403);
+  const device = await ownedDevice(env, delegation.bridgeUserId, deviceId);
+  if (!device || device.status === "revoked") return json({ error: "device_not_found" }, env, 404);
+  const authorization = (await storage(env).select("bridge_authorizations", {
+    user_id: delegation.bridgeUserId,
+    device_id: device.id,
+    product_id: product.id,
+  }))[0];
+  if (!authorization) return json({ authorization: null, device: publicDevice(device, env), product, cancelled_jobs: 0 }, env);
+  const revoked = await storage(env).update("bridge_authorizations", authorization.id, { status: "revoked", updated_at: now() });
+  const cancelled_jobs = await cancelQueuedJobsForAuthorization(env, delegation.bridgeUserId, device.id, product.id);
+  await audit(env, delegation.bridgeUserId, device.id, product.id, "authorization.revoke.delegated", authorization.id, {
+    source_origin: delegation.sourceOrigin,
+  });
+  return json({ authorization: revoked, device: publicDevice(device, env), product, cancelled_jobs }, env);
+}
+
 async function createAuthorizedProductJob(env, product, userId, source_origin, body, ctx = {}, options = {}) {
   const validation = validateBridgeJob({ ...body, productId: product.id });
   if (!validation.ok) return json({ error: "invalid_job", errors: validation.errors }, env, 400);
   const normalized = validation.job;
+  if (!product.capabilities.includes(normalized.kind)) return json({ error: "scope_insufficient" }, env, 403);
   if (options.delegatedDeviceId && normalized.device_id !== options.delegatedDeviceId) {
     return json({ error: "delegated_device_mismatch" }, env, 403);
   }
@@ -945,7 +1115,7 @@ async function cancelDelegatedJob(request, env, productId, jobId) {
   const event = await appendEvent(env, job.id, "cancelled", { completed_at: next.updated_at });
   await notifyJobEvent(env, job.device_id, next, event);
   await dispatchQueuedJobs(env, job.device_id);
-  await audit(env, delegation.userId, job.device_id, product.id, "job.cancel.delegated", job.id, { source_origin: delegation.sourceOrigin });
+  await audit(env, delegation.bridgeUserId, job.device_id, product.id, "job.cancel.delegated", job.id, { source_origin: delegation.sourceOrigin });
   return json({ job: publicJob(next), cancelled: true }, env);
 }
 
@@ -1046,6 +1216,10 @@ async function ackConnectorJob(request, env, jobId) {
   const connector = await requireConnector(request, env);
   const job = await jobForDevice(env, connector.device.id, jobId);
   if (!job) return json({ error: "job_not_found" }, env, 404);
+  if (!await activeAuthorization(env, job.user_id, job.device_id, job.product_id)) {
+    const cancelled = await cancelAuthorizationRevokedJob(env, job);
+    return json({ error: "product_not_authorized", job: publicJob(cancelled) }, env, 403);
+  }
   if (isTerminalJobStatus(job.status)) {
     return json({ job: publicJob(job), ignored: true }, env);
   }
@@ -1166,7 +1340,7 @@ async function notifyDeviceRoom(env, deviceId, message) {
 
 async function runBackground(ctx, promise) {
   const guarded = Promise.resolve(promise).catch((error) => {
-    console.error("[bridge:background]", error?.message || String(error));
+    console.error("[bridge:background]", redactedErrorMessage(error));
   });
   if (ctx?.waitUntil) {
     ctx.waitUntil(guarded);
@@ -1194,6 +1368,55 @@ async function createSessionForUser(env, user) {
     created_at: now(),
   });
   return { token, session };
+}
+
+async function ensureDelegatedUser(env, productId, externalUserId, input = {}) {
+  const id = await productScopedUserId(productId, externalUserId);
+  const displayName = clean(input.display_name || input.displayName || input.name, 100) || "Panda Account";
+  const email = normalizeEmail(input.email);
+  const existing = (await storage(env).select("bridge_users", { id }))[0] || null;
+  if (existing) {
+    return await storage(env).update("bridge_users", existing.id, {
+      display_name: displayName || existing.display_name,
+      email: email || existing.email || null,
+      updated_at: now(),
+    }) || existing;
+  }
+  return await storage(env).insert("bridge_users", {
+    id,
+    display_name: displayName,
+    email: email || null,
+    created_at: now(),
+    updated_at: now(),
+  });
+}
+
+async function resolveDelegatedBridgeUserId(env, productId, externalUserId, deviceId) {
+  const rawUserId = clean(externalUserId, 120);
+  const rawDeviceId = clean(deviceId, 120);
+  if (!rawUserId) throw httpError("product_delegation_unauthorized", 401);
+  if (rawDeviceId) {
+    const device = await ownedDevice(env, rawUserId, rawDeviceId);
+    if (device && device.status !== "revoked") {
+      return rawUserId;
+    }
+  }
+  return productScopedUserId(productId, rawUserId);
+}
+
+async function productScopedUserId(productId, externalUserId) {
+  const scoped = clean(externalUserId, 120);
+  if (!scoped) throw httpError("product_delegation_unauthorized", 401);
+  const hex = await sha256Hex(`panda-bridge:delegated-user:v1:${productId}:${scoped}`);
+  return uuidFromHex(hex);
+}
+
+function uuidFromHex(hex) {
+  const chars = hex.slice(0, 32).split("");
+  chars[12] = "5";
+  chars[16] = ((parseInt(chars[16], 16) & 0x3) | 0x8).toString(16);
+  const value = chars.join("");
+  return `${value.slice(0, 8)}-${value.slice(8, 12)}-${value.slice(12, 16)}-${value.slice(16, 20)}-${value.slice(20, 32)}`;
 }
 
 async function requireSession(request, env) {
@@ -1275,7 +1498,7 @@ async function existingRequestKeyJob(env, userId, deviceId, productId, requestKe
 }
 
 async function delegatedOwnedJob(env, delegation, product, jobId) {
-  const job = await ownedJob(env, delegation.userId, jobId);
+  const job = await ownedJob(env, delegation.bridgeUserId, jobId);
   if (!job) return null;
   if (job.product_id !== product.id || job.device_id !== delegation.deviceId) return null;
   return job;
@@ -1317,7 +1540,8 @@ async function requireProductDelegation(request, env, product, rawBody) {
   if (!await reserveProductDelegationNonce(env, product.id, nonce, timestamp)) {
     throw httpError("product_delegation_replay", 401);
   }
-  return { userId, deviceId, nonce, sourceOrigin: product.origin || product.official_origin || sourceOrigin(env) };
+  const bridgeUserId = await resolveDelegatedBridgeUserId(env, product.id, userId, deviceId);
+  return { userId, bridgeUserId, deviceId, nonce, sourceOrigin: canonicalProductOrigin(product, env) };
 }
 
 function productDelegationSecret(env, productId) {
@@ -1340,11 +1564,6 @@ function productDelegationSkewMs(env) {
 
 async function reserveProductDelegationNonce(env, productId, nonce, timestamp) {
   const nonceHash = await sha256Hex(`${productId}:${nonce}`);
-  const existing = await storage(env).select("bridge_product_delegation_nonces", {
-    product_id: productId,
-    nonce_hash: nonceHash,
-  });
-  if (existing.length) return false;
   try {
     await storage(env).insert("bridge_product_delegation_nonces", {
       product_id: productId,
@@ -1439,10 +1658,9 @@ async function cancelQueuedJobsForAuthorization(env, userId, deviceId, productId
     user_id: userId,
     device_id: deviceId,
     product_id: productId,
-    status: "queued",
   });
   let count = 0;
-  for (const row of rows) {
+  for (const row of rows.filter((job) => ["queued", "running"].includes(job.status))) {
     await cancelAuthorizationRevokedJob(env, row);
     count += 1;
   }
@@ -1450,7 +1668,7 @@ async function cancelQueuedJobsForAuthorization(env, userId, deviceId, productId
 }
 
 async function cancelAuthorizationRevokedJob(env, job) {
-  if (job.status !== "queued") return job;
+  if (!["queued", "running"].includes(job.status)) return job;
   const cancelledAt = now();
   const next = await storage(env).update("bridge_jobs", job.id, {
     status: "cancelled",
@@ -1469,6 +1687,26 @@ async function cancelAuthorizationRevokedJob(env, job) {
   });
   await notifyJobEvent(env, job.device_id, next, event);
   return next;
+}
+
+async function cleanupExpiredRows(env) {
+  const store = storage(env);
+  if (typeof store.deleteExpired !== "function") return {};
+  const tables = [
+    "bridge_product_delegation_nonces",
+    "bridge_authorization_import_proofs",
+    "bridge_sessions",
+    "bridge_session_links",
+    "bridge_pairing_codes",
+    "bridge_connect_intents",
+    "bridge_device_tokens",
+    "bridge_password_attempts",
+  ];
+  const deleted = {};
+  for (const table of tables) {
+    deleted[table] = await store.deleteExpired(table, "expires_at");
+  }
+  return deleted;
 }
 
 async function publicDeviceQueue(env, deviceId) {
@@ -1570,7 +1808,7 @@ function diagnosticsPayload(env) {
     ok: true,
     protocol: BRIDGE_PROTOCOL_VERSION,
     env: env.BRIDGE_ENV || "local",
-    storage: hasSupabase(env) && !env.BRIDGE_LOCAL_MEMORY ? "supabase" : "memory",
+    storage: storageKind(env),
     api_base: publicApiBase(env),
     web_origin: webOrigin(env),
     realtime: {
@@ -1711,6 +1949,33 @@ function authorizationImportProofTtlMs(env) {
   return boundedInteger(env.BRIDGE_AUTHORIZATION_IMPORT_PROOF_TTL_MS, AUTHORIZATION_IMPORT_PROOF_TTL_MS, 1000, 1000 * 60 * 30);
 }
 
+function normalizeAuthorizationPolicy(input, product, source_origin) {
+  const policy = object(input);
+  const workspaceRoots = Array.isArray(policy.workspace_roots) && policy.workspace_roots.length
+    ? policy.workspace_roots.map((item, index) => {
+        const root = object(item);
+        return {
+          id: clean(root.id, 80) || `workspace-${index + 1}`,
+          path_display: clean(root.path_display || root.label, 200) || "[local]/workspace",
+        };
+      })
+    : [{ id: "default", path_display: "[local]/default" }];
+  return {
+    version: "AUTH-SCOPE-v1",
+    product_id: product.id,
+    source_origin: clean(policy.source_origin, 300) || source_origin || product.official_origin || product.origin || null,
+    capabilities: Array.isArray(policy.capabilities) && policy.capabilities.length
+      ? policy.capabilities.filter((item) => product.capabilities.includes(item))
+      : [...product.capabilities],
+    workspace_roots: workspaceRoots,
+    sandbox_floor: ["workspace-write", "read-only"].includes(policy.sandbox_floor) ? policy.sandbox_floor : "workspace-write",
+    approval_policy_floor: ["on-request", "on-failure", "untrusted"].includes(policy.approval_policy_floor) ? policy.approval_policy_floor : "on-request",
+    allow_approval_never: policy.allow_approval_never === true,
+    allow_developer_instructions: policy.allow_developer_instructions === true,
+    display: object(policy.display),
+  };
+}
+
 async function upsertAuthorization(env, userId, deviceId, productId, policy, sourceOrigin = "") {
   const store = storage(env);
   const existing = (await store.select("bridge_authorizations", {
@@ -1770,9 +2035,54 @@ async function audit(env, userId, deviceId, productId, action, targetId, payload
   });
 }
 
+function storageKind(env) {
+  if (env.BRIDGE_STORAGE_BACKEND === "durable" && env.BRIDGE_TEST_STORE) return "durable";
+  if (hasSupabase(env) && !env.BRIDGE_LOCAL_MEMORY) return "supabase";
+  return "memory";
+}
+
 function storage(env) {
+  if (env.BRIDGE_STORAGE_BACKEND === "durable" && env.BRIDGE_TEST_STORE) return durableObjectStore(env);
   if (hasSupabase(env) && !env.BRIDGE_LOCAL_MEMORY) return supabaseStore(env);
   return memory;
+}
+
+function durableObjectStore(env) {
+  return {
+    async select(table, filters = {}, options = {}) {
+      return (await durableStoreOperation(env, { op: "select", table, filters, options })).rows || [];
+    },
+    async insert(table, row) {
+      return (await durableStoreOperation(env, { op: "insert", table, row })).row;
+    },
+    async upsert(table, row, conflictKey = "id") {
+      return (await durableStoreOperation(env, { op: "upsert", table, row, conflictKey })).row;
+    },
+    async update(table, id, patch) {
+      return (await durableStoreOperation(env, { op: "update", table, id, patch })).row;
+    },
+    async deleteExpired(table, column = "expires_at") {
+      return (await durableStoreOperation(env, { op: "deleteExpired", table, column })).count || 0;
+    },
+  };
+}
+
+async function durableStoreOperation(env, payload) {
+  const id = env.BRIDGE_TEST_STORE.idFromName("bridge-test-store");
+  const stub = env.BRIDGE_TEST_STORE.get(id);
+  const response = await stub.fetch("https://bridge-test-store.local/storage", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const text = await response.text();
+  const body = text ? JSON.parse(text) : {};
+  if (!response.ok || body.error) {
+    const error = new Error(body.error || `durable_store_${response.status}`);
+    error.code = body.error;
+    throw error;
+  }
+  return body;
 }
 
 function supabaseStore(env) {
@@ -1814,6 +2124,12 @@ function supabaseStore(env) {
       });
       return rows[0];
     },
+    async deleteExpired(table, column = "expires_at") {
+      const url = new URL(`/rest/v1/${table}`, env.SUPABASE_URL);
+      url.searchParams.set(column, `lt.${new Date().toISOString()}`);
+      await supabaseFetch(env, url, { method: "DELETE" });
+      return null;
+    },
   };
 }
 
@@ -1828,7 +2144,11 @@ async function supabaseFetch(env, url, init) {
     },
   });
   const text = await response.text();
-  if (!response.ok) throw new Error(`Supabase ${init.method} ${url.pathname} failed: ${response.status} ${text}`);
+  if (!response.ok) {
+    const error = new Error(`Supabase ${init.method} ${url.pathname} failed: ${response.status} [redacted]`);
+    error.status = response.status;
+    throw error;
+  }
   return text ? JSON.parse(text) : [];
 }
 
@@ -1840,24 +2160,14 @@ function makeMemoryStore() {
   };
   return {
     async select(name, filters = {}, options = {}) {
-      let rows = table(name).filter((row) => Object.entries(filters).every(([key, value]) => row[key] === value));
-      if (options.order) rows = rows.sort((a, b) => String(a[options.order] || "").localeCompare(String(b[options.order] || "")));
-      if (options.desc) rows.reverse();
-      return rows.map((row) => structuredClone(row));
+      return selectRows(table(name), filters, options);
     },
     async insert(name, row) {
-      if (name === "bridge_jobs" && row.request_key) {
-        const duplicate = table(name).find((item) => (
-          item.user_id === row.user_id
-          && item.device_id === row.device_id
-          && item.product_id === row.product_id
-          && item.request_key === row.request_key
-        ));
-        if (duplicate) {
-          const error = new Error("duplicate_request_key");
-          error.code = "duplicate_request_key";
-          throw error;
-        }
+      const duplicate = uniqueConflict(name, table(name), row);
+      if (duplicate) {
+        const error = new Error(duplicate);
+        error.code = duplicate;
+        throw error;
       }
       const next = { id: crypto.randomUUID(), ...structuredClone(row) };
       table(name).push(next);
@@ -1881,10 +2191,47 @@ function makeMemoryStore() {
       rows[index] = { ...rows[index], ...structuredClone(patch) };
       return structuredClone(rows[index]);
     },
+    async deleteExpired(name, column = "expires_at") {
+      const rows = table(name);
+      const keep = rows.filter((row) => {
+        const expiresAt = Date.parse(row[column] || "");
+        return !Number.isFinite(expiresAt) || expiresAt > Date.now();
+      });
+      const count = rows.length - keep.length;
+      tables.set(name, keep);
+      return count;
+    },
     reset() {
       tables.clear();
     },
   };
+}
+
+function uniqueConflict(tableName, rows, row) {
+  if (tableName === "bridge_jobs" && row.request_key) {
+    const duplicate = rows.find((item) => (
+      item.user_id === row.user_id
+      && item.device_id === row.device_id
+      && item.product_id === row.product_id
+      && item.request_key === row.request_key
+    ));
+    if (duplicate) return "duplicate_request_key";
+  }
+  if (tableName === "bridge_product_delegation_nonces") {
+    const duplicate = rows.find((item) => (
+      item.product_id === row.product_id
+      && item.nonce_hash === row.nonce_hash
+    ));
+    if (duplicate) return "product_delegation_replay";
+  }
+  return "";
+}
+
+function selectRows(rows, filters = {}, options = {}) {
+  let selected = rows.filter((row) => Object.entries(filters).every(([key, value]) => row[key] === value));
+  if (options.order) selected = selected.sort((a, b) => String(a[options.order] || "").localeCompare(String(b[options.order] || "")));
+  if (options.desc) selected.reverse();
+  return selected.map((row) => structuredClone(row));
 }
 
 function publicJob(job) {
@@ -1985,6 +2332,7 @@ function publicConnectIntent(intent, user = null, env = {}) {
     product_id: intent.product_id,
     product: productInfo(intent.product_id, env),
     source_origin: intent.source_origin || null,
+    device_id: intent.device_id || null,
     device_name: intent.device_name,
     expires_at: intent.expires_at,
     consumed_at: intent.consumed_at || null,
@@ -2107,9 +2455,35 @@ function notFound(env) {
 
 function rejectBadOrigin(request, env) {
   if (["GET", "HEAD", "OPTIONS"].includes(request.method)) return null;
+  const url = new URL(request.url);
+  const path = normalizePath(url.pathname);
   const origin = request.headers.get("origin");
-  if (!origin || allowedWebOrigins(env).includes(origin)) return null;
+  if (origin && allowedWebOrigins(env).includes(origin)) return null;
+  if (!origin && allowsMissingOrigin(request, path)) return null;
   return json({ error: "invalid_origin" }, env, 403);
+}
+
+function allowsMissingOrigin(request, path) {
+  if (path === "/v1/connectors/claim") return true;
+  if (/^\/v1\/connectors(?:\/|$)/.test(path)) {
+    return (request.headers.get("authorization") || "").startsWith("Bearer ");
+  }
+  if (/^\/v1\/products\/[^/]+\/delegated(?:\/|$)/.test(path)) {
+    return Boolean(request.headers.get("x-panda-bridge-signature"));
+  }
+  if (/^\/v1\/connect-intents\/[^/]+\/claim$/.test(path)) {
+    return isLocalBridgeClient(request);
+  }
+  return false;
+}
+
+function isLocalBridgeClient(request) {
+  const value = (request.headers.get("x-panda-bridge-local-client") || "").trim().toLowerCase();
+  return value === "desktop" || value === "connector-cli";
+}
+
+function isNativeConnectIntentClaim(request) {
+  return !request.headers.get("origin") && isLocalBridgeClient(request);
 }
 
 function httpError(message, status) {
@@ -2123,6 +2497,14 @@ function publicErrorPayload(error) {
     error: error.message || "error",
     ...(error.public || {}),
   };
+}
+
+function redactedErrorMessage(error) {
+  const text = error?.message || String(error);
+  return text
+    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/g, "Bearer [redacted]")
+    .replace(/(token|secret|password|cookie|authorization)=([^&\s]+)/gi, "$1=[redacted]")
+    .replace(/"?(token|secret|password|cookie|authorization)"?\s*:\s*"[^"]+"/gi, '"$1":"[redacted]"');
 }
 
 async function readJson(request, env) {
@@ -2262,6 +2644,10 @@ function retryAfterMsForAttempt(attempt) {
 
 function productInfo(productId, env) {
   return productById(productId, sourceOrigin(env));
+}
+
+function canonicalProductOrigin(product, env) {
+  return product.official_origin || product.origin || sourceOrigin(env);
 }
 
 function requireOfficialProduct(productId, env) {

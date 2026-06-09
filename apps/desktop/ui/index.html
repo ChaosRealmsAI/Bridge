@@ -106,6 +106,11 @@
     .reqp .em{font-size:17px;font-weight:700;letter-spacing:-.01em}
     .reqp .desc{font-size:13px;color:var(--muted);margin:8px auto 20px;line-height:1.6;max-width:34ch}
     .reqp .desc b{color:var(--text)}
+    .reqp .scope{margin:16px 0 18px;text-align:left;border:.5px solid var(--line);border-radius:10px;overflow:hidden;background:rgba(255,255,255,.35)}
+    .reqp .sr{display:grid;grid-template-columns:92px 1fr;gap:10px;padding:10px 12px;font-size:12px;line-height:1.45}
+    .reqp .sr+.sr{border-top:.5px solid var(--hair)}
+    .reqp .sk{color:var(--faint);font-weight:700;text-transform:uppercase;letter-spacing:.04em}
+    .reqp .sv{color:var(--text);font-weight:550;min-width:0;overflow-wrap:anywhere}
     .reqp .qrow{display:flex;gap:12px}
     .btn{flex:1;height:44px;border-radius:11px;border:.5px solid var(--line);background:var(--btn);font:inherit;font-size:14px;font-weight:600;cursor:pointer;transition:.13s;color:var(--text)}
     .btn:hover{background:var(--card-hover)}
@@ -223,6 +228,7 @@
       if(p.length>=2) return (p[0][0]+p[1][0]).toUpperCase();
       const s=(name||"P").replace(/[^A-Za-z一-龥]/g,""); return s.slice(0,2).toUpperCase()||"P"; }
     function av(email){ const s=(email||"").replace(/[^a-z0-9]/ig,""); return (s.slice(0,2)||"?").toUpperCase(); }
+    function esc(value){ return String(value??"").replace(/[&<>"']/g, ch=>({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;" }[ch])); }
     const COLORS=["#34a06f","#3f6fd1","#c8923a","#8b5cf6","#e0648a","#2bb3c0"];
     function colorFor(id){ let h=0; for(const ch of (id||"x")) h=(h*31+ch.charCodeAt(0))>>>0; return COLORS[h%COLORS.length]; }
 
@@ -291,9 +297,19 @@
     }
 
     function requestView(p){
+      const policy = p.local_policy || {};
+      const capabilities = Array.isArray(p.capabilities) && p.capabilities.length ? p.capabilities.join(", ") : "codex.chat";
       return `<div class="reqp"><div class="av">${av(p.email)}</div>
-          <div class="em">${p.email||'Panda'}</div>
-          <div class="desc">${t('reqLine',{product:'<b>'+(p.product_name||'Panda')+'</b>'})}<br>${t('reqLine2')}</div>
+          <div class="em">${esc(p.email||'Panda')}</div>
+          <div class="desc">${t('reqLine',{product:'<b>'+esc(p.product_name||'Panda')+'</b>'})}<br>${t('reqLine2')}</div>
+          <div class="scope">
+            <div class="sr"><div class="sk">Origin</div><div class="sv">${esc(p.cloud_origin||p.origin||"unknown")}</div></div>
+            <div class="sr"><div class="sk">Scope</div><div class="sv">${esc(capabilities)}</div></div>
+            <div class="sr"><div class="sk">Workspace</div><div class="sv">${esc(policy.default_workspace||"default workspace")}</div></div>
+            <div class="sr"><div class="sk">Sandbox</div><div class="sv">${esc((policy.sandbox_allowed||["workspace-write","read-only"]).join(", "))}</div></div>
+            <div class="sr"><div class="sk">Approval</div><div class="sv">${esc(policy.approval_default||"on-request")} · never ${esc(policy.approval_never||"denied_by_default")}</div></div>
+            <div class="sr"><div class="sk">Instructions</div><div class="sv">${esc(policy.developer_instructions||"denied_by_default")}</div></div>
+          </div>
           <div class="qrow"><button class="btn" onclick="deny(${ui.selReq})">${t('deny')}</button>
             <button class="btn primary" onclick="approve(${ui.selReq})">${t('allow')}</button></div></div>`;
     }
@@ -322,7 +338,7 @@
       const url = new URL(raw); const intent = url.searchParams.get("intent"); const api = url.searchParams.get("api") || DEFAULT_API;
       if (!intent) return;
       const pre = await window.PandaBridge.call("preview_intent", { api, intent });
-      ui.pending.push({ product_id: pre.product_id, product_name: pre.product_name, email: pre.user_display_name, _api: api, _intent: intent });
+      ui.pending.push({ product_id: pre.product_id, product_name: pre.product_name, email: pre.user_display_name, cloud_origin: pre.cloud_origin, capabilities: pre.capabilities, local_policy: pre.local_policy, _api: api, _intent: intent });
       ui.view = "request"; ui.selReq = ui.pending.length - 1; render();
     }
     async function approve(i){
@@ -376,7 +392,7 @@
         const { id, command } = JSON.parse(raw);
         const reply = (ok, payload)=> setTimeout(()=>window.PandaBridge.receive({ type:"response", id, ok, result: payload }), 70);
         if (command==="status") return reply(true, JSON.parse(JSON.stringify(mock)));
-        if (command==="preview_intent") return reply(true, { product_id:"panda_chat", product_name:"Panda Chat", user_display_name:"team-demo@otherline.cc", cloud_origin:"bridge.otherline.cc" });
+        if (command==="preview_intent") return reply(true, { product_id:"panda_chat", product_name:"Panda Chat", user_display_name:"team-demo@otherline.cc", cloud_origin:"bridge.otherline.cc", capabilities:["codex.chat"], local_policy:{ default_workspace:"/Users/demo/project", sandbox_allowed:["workspace-write","read-only"], approval_default:"on-request", approval_never:"denied_by_default", developer_instructions:"denied_by_default" } });
         if (command==="claim_intent"){ mock.authorized_products[0].accounts.push({email:"team-demo@otherline.cc"}); return reply(true, { product_id:"panda_chat", product_name:"Panda Chat", account_display:"team-demo@otherline.cc", authorized_products:mock.authorized_products }); }
         if (command==="revoke_authorization"){
           const { params } = JSON.parse(raw);

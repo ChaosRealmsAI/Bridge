@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { homedir, platform } from "node:os";
 import { delimiter, dirname, resolve } from "node:path";
 import readline from "node:readline";
@@ -44,6 +44,7 @@ async function claim() {
     api_base: api,
     device_id: payload.device.id,
     device_token: payload.device_token,
+    authorized_products: [],
     claimed_at: new Date().toISOString(),
   };
   writeJson(statePath(), state);
@@ -68,6 +69,7 @@ async function connect() {
     api_base: api,
     device_id: payload.device.id,
     device_token: payload.device_token,
+    authorized_products: payload.product ? [productGrant(payload.product, payload.authorization)] : [],
     claimed_at: new Date().toISOString(),
   };
   writeJson(statePath(), state);
@@ -118,17 +120,25 @@ async function watch() {
 }
 
 async function runFixture() {
-  const result = await runCodexOrFixture({
-    job: {
-      id: "fixture",
-      kind: "codex.chat",
-      workspace_ref: "default",
-      input: { prompt: args.prompt || "hello" },
-      policy: { timeout_ms: Number(args["timeout-ms"] || 60000) },
+  const job = {
+    id: "fixture",
+    product_id: "panda-chat",
+    kind: "codex.chat",
+    workspace_ref: args["workspace-ref"] || "default",
+    input: { prompt: args.prompt || "hello" },
+    policy: {
+      timeout_ms: Number(args["timeout-ms"] || 60000),
+      ...(args.cwd ? { cwd: args.cwd } : {}),
+      ...(args.sandbox ? { sandbox: args.sandbox } : {}),
+      ...(args["approval-policy"] ? { approvalPolicy: args["approval-policy"] } : {}),
+      ...(args["developer-instructions"] ? { developerInstructions: args["developer-instructions"] } : {}),
     },
-    apiBase: "",
-    token: "",
-  });
+  };
+  const result = await executeJob({
+    api_base: "",
+    device_token: "",
+    authorized_products: [productGrant({ id: "panda-chat", name: "Panda Chat", capabilities: ["codex.chat"] }, fixtureAuthorization())],
+  }, job);
   console.log(JSON.stringify(result, null, 2));
 }
 
@@ -185,9 +195,17 @@ async function doctor() {
 }
 
 async function executeJob(state, job) {
+  const denial = validateLocalJobAuthorization(state, job);
+  if (denial) {
+    const result = localPolicyDenialResult(job, denial);
+    await postEvent(state, job.id, "policy_denied", localPolicyDenialEvent(job, denial));
+    return result;
+  }
+  const policy = effectiveJobPolicy(job);
+  await postEvent(state, job.id, "effective_policy", effectivePolicyEvent(job, policy));
   await postEvent(state, job.id, "started", { kind: job.kind, workspace_ref: job.workspace_ref });
   if (job.kind === "codex.chat" || job.kind === "codex.run") {
-    return runCodexOrFixture({ job, apiBase: state.api_base, token: state.device_token });
+    return runCodexOrFixture({ job, policy, apiBase: state.api_base, token: state.device_token });
   }
   if (job.kind === "codex.rpc") {
     return {
@@ -198,7 +216,7 @@ async function executeJob(state, job) {
   return { ok: false, error: `unsupported job kind: ${job.kind}` };
 }
 
-async function runCodexOrFixture({ job, apiBase, token }) {
+async function runCodexOrFixture({ job, policy = effectiveJobPolicy(job), apiBase, token }) {
   if (fakeCodexEnabled()) {
     const prompt = String(job.input?.prompt || "").trim();
     const reply = `Panda Bridge fixture reply: ${prompt || "ok"}`;
@@ -207,19 +225,19 @@ async function runCodexOrFixture({ job, apiBase, token }) {
   }
   return runCodexAppServer({
     job,
+    policy,
     apiBase,
     token,
     codexBin: codexBin(),
-    cwd: workspacePath(job.workspace_ref),
     timeoutMs: Number(job.policy?.timeout_ms || 240000),
   });
 }
 
-async function runCodexAppServer({ job, apiBase, token, codexBin, cwd, timeoutMs }) {
+async function runCodexAppServer({ job, policy, apiBase, token, codexBin, timeoutMs }) {
   const prompt = String(job.input?.prompt || "").trim();
   if (!prompt) return { ok: false, error: "missing prompt" };
   const proc = spawn(codexBin, ["app-server", "--stdio"], {
-    cwd,
+    cwd: policy.cwd,
     env: codexSpawnEnv(codexBin),
     stdio: ["pipe", "pipe", "pipe"],
   });
@@ -319,18 +337,18 @@ async function runCodexAppServer({ job, apiBase, token, codexBin, cwd, timeoutMs
     const rateLimits = await send("account/rateLimits/read").catch(() => null);
 
     const thread = await send("thread/start", {
-      cwd,
-      sandbox: sandboxFor(job),
-      approvalPolicy: approvalPolicyFor(job),
+      cwd: policy.cwd,
+      sandbox: policy.sandbox,
+      approvalPolicy: policy.approvalPolicy,
       ephemeral: job.input?.ephemeral !== false,
-      developerInstructions: developerInstructionsFor(job),
+      developerInstructions: developerInstructionsFor(job, policy),
     });
     const threadId = thread?.thread?.id;
     if (!threadId) throw new Error("codex app-server did not return a thread id");
     await send("turn/start", {
       threadId,
       input: [{ type: "text", text: prompt, text_elements: [] }],
-      approvalPolicy: approvalPolicyFor(job),
+      approvalPolicy: policy.approvalPolicy,
     });
     const turn = await waitForTurn({ timeoutMs, isClosed: () => closed, getTurn: () => completedTurn });
     const reply = finalText.trim() || extractAgentText(turn).trim();
@@ -388,16 +406,8 @@ function workspacePath(workspaceRef = "default") {
   return resolve(args["codex-cwd"] || process.env.PANDA_BRIDGE_CODEX_CWD || process.cwd());
 }
 
-function sandboxFor(job) {
-  if (job.policy?.allow_shell) return "workspace-write";
-  return "read-only";
-}
-
-function approvalPolicyFor(job) {
-  return job.policy?.allow_shell ? "on-request" : "never";
-}
-
-function developerInstructionsFor(job) {
+function developerInstructionsFor(job, policy = {}) {
+  if (policy.developerInstructions) return policy.developerInstructions;
   if (job.kind === "codex.chat") {
     return [
       "You are running through Panda Bridge into the user's local Codex app-server.",
@@ -410,6 +420,218 @@ function developerInstructionsFor(job) {
     "Honor the user's task while respecting the local sandbox and approval policy.",
     "Cloud services request work, but the local connector controls execution authority.",
   ].join("\n");
+}
+
+function validateLocalJobAuthorization(state, job) {
+  const grants = Array.isArray(state.authorized_products) ? state.authorized_products : [];
+  const grant = grants.find((item) => item?.id === job.product_id);
+  if (!grant) return `product_not_authorized_locally: ${job.product_id || ""}`;
+  if (Array.isArray(grant.capabilities) && grant.capabilities.length && !grant.capabilities.includes(job.kind)) {
+    return `capability_not_authorized_locally: ${job.product_id}:${job.kind}`;
+  }
+  if (grant.policy?.version !== "AUTH-SCOPE-v1") return "authorization_scope_missing_locally";
+  const scopeError = validateAuthorizationScope(grant.policy, job);
+  if (scopeError) return scopeError;
+  try {
+    effectiveJobPolicy(job);
+    return "";
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+}
+
+function validateAuthorizationScope(scope, job) {
+  if (Array.isArray(scope.capabilities) && scope.capabilities.length && !scope.capabilities.includes(job.kind)) {
+    return `capability_not_authorized_locally: ${job.product_id}:${job.kind}`;
+  }
+  const workspaceRef = job.workspace_ref || "default";
+  if (!authorizationScopeAllowsWorkspace(scope, workspaceRef)) return `workspace_not_allowed_locally: ${workspaceRef}`;
+  const requestedSandbox = policyString(job.policy, "sandbox") || (job.policy?.allow_shell ? "workspace-write" : "read-only");
+  const sandboxFloor = policyString(scope, "sandbox_floor") || "workspace-write";
+  if (!authorizationScopeAllowsSandbox(sandboxFloor, requestedSandbox)) return `sandbox_not_allowed_locally: ${requestedSandbox}`;
+  const requestedApproval = policyString(job.policy, "approvalPolicy") || (job.policy?.allow_shell ? "on-request" : "on-request");
+  const approvalFloor = policyString(scope, "approval_policy_floor") || "on-request";
+  if (!authorizationScopeAllowsApproval(approvalFloor, requestedApproval, scope.allow_approval_never === true)) {
+    return `approval_policy_not_allowed_locally: ${requestedApproval}`;
+  }
+  if (policyString(job.policy, "developerInstructions") && scope.allow_developer_instructions !== true) {
+    return "developer_instructions_not_allowed_locally";
+  }
+  return "";
+}
+
+function authorizationScopeAllowsWorkspace(scope, workspaceRef) {
+  const roots = Array.isArray(scope.workspace_roots) ? scope.workspace_roots : [];
+  if (!roots.length) return workspaceRef === "default";
+  return roots.some((item) => item?.id === workspaceRef);
+}
+
+function authorizationScopeAllowsSandbox(floor, requested) {
+  if (floor === "read-only") return requested === "read-only";
+  if (floor === "workspace-write") return requested === "workspace-write" || requested === "read-only";
+  return false;
+}
+
+function authorizationScopeAllowsApproval(floor, requested, allowNever) {
+  if (requested === "never") return allowNever;
+  const ranks = new Map([["untrusted", 0], ["on-request", 1], ["on-failure", 2]]);
+  if (!ranks.has(floor) || !ranks.has(requested)) return false;
+  return ranks.get(requested) <= ranks.get(floor);
+}
+
+function effectiveJobPolicy(job) {
+  const requestedCwd = policyString(job.policy, "cwd")
+    || policyString(job.policy, "workspace_path")
+    || workspaceRefCwd(job.workspace_ref);
+  if (!requestedCwd) throw new Error(`workspace_not_allowed_locally: ${job.workspace_ref || "default"}`);
+  const cwd = allowedCwd(requestedCwd);
+  const sandbox = allowedSandbox(policyString(job.policy, "sandbox") || (job.policy?.allow_shell ? "workspace-write" : "read-only"));
+  const approvalPolicy = allowedApprovalPolicy(policyString(job.policy, "approvalPolicy") || (job.policy?.allow_shell ? "on-request" : "on-request"));
+  const developerInstructions = policyString(job.policy, "developerInstructions");
+  if (developerInstructions && !envFlag("PANDA_BRIDGE_ALLOW_DEVELOPER_INSTRUCTIONS")) {
+    throw new Error("developer_instructions_not_allowed_locally");
+  }
+  return { cwd, sandbox, approvalPolicy, developerInstructions };
+}
+
+function workspaceRefCwd(workspaceRef = "default") {
+  const ref = String(workspaceRef || "default");
+  if (!ref || ref === "default") return workspacePath("default");
+  const key = `PANDA_BRIDGE_WORKSPACE_${ref.toUpperCase().replace(/[^A-Z0-9]/g, "_")}`;
+  return process.env[key] || null;
+}
+
+function allowedCwd(requested) {
+  let cwd;
+  try {
+    cwd = realpathSync(resolve(requested));
+  } catch (error) {
+    throw new Error(`cwd_not_allowed_locally: ${redactExecutionPath(requested)}`);
+  }
+  const roots = allowedWorkspaceRoots();
+  if (roots.some((root) => cwd === root || cwd.startsWith(`${root}/`))) return cwd;
+  throw new Error(`cwd_not_allowed_locally: ${redactExecutionPath(cwd)}`);
+}
+
+function allowedWorkspaceRoots() {
+  const roots = [workspacePath("default")];
+  const extra = process.env.PANDA_BRIDGE_ALLOWED_WORKSPACE_ROOTS || "";
+  for (const item of extra.split(/[;,]/).map((entry) => entry.trim()).filter(Boolean)) roots.push(resolve(item));
+  return [...new Set(roots.map((item) => {
+    try {
+      return realpathSync(resolve(item));
+    } catch {
+      return resolve(item);
+    }
+  }))];
+}
+
+function allowedSandbox(value) {
+  if (value === "workspace-write" || value === "read-only") return value;
+  if (value === "danger-full-access") throw new Error("sandbox_not_allowed_locally: danger-full-access");
+  throw new Error(`sandbox_not_allowed_locally: ${value}`);
+}
+
+function allowedApprovalPolicy(value) {
+  if (value === "on-request" || value === "on-failure" || value === "untrusted") return value;
+  if (value === "never" && envFlag("PANDA_BRIDGE_ALLOW_APPROVAL_NEVER")) return value;
+  if (value === "never") throw new Error("approval_policy_not_allowed_locally: never");
+  throw new Error(`approval_policy_not_allowed_locally: ${value}`);
+}
+
+function localPolicyDenialResult(job, error) {
+  const { denied, reason } = localPolicyDenial(error);
+  return {
+    ok: false,
+    error: "local_policy_denied",
+    denied,
+    reason,
+    product_id: job.product_id || null,
+    kind: job.kind || null,
+    cloud_openai_credentials: false,
+  };
+}
+
+function localPolicyDenialEvent(job, error) {
+  const { denied, reason } = localPolicyDenial(error);
+  return {
+    denied,
+    reason,
+    product_id: job.product_id || null,
+    kind: job.kind || null,
+    workspace_ref: job.workspace_ref || "default",
+  };
+}
+
+function localPolicyDenial(error) {
+  const text = String(error || "");
+  if (text.startsWith("product_not_authorized_locally")) return { denied: "product", reason: "product_not_authorized_locally" };
+  if (text.startsWith("capability_not_authorized_locally")) return { denied: "capability", reason: "capability_not_authorized_locally" };
+  if (text.startsWith("authorization_scope_missing_locally")) return { denied: "authorization", reason: "authorization_scope_missing_locally" };
+  if (text.startsWith("workspace_not_allowed_locally")) return { denied: "workspace_ref", reason: "workspace_not_allowed_locally" };
+  if (text.startsWith("cwd_not_allowed_locally")) return { denied: "cwd", reason: "cwd_not_allowed_locally" };
+  if (text.startsWith("sandbox_not_allowed_locally")) return { denied: "sandbox", reason: "sandbox_not_allowed_locally" };
+  if (text.startsWith("approval_policy_not_allowed_locally")) return { denied: "approvalPolicy", reason: "approval_policy_not_allowed_locally" };
+  if (text.startsWith("developer_instructions_not_allowed_locally")) return { denied: "developerInstructions", reason: "developer_instructions_not_allowed_locally" };
+  return { denied: "unknown", reason: "local_policy_denied" };
+}
+
+function effectivePolicyEvent(job, policy) {
+  return {
+    requested_policy: job.policy || {},
+    effective_policy: {
+      cwd: redactExecutionPath(policy.cwd),
+      sandbox: policy.sandbox,
+      approvalPolicy: policy.approvalPolicy,
+      developerInstructions: policy.developerInstructions ? "[present]" : null,
+    },
+    workspace_ref: job.workspace_ref || "default",
+    product_id: job.product_id || null,
+    kind: job.kind || null,
+  };
+}
+
+function policyString(policy, key) {
+  const value = policy?.[key];
+  return typeof value === "string" && value.trim() ? value.trim() : "";
+}
+
+function productGrant(product, authorization = {}) {
+  return {
+    id: product.id,
+    name: product.name,
+    origin: authorization?.source_origin || product.origin || product.official_origin || null,
+    capabilities: Array.isArray(product.capabilities) ? product.capabilities : [],
+    policy: authorization?.policy || null,
+    authorized_at: authorization?.updated_at || authorization?.created_at || new Date().toISOString(),
+  };
+}
+
+function fixtureAuthorization() {
+  return {
+    source_origin: "local-fixture",
+    policy: {
+      version: "AUTH-SCOPE-v1",
+      product_id: "panda-chat",
+      source_origin: "local-fixture",
+      capabilities: ["codex.chat"],
+      workspace_roots: [{ id: "default", path_display: "[local]/default" }],
+      sandbox_floor: "workspace-write",
+      approval_policy_floor: "on-request",
+      allow_approval_never: false,
+      allow_developer_instructions: false,
+    },
+  };
+}
+
+function envFlag(name) {
+  const value = process.env[name] || "";
+  return value === "1" || value.toLowerCase() === "true";
+}
+
+function redactExecutionPath(path) {
+  const name = String(path || "").split(/[\\/]/).filter(Boolean).pop();
+  return name ? `[local]/${name}` : "[local]";
 }
 
 function capabilities() {
@@ -507,7 +729,7 @@ async function tryGetJson(url, token = "") {
 async function postJson(url, body, token = "") {
   const response = await fetch(url, {
     method: "POST",
-    headers: { ...authHeaders(token), "content-type": "application/json" },
+    headers: { ...authHeaders(token), "content-type": "application/json", "x-panda-bridge-local-client": "connector-cli" },
     body: JSON.stringify(body),
   });
   return parseResponse(response);
