@@ -116,6 +116,25 @@ product authorization, codex jobs, job status/events/wait/stream/cancel, and
 queue summary. It also checks account isolation and writes redacted evidence
 under `spec/verification/evidence/v6-sdk-call-examples-account-stability/`.
 
+## Desktop Install Metadata
+
+Product UIs should read Bridge desktop install/open targets from the SDK, not
+hardcode package URLs inside each product.
+
+```js
+import { bridgeDesktopInstallTarget } from "@panda-bridge/sdk";
+
+const install = bridgeDesktopInstallTarget({ channel: "test" });
+
+renderDownloadLink(install.downloadUrl);
+renderOpenLink(install.openUrl);
+```
+
+Use `channel: "production"` for `assets.bridge.otherline.cc` and
+`channel: "test"` for `assets-bridge.test.example`. A product may pass
+`assetBaseUrl` or `downloadUrl` only as a deployment override; the package name,
+scheme, default path, and hash are owned by Bridge SDK.
+
 ## Productized Onboarding Example
 
 From the repository root, run:

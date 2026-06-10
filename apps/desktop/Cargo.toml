@@ -23,7 +23,7 @@ windows-registry = "0.6.1"
 [package.metadata.bundle]
 name = "Panda Bridge"
 identifier = "cc.otherline.panda-bridge"
-icon = []
+icon = ["apps/desktop/assets/PandaBridge.icns"]
 version = "0.1.0"
 copyright = "Copyright Panda Bridge"
 category = "Developer Tool"

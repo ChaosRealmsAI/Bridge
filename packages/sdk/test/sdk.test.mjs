@@ -1,5 +1,10 @@
 import assert from "node:assert/strict";
-import { bridgeFullAccessPolicy, createBridgeClient } from "../src/index.js";
+import {
+  bridgeDesktopInstallDefaults,
+  bridgeDesktopInstallTarget,
+  bridgeFullAccessPolicy,
+  createBridgeClient,
+} from "../src/index.js";
 
 const calls = [];
 const client = createBridgeClient({
@@ -19,6 +24,23 @@ assert.equal(job.job.id, "job_1");
 assert.equal(calls[0].url, "https://api.example.test/v1/products/panda-chat/jobs");
 assert.equal(JSON.parse(calls[0].init.body).kind, "codex.run");
 assert.deepEqual(JSON.parse(calls[0].init.body).policy, {});
+
+assert.equal(bridgeDesktopInstallDefaults.macos.fileName, "panda-bridge-macos.dmg");
+assert.equal(
+  bridgeDesktopInstallTarget({ channel: "test" }).downloadUrl,
+  "https://assets-bridge.test.example/downloads/panda-bridge-macos.dmg",
+);
+assert.equal(
+  bridgeDesktopInstallTarget({ assetBaseUrl: "https://cdn.example.test/" }).downloadUrl,
+  "https://cdn.example.test/downloads/panda-bridge-macos.dmg",
+);
+assert.equal(
+  bridgeDesktopInstallTarget({ downloadUrl: "https://download.example.test/PandaBridge.dmg" }).downloadUrl,
+  "https://download.example.test/PandaBridge.dmg",
+);
+assert.equal(bridgeDesktopInstallTarget().openUrl, "panda-bridge://open");
+assert.equal(bridgeDesktopInstallTarget().sha256.length, 64);
+assert.throws(() => bridgeDesktopInstallTarget({ platform: "windows" }), /unsupported_bridge_desktop_platform/);
 
 await client.connect.createIntent({ deviceName: "Mac" });
 assert.equal(calls[1].url, "https://api.example.test/v1/connect-intents");

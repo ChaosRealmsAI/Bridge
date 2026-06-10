@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createHash, createHmac, randomUUID } from "node:crypto";
 import worker from "../src/index.js";
 
+const assetRequests = [];
 const env = {
   BRIDGE_LOCAL_MEMORY: "1",
   BRIDGE_WEB_ORIGIN: "http://local.test",
@@ -13,6 +14,16 @@ const env = {
   }),
   BRIDGE_OTHERLINE_DELEGATION_SECRET: "otherline-delegation-test-secret",
   BRIDGE_PRODUCT_DELEGATION_SECRETS: JSON.stringify({ "panda-dev": "panda-dev-delegation-test-secret" }),
+  ASSETS: {
+    fetch: async (request) => {
+      const url = new URL(request.url);
+      assetRequests.push({ method: request.method, pathname: url.pathname });
+      return new Response(request.method === "HEAD" ? null : "asset", {
+        status: 200,
+        headers: { "content-type": url.pathname.endsWith(".dmg") ? "application/octet-stream" : "text/html; charset=utf-8" },
+      });
+    },
+  },
 };
 const jar = {};
 
@@ -156,6 +167,9 @@ const assetRaw = await worker.fetch(new Request("http://local.test/"), env);
 assert.equal(assetRaw.status, 200);
 assert.match(assetRaw.headers.get("content-security-policy"), /frame-src 'self' panda-bridge:/);
 assert.equal(assetRaw.headers.get("x-content-type-options"), "nosniff");
+const assetHeadRaw = await worker.fetch(new Request("http://local.test/downloads/panda-bridge-macos.dmg", { method: "HEAD" }), env);
+assert.equal(assetHeadRaw.status, 200);
+assert.deepEqual(assetRequests.at(-1), { method: "HEAD", pathname: "/downloads/panda-bridge-macos.dmg" });
 
 const secureHealthRaw = await worker.fetch(new Request("https://bridge.otherline.cc/v1/health"), {
   ...env,

@@ -376,7 +376,7 @@ fn run_window() -> Result<(), String> {
     }
     #[allow(unused_mut)]
     let mut window_builder = WindowBuilder::new()
-        .with_title("Panda Connector")
+        .with_title("Panda Bridge")
         .with_inner_size(LogicalSize::new(760.0, 540.0))
         .with_min_inner_size(LogicalSize::new(680.0, 480.0))
         .with_resizable(true);
@@ -3591,12 +3591,14 @@ fn authorization_policy_capabilities(policy: &Value) -> Option<Vec<String>> {
 fn save_credentials(credentials: &Credentials) -> Result<(), String> {
     let text = serde_json::to_string_pretty(credentials).map_err(|error| error.to_string())?;
     if let Ok(path) = env::var("PANDA_BRIDGE_DESKTOP_STATE") {
-        write_file(Path::new(&path), &text)?;
+        write_external_state_file(Path::new(&path), &text)?;
         return Ok(());
     }
-    let _ = keychain_entry()
-        .and_then(|entry| entry.set_password(&text).map_err(|error| error.to_string()));
     write_file(&fallback_credentials_path()?, &text)?;
+    if keychain_enabled() {
+        let _ = keychain_entry()
+            .and_then(|entry| entry.set_password(&text).map_err(|error| error.to_string()));
+    }
     Ok(())
 }
 
@@ -3609,7 +3611,13 @@ fn load_credentials_text() -> Result<String, String> {
     if let Ok(path) = env::var("PANDA_BRIDGE_DESKTOP_STATE") {
         return fs::read_to_string(path).map_err(|error| error.to_string());
     }
-    if !env_flag("PANDA_BRIDGE_SKIP_KEYCHAIN") {
+    let fallback_path = fallback_credentials_path()?;
+    if let Ok(text) = fs::read_to_string(&fallback_path) {
+        if !text.trim().is_empty() {
+            return Ok(text);
+        }
+    }
+    if keychain_enabled() {
         if let Ok(text) = keychain_entry()
             .and_then(|entry| entry.get_password().map_err(|error| error.to_string()))
         {
@@ -3618,12 +3626,8 @@ fn load_credentials_text() -> Result<String, String> {
             }
         }
     }
-    let fallback_path = fallback_credentials_path()?;
-    if let Ok(text) = fs::read_to_string(&fallback_path) {
-        return Ok(text);
-    }
     Err(format!(
-        "fallback state unavailable: {}",
+        "desktop state unavailable: {}",
         fallback_path.display()
     ))
 }
@@ -3634,11 +3638,17 @@ fn delete_credentials() -> Result<(), String> {
         return Ok(());
     }
     let _ = fs::remove_file(fallback_credentials_path()?);
-    thread::spawn(move || {
-        let _ = keychain_entry()
-            .and_then(|entry| entry.delete_credential().map_err(|error| error.to_string()));
-    });
+    if keychain_enabled() {
+        thread::spawn(move || {
+            let _ = keychain_entry()
+                .and_then(|entry| entry.delete_credential().map_err(|error| error.to_string()));
+        });
+    }
     Ok(())
+}
+
+fn keychain_enabled() -> bool {
+    env_flag("PANDA_BRIDGE_USE_KEYCHAIN") && !env_flag("PANDA_BRIDGE_SKIP_KEYCHAIN")
 }
 
 fn keychain_entry() -> Result<Entry, String> {
@@ -3661,11 +3671,25 @@ fn fallback_credentials_path() -> Result<PathBuf, String> {
 }
 
 fn write_file(path: &Path, text: &str) -> Result<(), String> {
+    write_file_with_parent_permissions(path, text, true)
+}
+
+fn write_external_state_file(path: &Path, text: &str) -> Result<(), String> {
+    write_file_with_parent_permissions(path, text, false)
+}
+
+fn write_file_with_parent_permissions(
+    path: &Path,
+    text: &str,
+    private_parent: bool,
+) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|error| error.to_string())?;
         #[cfg(unix)]
-        fs::set_permissions(parent, fs::Permissions::from_mode(0o700))
-            .map_err(|error| error.to_string())?;
+        if private_parent {
+            fs::set_permissions(parent, fs::Permissions::from_mode(0o700))
+                .map_err(|error| error.to_string())?;
+        }
     }
     fs::write(path, format!("{text}\n")).map_err(|error| error.to_string())?;
     #[cfg(unix)]
@@ -4301,6 +4325,89 @@ mod tests {
         env::remove_var("PANDA_BRIDGE_ALLOWED_WORKSPACE_ROOTS");
         env::remove_var("PANDA_BRIDGE_ALLOW_APPROVAL_NEVER");
         env::remove_var("PANDA_BRIDGE_ALLOW_DEVELOPER_INSTRUCTIONS");
+    }
+
+    fn reset_credentials_env() {
+        env::remove_var("PANDA_BRIDGE_DESKTOP_STATE");
+        env::remove_var("PANDA_BRIDGE_USE_KEYCHAIN");
+        env::remove_var("PANDA_BRIDGE_SKIP_KEYCHAIN");
+    }
+
+    #[test]
+    fn credentials_default_to_private_fallback_file_without_keychain() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        reset_credentials_env();
+        let old_home = env::var_os("HOME");
+        let old_userprofile = env::var_os("USERPROFILE");
+        let home = env::temp_dir().join(format!(
+            "panda-bridge-credentials-test-{}-{}",
+            std::process::id(),
+            unix_seconds()
+        ));
+        let _ = fs::remove_dir_all(&home);
+        fs::create_dir_all(&home).unwrap();
+        env::set_var("HOME", &home);
+        env::remove_var("USERPROFILE");
+
+        let credentials = test_credentials(vec!["codex.chat"]);
+        save_credentials(&credentials).unwrap();
+        let path = fallback_credentials_path().unwrap();
+        assert!(path.exists(), "credentials should be written to the private fallback file");
+        #[cfg(unix)]
+        {
+            let dir_mode = fs::metadata(path.parent().unwrap()).unwrap().permissions().mode() & 0o777;
+            let file_mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(dir_mode, 0o700, "fallback state directory should be private");
+            assert_eq!(file_mode, 0o600, "fallback state file should be private");
+        }
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("\"device_token\""));
+        let loaded = load_credentials().unwrap();
+        assert_eq!(loaded.device_id, credentials.device_id);
+        assert_eq!(loaded.device_token, credentials.device_token);
+
+        delete_credentials().unwrap();
+        assert!(!path.exists(), "delete should remove the fallback state file");
+
+        if let Some(value) = old_home {
+            env::set_var("HOME", value);
+        } else {
+            env::remove_var("HOME");
+        }
+        if let Some(value) = old_userprofile {
+            env::set_var("USERPROFILE", value);
+        } else {
+            env::remove_var("USERPROFILE");
+        }
+        reset_credentials_env();
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn explicit_desktop_state_does_not_chmod_external_parent() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        reset_credentials_env();
+        let dir = env::temp_dir().join(format!(
+            "panda-bridge-external-state-test-{}-{}",
+            std::process::id(),
+            unix_seconds()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+        let state = dir.join("desktop-state.json");
+        env::set_var("PANDA_BRIDGE_DESKTOP_STATE", &state);
+
+        save_credentials(&test_credentials(vec!["codex.chat"])).unwrap();
+
+        let parent_mode = fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+        let file_mode = fs::metadata(&state).unwrap().permissions().mode() & 0o777;
+        assert_eq!(parent_mode, 0o755, "external parent permissions must be left alone");
+        assert_eq!(file_mode, 0o600, "external state file should still be private");
+
+        reset_credentials_env();
+        let _ = fs::remove_dir_all(&dir);
     }
 
     fn test_auth_scope() -> Value {

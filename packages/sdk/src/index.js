@@ -1,3 +1,41 @@
+export const bridgeDesktopInstallDefaults = Object.freeze({
+  macos: Object.freeze({
+    platform: "macos",
+    appName: "Panda Bridge",
+    fileName: "panda-bridge-macos.dmg",
+    openUrl: "panda-bridge://open",
+    downloadPath: "/downloads/panda-bridge-macos.dmg",
+    downloadUrls: Object.freeze({
+      production: "https://assets.bridge.otherline.cc/downloads/panda-bridge-macos.dmg",
+      test: "https://assets-bridge.test.example/downloads/panda-bridge-macos.dmg",
+    }),
+    sha256: "e65e04f08373ffe2363616dc1426516b74f12123f52c71d7225af4bac7225962",
+  }),
+});
+
+export function bridgeDesktopInstallTarget(options = {}) {
+  const platform = stringValue(options.platform, 40) || "macos";
+  const target = bridgeDesktopInstallDefaults[platform];
+  if (!target) throw new Error(`unsupported_bridge_desktop_platform:${platform}`);
+
+  const channel = stringValue(options.channel, 40) || "production";
+  const assetBaseUrl = stringValue(options.assetBaseUrl || options.asset_base_url, 300).replace(/\/$/, "");
+  const overrideDownloadUrl = stringValue(options.downloadUrl || options.download_url, 500);
+  const overrideOpenUrl = stringValue(options.openUrl || options.open_url, 200);
+  const downloadUrl = overrideDownloadUrl
+    || (assetBaseUrl ? `${assetBaseUrl}${target.downloadPath}` : target.downloadUrls[channel] || target.downloadUrls.production);
+
+  return {
+    platform: target.platform,
+    appName: target.appName,
+    fileName: target.fileName,
+    openUrl: overrideOpenUrl || target.openUrl,
+    downloadUrl,
+    downloadPath: target.downloadPath,
+    sha256: target.sha256,
+  };
+}
+
 export function createBridgeClient(options = {}) {
   const apiBase = String(options.apiBase || "").replace(/\/$/, "");
   const productId = options.productId || "panda-chat";

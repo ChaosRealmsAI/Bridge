@@ -117,7 +117,7 @@ export default {
       const ackMatch = path.match(/^\/v1\/connectors\/jobs\/([^/]+)\/ack$/);
       if (ackMatch && request.method === "POST") return await ackConnectorJob(request, env, decodeURIComponent(ackMatch[1]));
 
-      if (request.method === "GET" && !path.startsWith("/v1/")) return await assetResponse(request, env);
+      if (["GET", "HEAD"].includes(request.method) && !path.startsWith("/v1/")) return await assetResponse(request, env);
       return notFound(env);
     } catch (error) {
       if (error?.status) return json(publicErrorPayload(error), env, error.status);
