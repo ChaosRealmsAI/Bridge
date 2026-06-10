@@ -316,8 +316,9 @@
     function grantView(p){
       const policy=p.policy||{};
       const caps=Array.isArray(p.capabilities)?p.capabilities:(Array.isArray(policy.capabilities)?policy.capabilities:[]);
+      const origin=policy.source_origin||p.origin||"unknown";
       return `<div class="grantgrid">
-          <div><div class="gk">Origin</div><div class="gv">${esc(p.origin||policy.source_origin||"unknown")}</div></div>
+          <div><div class="gk">Origin</div><div class="gv">${esc(origin)}</div></div>
           <div><div class="gk">Scope</div><div class="gv">${chips(caps)}</div></div>
           <div><div class="gk">Workspace</div><div class="gv">${esc(workspaceSummary(policy)||"default workspace")}</div></div>
           <div><div class="gk">Sandbox</div><div class="gv">${esc(policy.sandbox_floor||"workspace-write")}</div></div>

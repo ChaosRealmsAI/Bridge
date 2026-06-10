@@ -676,6 +676,27 @@ assert.notEqual(delegatedIntentClaim.device.id, otherlineClaim.device.id);
 assert.equal(delegatedIntentClaim.authorization.product_id, "otherline");
 assert.equal(delegatedIntentClaim.authorization.policy.version, "AUTH-SCOPE-v1");
 assert.equal(delegatedIntentClaim.authorization.policy.source_origin, "https://otherline.cc");
+const delegatedScopedIntent = await delegatedApi("POST", "/v1/products/otherline/delegated/connect-intents", {
+  account: { display_name: "Delegated Scoped Otherline User" },
+  device_name: "Delegated Scoped Device",
+  policy: {
+    capabilities: ["codex.chat"],
+    source_origin: "https://app.test.example",
+    workspace_roots: [{ id: "default", path_display: "Otherline default workspace" }],
+    sandbox_floor: "workspace-write",
+    approval_policy_floor: "on-request",
+    allow_approval_never: false,
+    allow_developer_instructions: false,
+  },
+}, otherlineClaim.account.id, "pending");
+assert.deepEqual(delegatedScopedIntent.connect_intent.policy.capabilities, ["codex.chat"]);
+assert.equal(delegatedScopedIntent.connect_intent.policy.source_origin, "https://app.test.example");
+const delegatedScopedClaim = await nativeClaimIntent(delegatedScopedIntent.token, {
+  device_name: "Delegated Scoped Device",
+  capabilities: { codex: ["codex.chat"] },
+}, otherlineClaim.device_token);
+assert.deepEqual(delegatedScopedClaim.authorization.policy.capabilities, ["codex.chat"]);
+assert.equal(delegatedScopedClaim.authorization.policy.source_origin, "https://app.test.example");
 const delegatedIntentInspect = await delegatedApi("GET", `/v1/products/otherline/delegated/connect-intents/${encodeURIComponent(delegatedIntent.token)}`, null, otherlineClaim.account.id, "pending");
 assert.ok(delegatedIntentInspect.connect_intent.consumed_at);
 assert.equal(delegatedIntentInspect.connect_intent.device_id, delegatedIntentClaim.device.id);

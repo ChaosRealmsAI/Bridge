@@ -900,10 +900,7 @@ fn write_builtin_screenshot(path: &Path, snapshot: &Value) -> Result<(), String>
                     .get("id")
                     .and_then(Value::as_str)
                     .unwrap_or("unknown");
-                let origin = product
-                    .get("origin")
-                    .and_then(Value::as_str)
-                    .unwrap_or("unknown");
+                let origin = product_display_origin(product);
                 let capabilities = product
                     .get("capabilities")
                     .and_then(Value::as_array)
@@ -949,6 +946,15 @@ fn write_builtin_screenshot(path: &Path, snapshot: &Value) -> Result<(), String>
         canvas.height as u32,
         &canvas.pixels,
     )
+}
+
+fn product_display_origin(product: &Value) -> &str {
+    product
+        .get("policy")
+        .and_then(|policy| policy.get("source_origin"))
+        .and_then(Value::as_str)
+        .or_else(|| product.get("origin").and_then(Value::as_str))
+        .unwrap_or("unknown")
 }
 
 fn write_png(path: &Path, width: u32, height: u32, pixels: &[u8]) -> Result<(), String> {
@@ -4470,6 +4476,24 @@ mod tests {
         assert_eq!(result["reason"], "cwd_not_allowed_locally");
         assert!(!result.to_string().contains("/Users/"));
         assert!(!result.to_string().contains("cwd_not_allowed_locally: /"));
+    }
+
+    #[test]
+    fn product_display_origin_prefers_authorization_policy_source() {
+        let product = json!({
+            "origin": "https://bridge.test.example",
+            "policy": { "source_origin": "https://app.test.example" }
+        });
+        assert_eq!(
+            product_display_origin(&product),
+            "https://app.test.example"
+        );
+
+        let fallback = json!({ "origin": "https://bridge.test.example" });
+        assert_eq!(
+            product_display_origin(&fallback),
+            "https://bridge.test.example"
+        );
     }
 
     #[test]
