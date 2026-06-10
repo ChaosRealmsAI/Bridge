@@ -86,6 +86,8 @@ export default {
       const delegatedAuthorizationMatch = path.match(/^\/v1\/products\/([^/]+)\/delegated\/authorization$/);
       if (delegatedAuthorizationMatch && request.method === "GET") return await delegatedProductAuthorization(request, env, decodeURIComponent(delegatedAuthorizationMatch[1]));
       if (delegatedAuthorizationMatch && request.method === "DELETE") return await revokeDelegatedProductAuthorization(request, env, decodeURIComponent(delegatedAuthorizationMatch[1]));
+      const delegatedStatusMatch = path.match(/^\/v1\/products\/([^/]+)\/delegated\/status$/);
+      if (delegatedStatusMatch && request.method === "GET") return await delegatedProductStatus(request, env, decodeURIComponent(delegatedStatusMatch[1]));
       const delegatedAuthorizationClaimMatch = path.match(/^\/v1\/products\/([^/]+)\/delegated\/authorization\/claim$/);
       if (delegatedAuthorizationClaimMatch && request.method === "POST") return await claimDelegatedProductAuthorization(request, env, decodeURIComponent(delegatedAuthorizationClaimMatch[1]));
       const delegatedConnectIntentMatch = path.match(/^\/v1\/products\/([^/]+)\/delegated\/connect-intents$/);
@@ -621,7 +623,12 @@ async function getConnectIntent(request, env, token) {
   }
   const product = requireOfficialProduct(intent.product_id, env);
   const user = (await storage(env).select("bridge_users", { id: intent.user_id }))[0] || null;
-  return json({ connect_intent: publicConnectIntent(intent, user, env), account: publicAccount(user), product }, env);
+  return json({
+    deep_link: `${desktopProtocol(env)}://connect?intent=${encodeURIComponent(token)}&api=${encodeURIComponent(publicApiBase(env))}`,
+    connect_intent: publicConnectIntent(intent, user, env),
+    account: publicAccount(user),
+    product,
+  }, env);
 }
 
 async function claimConnectIntent(request, env, token) {
@@ -900,6 +907,34 @@ async function delegatedProductAuthorization(request, env, productId) {
   return json({ authorization, device: publicDevice(device, env), product }, env);
 }
 
+async function delegatedProductStatus(request, env, productId) {
+  const product = requireOfficialProduct(productId, env);
+  const delegation = await requireProductDelegation(request, env, product, "");
+  const devices = (await storage(env).select("bridge_devices", {
+    user_id: delegation.bridgeUserId,
+  }, { order: "last_seen_at", desc: true })).filter((device) => device.status !== "revoked");
+  const authorizations = await storage(env).select("bridge_authorizations", {
+    user_id: delegation.bridgeUserId,
+    product_id: product.id,
+    status: "active",
+  }, { order: "updated_at", desc: true });
+  const activeByDevice = new Map(authorizations.map((authorization) => [authorization.device_id, authorization]));
+  const authorizedDevices = devices.filter((device) => activeByDevice.has(device.id));
+  const selectedDevice = authorizedDevices.find((device) => isDeviceOnline(device, env))
+    || authorizedDevices[0]
+    || null;
+  const selectedAuthorization = selectedDevice ? activeByDevice.get(selectedDevice.id) || null : null;
+  return json({
+    product,
+    devices: devices.map((device) => publicDevice(device, env)),
+    authorized_devices: authorizedDevices.map((device) => publicDevice(device, env)),
+    authorizations,
+    selected_device: publicDevice(selectedDevice, env),
+    authorization: selectedAuthorization,
+    ready: Boolean(selectedDevice && selectedAuthorization && isDeviceOnline(selectedDevice, env)),
+  }, env);
+}
+
 async function createDelegatedConnectIntent(request, env, productId) {
   const product = requireOfficialProduct(productId, env);
   const rawBody = await readJsonText(request, env);
@@ -956,6 +991,7 @@ async function getDelegatedConnectIntent(request, env, productId, token) {
     : null;
   const authorization = device ? await activeAuthorization(env, intent.user_id, device.id, product.id) : null;
   return json({
+    deep_link: `${desktopProtocol(env)}://connect?intent=${encodeURIComponent(token)}&api=${encodeURIComponent(publicApiBase(env))}`,
     connect_intent: publicConnectIntent(intent, user, env),
     account: publicAccount(user),
     device: publicDevice(device, env),
@@ -1927,7 +1963,8 @@ async function createDeviceWithToken(env, userId, input) {
     updated_at: now(),
   });
   const { token, tokenExpiresAt } = await createDeviceToken(env, device.id);
-  return { device, token, tokenExpiresAt };
+  const replacement = await replaceOtherBridgeDevices(env, userId, device.id, "device.claim.replace");
+  return { device, token, tokenExpiresAt, replacement };
 }
 
 async function updateDeviceForIntent(env, device, token, input) {
@@ -1942,7 +1979,63 @@ async function updateDeviceForIntent(env, device, token, input) {
     last_seen_at: now(),
     updated_at: now(),
   });
-  return { device: next, token, tokenExpiresAt: null };
+  const replacement = await replaceOtherBridgeDevices(env, device.user_id, device.id, "device.intent.replace");
+  return { device: next, token, tokenExpiresAt: null, replacement };
+}
+
+async function replaceOtherBridgeDevices(env, userId, activeDeviceId, reason) {
+  const store = storage(env);
+  const replacedAt = now();
+  const devices = await store.select("bridge_devices", { user_id: userId });
+  let devicesRevoked = 0;
+  let tokensRevoked = 0;
+  let authorizationsRevoked = 0;
+  let cancelledJobs = 0;
+  for (const device of devices.filter((item) => item.id !== activeDeviceId && item.status !== "revoked")) {
+    await store.update("bridge_devices", device.id, {
+      status: "revoked",
+      updated_at: replacedAt,
+    });
+    devicesRevoked += 1;
+
+    const tokens = await store.select("bridge_device_tokens", { device_id: device.id });
+    for (const token of tokens.filter((item) => !item.revoked_at)) {
+      await store.update("bridge_device_tokens", token.id, {
+        revoked_at: replacedAt,
+        last_used_at: token.last_used_at || replacedAt,
+      });
+      tokensRevoked += 1;
+    }
+
+    const authorizations = await store.select("bridge_authorizations", {
+      user_id: userId,
+      device_id: device.id,
+    });
+    for (const authorization of authorizations.filter((item) => item.status !== "revoked")) {
+      await store.update("bridge_authorizations", authorization.id, {
+        status: "revoked",
+        updated_at: replacedAt,
+      });
+      authorizationsRevoked += 1;
+      cancelledJobs += await cancelQueuedJobsForAuthorization(env, userId, device.id, authorization.product_id);
+    }
+    await notifyDeviceRoom(env, device.id, {
+      type: "device.replaced",
+      device_id: device.id,
+      active_device_id: activeDeviceId,
+      reason,
+      sent_at: replacedAt,
+    });
+  }
+  if (devicesRevoked > 0) {
+    await audit(env, userId, activeDeviceId, null, reason, activeDeviceId, {
+      revoked_devices: devicesRevoked,
+      revoked_tokens: tokensRevoked,
+      revoked_authorizations: authorizationsRevoked,
+      cancelled_jobs: cancelledJobs,
+    });
+  }
+  return { devicesRevoked, tokensRevoked, authorizationsRevoked, cancelledJobs };
 }
 
 async function createDeviceToken(env, deviceId) {

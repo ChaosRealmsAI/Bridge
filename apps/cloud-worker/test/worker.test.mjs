@@ -380,6 +380,10 @@ const intentClaim = await nativeClaimIntent(intent.token, {
   capabilities: { codex: ["codex.chat", "codex.run"] },
 });
 assert.equal(intentClaim.device.device_name, "Intent Test Device");
+assert.notEqual(intentClaim.device.id, localIntentClaim.device.id);
+const oldExecutorHeartbeat = await apiRaw("POST", "/v1/connectors/heartbeat", {}, localIntentClaim.device_token);
+assert.equal(oldExecutorHeartbeat.response.status, 401);
+assert.equal(oldExecutorHeartbeat.payload.error, "unauthorized");
 assert.equal(intentClaim.account.display_name, "Tester");
 assert.equal(intentClaim.product.id, "panda-chat");
 assert.equal(intentClaim.authorization.source_origin, "http://chat.local.test");
@@ -708,12 +712,18 @@ assert.equal(delegatedScopedIntent.connect_intent.policy.source_origin, "https:/
 const delegatedScopedClaim = await nativeClaimIntent(delegatedScopedIntent.token, {
   device_name: "Delegated Scoped Device",
   capabilities: { codex: ["codex.chat"] },
-}, otherlineClaim.device_token);
+}, delegatedIntentClaim.device_token);
+assert.equal(delegatedScopedClaim.device.id, delegatedIntentClaim.device.id);
 assert.deepEqual(delegatedScopedClaim.authorization.policy.capabilities, ["codex.chat"]);
 assert.equal(delegatedScopedClaim.authorization.policy.source_origin, "https://app.test.example");
+const delegatedStatus = await delegatedApi("GET", "/v1/products/otherline/delegated/status", null, otherlineClaim.account.id, "account");
+assert.equal(delegatedStatus.ready, true);
+assert.equal(delegatedStatus.selected_device.id, delegatedScopedClaim.device.id);
+assert.equal(delegatedStatus.authorized_devices.length, 1);
 const delegatedIntentInspect = await delegatedApi("GET", `/v1/products/otherline/delegated/connect-intents/${encodeURIComponent(delegatedIntent.token)}`, null, otherlineClaim.account.id, "pending");
 assert.ok(delegatedIntentInspect.connect_intent.consumed_at);
 assert.equal(delegatedIntentInspect.connect_intent.device_id, delegatedIntentClaim.device.id);
+assert.equal(delegatedIntentInspect.deep_link, `panda-bridge://connect?intent=${encodeURIComponent(delegatedIntent.token)}&api=${encodeURIComponent("https://api.bridge.otherline.cc")}`);
 assert.equal(delegatedIntentInspect.device.id, delegatedIntentClaim.device.id);
 assert.equal(delegatedIntentInspect.authorization.status, "active");
 const missingImportProof = await delegatedApiRaw("POST", "/v1/products/otherline/delegated/authorization/claim", {}, otherlineClaim.account.id, otherlineClaim.device.id);
@@ -816,7 +826,7 @@ const delegatedReconnect = await delegatedApi("POST", "/v1/products/otherline/de
 await nativeClaimIntent(delegatedReconnect.token, {
   device_name: "Delegated Intent Device",
   capabilities: { codex: ["codex.chat"] },
-}, otherlineClaim.device_token);
+}, delegatedScopedClaim.device_token);
 
 const otherlineOwnerCookie = jar.cookie;
 jar.cookie = "";
@@ -930,6 +940,7 @@ const installBoundClaim = await nativeClaimIntentRaw(installBoundIntent.token, {
 }, "", { "x-panda-bridge-install-id": "install-one" });
 assert.equal(installBoundClaim.response.status, 201);
 assert.equal(installBoundClaim.payload.device.device_name, "Install Bound Device");
+const activeBridgeDeviceId = installBoundClaim.payload.device.id;
 const installBoundToken = installBoundClaim.payload.device_token;
 const missingInstallHeartbeat = await apiRaw("POST", "/v1/connectors/heartbeat", {}, installBoundToken);
 assert.equal(missingInstallHeartbeat.response.status, 401);
@@ -957,7 +968,7 @@ await new Promise((resolve) => setTimeout(resolve, 5));
 env.BRIDGE_DEVICE_ONLINE_GRACE_MS = "0";
 const offlineJob = await apiRaw("POST", "/v1/products/panda-chat/jobs", {
   kind: "codex.chat",
-  device_id: intentClaim.device.id,
+  device_id: activeBridgeDeviceId,
   product_id: "panda-chat",
   workspace_ref: "default",
   input: { prompt: "offline device" },
@@ -974,10 +985,10 @@ assert.equal(unsupportedIntent.payload.error, "unsupported_product");
 const firstAccountCookie = jar.cookie;
 await api("POST", "/v1/sessions/guest", { display_name: "Other Tester" });
 const otherDevices = await api("GET", "/v1/devices");
-assert.equal(otherDevices.items.some((item) => item.id === intentClaim.device.id), false);
+assert.equal(otherDevices.items.some((item) => item.id === activeBridgeDeviceId), false);
 const crossAccountJob = await apiRaw("POST", "/v1/products/panda-chat/jobs", {
   kind: "codex.chat",
-  device_id: intentClaim.device.id,
+  device_id: activeBridgeDeviceId,
   product_id: "panda-chat",
   workspace_ref: "default",
   input: { prompt: "cross account" },
@@ -992,11 +1003,11 @@ assert.ok(share.join_url.includes("join="));
 jar.cookie = "";
 await api("POST", "/v1/sessions/join", { token: share.token });
 const joinedDevices = await api("GET", "/v1/devices");
-assert.ok(joinedDevices.items.some((item) => item.id === intentClaim.device.id));
+assert.ok(joinedDevices.items.some((item) => item.id === activeBridgeDeviceId));
 jar.cookie = "";
 await api("POST", "/v1/sessions/join", { token: share.token });
 const rejoinedDevices = await api("GET", "/v1/devices");
-assert.ok(rejoinedDevices.items.some((item) => item.id === intentClaim.device.id));
+assert.ok(rejoinedDevices.items.some((item) => item.id === activeBridgeDeviceId));
 
 jar.cookie = "";
 const passwordEmail = "password-flow@bridge.otherline.cc";
@@ -1052,16 +1063,16 @@ const crossRevoke = await apiRaw("DELETE", `/v1/devices/${encodeURIComponent(pas
 assert.equal(crossRevoke.response.status, 404);
 assert.equal(crossRevoke.payload.error, "device_not_found");
 jar.cookie = passwordOwnerCookie;
-const revokedPasswordDevice = await api("DELETE", `/v1/devices/${encodeURIComponent(passwordClaim.device.id)}`);
+const revokedPasswordDevice = await api("DELETE", `/v1/devices/${encodeURIComponent(queueLimitClaim.device.id)}`);
 assert.equal(revokedPasswordDevice.device.status, "revoked");
 const revokedPasswordDevices = await api("GET", "/v1/devices");
-assert.ok(revokedPasswordDevices.items.some((item) => item.id === passwordClaim.device.id && item.status === "revoked"));
-const heartbeatAfterRevoke = await apiRaw("POST", "/v1/connectors/heartbeat", {}, passwordClaim.device_token);
+assert.ok(revokedPasswordDevices.items.some((item) => item.id === queueLimitClaim.device.id && item.status === "revoked"));
+const heartbeatAfterRevoke = await apiRaw("POST", "/v1/connectors/heartbeat", {}, queueLimitClaim.device_token);
 assert.equal(heartbeatAfterRevoke.response.status, 401);
 assert.equal(heartbeatAfterRevoke.payload.error, "unauthorized");
 const jobAfterDeviceRevoke = await apiRaw("POST", "/v1/products/panda-chat/jobs", {
   kind: "codex.chat",
-  device_id: passwordClaim.device.id,
+  device_id: queueLimitClaim.device.id,
   product_id: "panda-chat",
   workspace_ref: "default",
   input: { prompt: "revoked device" },

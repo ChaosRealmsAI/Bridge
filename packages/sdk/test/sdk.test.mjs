@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import {
+  bridgeDelegatedAccountStatusModel,
+  bridgeDelegatedConnectIntentStatusModel,
   bridgeDesktopInstallDefaults,
   bridgeDesktopInstallTarget,
+  bridgeDesktopStatusModel,
+  bridgeSnapshotStatusForDevice,
   bridgeFullAccessPolicy,
   createBridgeClient,
 } from "../src/index.js";
@@ -41,6 +45,84 @@ assert.equal(
 assert.equal(bridgeDesktopInstallTarget().openUrl, "panda-bridge://open");
 assert.equal(bridgeDesktopInstallTarget().sha256.length, 64);
 assert.throws(() => bridgeDesktopInstallTarget({ platform: "windows" }), /unsupported_bridge_desktop_platform/);
+
+const installTarget = bridgeDesktopInstallTarget({ channel: "test" });
+const readyModel = bridgeDesktopStatusModel({
+  status: "connected",
+  device: { id: "dev_1", online: true, installed: true },
+}, installTarget);
+assert.equal(readyModel.ready, true);
+assert.equal(readyModel.authorization.state, "authorized");
+assert.equal(readyModel.connection.state, "connected");
+assert.equal(readyModel.nextAction, "ready");
+assert.equal(readyModel.download.downloadUrl, installTarget.downloadUrl);
+
+const authorizedOfflineModel = bridgeDesktopStatusModel({
+  status: "device_offline",
+  device: { id: "dev_1", online: false, installed: true },
+}, installTarget);
+assert.equal(authorizedOfflineModel.ready, false);
+assert.equal(authorizedOfflineModel.authorization.state, "authorized");
+assert.equal(authorizedOfflineModel.connection.state, "disconnected");
+assert.equal(authorizedOfflineModel.nextAction, "open_bridge");
+
+const pendingModel = bridgeDesktopStatusModel({
+  status: "authorization_pending",
+  device: { id: "dev_1", online: true, installed: true },
+}, installTarget);
+assert.equal(pendingModel.ready, false);
+assert.equal(pendingModel.authorization.state, "pending");
+assert.equal(pendingModel.connection.state, "waiting");
+assert.equal(pendingModel.nextAction, "confirm_on_desktop");
+
+const accountReady = bridgeDelegatedAccountStatusModel({
+  devices: [{ id: "dev_1", device_name: "Mac Studio", status: "online" }],
+  authorized_devices: [{ id: "dev_1", device_name: "Mac Studio", status: "online" }],
+  authorizations: [{ id: "auth_1", device_id: "dev_1", status: "active" }],
+  selected_device: { id: "dev_1", device_name: "Mac Studio", status: "online" },
+  authorization: { id: "auth_1", device_id: "dev_1", status: "active" },
+});
+assert.equal(accountReady.status, "connected");
+assert.equal(accountReady.ready, true);
+assert.equal(accountReady.deviceId, "dev_1");
+assert.equal(accountReady.outlet.deviceId, "dev_1");
+
+const accountOffline = bridgeDelegatedAccountStatusModel({
+  authorized_devices: [{ id: "dev_1", device_name: "Mac Studio", status: "offline" }],
+  authorizations: [{ id: "auth_1", device_id: "dev_1", status: "active" }],
+});
+assert.equal(accountOffline.status, "device_offline");
+assert.equal(accountOffline.authorized, true);
+assert.equal(accountOffline.connected, false);
+
+const accountUntrusted = bridgeDelegatedAccountStatusModel({
+  devices: [{ id: "dev_1", device_name: "Mac Studio", status: "online" }],
+});
+assert.equal(accountUntrusted.status, "source_registered");
+assert.equal(accountUntrusted.deviceId, null);
+assert.equal(accountUntrusted.authorization, null);
+assert.equal(bridgeSnapshotStatusForDevice({ status: "online" }), "connected");
+assert.equal(bridgeSnapshotStatusForDevice({ status: "offline" }), "device_offline");
+
+const pendingIntentModel = bridgeDelegatedConnectIntentStatusModel({
+  deep_link: "panda-bridge://connect?intent=pbi_test&api=https%3A%2F%2Fapi.bridge.otherline.cc",
+  connect_intent: { id: "intent_1", expires_at: "2099-01-01T00:00:00Z" },
+}, "pbi_test");
+assert.equal(pendingIntentModel.status, "authorization_pending");
+assert.equal(pendingIntentModel.authorized, false);
+assert.equal(pendingIntentModel.intentId, "pbi_test");
+assert.equal(pendingIntentModel.expiresAt, "2099-01-01T00:00:00Z");
+assert.match(pendingIntentModel.deepLink, /^panda-bridge:\/\/connect/);
+
+const claimedIntentModel = bridgeDelegatedConnectIntentStatusModel({
+  deep_link: "panda-bridge://connect?intent=pbi_test&api=https%3A%2F%2Fapi.bridge.otherline.cc",
+  connect_intent: { id: "intent_1", device_id: "dev_1", expires_at: "2099-01-01T00:00:00Z" },
+  device: { id: "dev_1", status: "online" },
+  authorization: { id: "auth_1", status: "active" },
+}, "pbi_test");
+assert.equal(claimedIntentModel.status, "connected");
+assert.equal(claimedIntentModel.authorized, true);
+assert.equal(claimedIntentModel.deviceId, "dev_1");
 
 await client.connect.createIntent({ deviceName: "Mac" });
 assert.equal(calls[1].url, "https://api.example.test/v1/connect-intents");

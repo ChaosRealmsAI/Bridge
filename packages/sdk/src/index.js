@@ -36,6 +36,154 @@ export function bridgeDesktopInstallTarget(options = {}) {
   };
 }
 
+export function bridgeDesktopStatusModel(snapshot = {}, installTarget = null) {
+  const snap = objectValue(snapshot);
+  const status = stringValue(snap.status, 80) || "not_installed";
+  const device = objectValue(snap.device);
+  const hasDevice = Object.keys(device).length > 0;
+  const deviceOnline = device.online === true || stringValue(device.status, 40) === "online";
+  const deviceInstalled = hasDevice && device.installed !== false;
+  const install = objectValue(installTarget);
+
+  const authorization = bridgeAuthorizationState(status);
+  const connection = bridgeConnectionState(status, {
+    hasDevice,
+    deviceOnline,
+    deviceInstalled,
+  });
+  const downloaded = deviceInstalled || (hasDevice && status !== "desktop_uninstalled") || authorization.authorized;
+
+  return {
+    status,
+    ready: authorization.authorized && connection.connected,
+    download: {
+      state: downloaded ? "available" : "needed",
+      available: true,
+      downloaded,
+      action: downloaded ? "open_bridge" : "download_bridge",
+      downloadUrl: stringValue(install.downloadUrl || install.download_url, 500) || null,
+      openUrl: stringValue(install.openUrl || install.open_url, 200) || bridgeDesktopInstallDefaults.macos.openUrl,
+    },
+    authorization,
+    connection,
+    nextAction: bridgeNextAction(authorization, connection, downloaded),
+  };
+}
+
+export function bridgeDelegatedAccountStatusModel(payload = {}) {
+  const data = objectValue(payload);
+  const devices = arrayValue(data.devices).map(objectValue).filter(hasObjectKeys);
+  const authorizedDevices = arrayValue(data.authorized_devices || data.authorizedDevices).map(objectValue).filter(hasObjectKeys);
+  const authorizations = arrayValue(data.authorizations).map(objectValue).filter(hasObjectKeys);
+  const selectedDevice = firstObject(data.selected_device || data.selectedDevice)
+    || authorizedDevices[0]
+    || null;
+  const selectedDeviceId = selectedDevice ? stringValue(selectedDevice.id, 200) : "";
+  const selectedAuthorization = firstObject(data.authorization)
+    || authorizations.find((authorization) => stringValue(authorization.device_id || authorization.deviceId, 200) === selectedDeviceId)
+    || null;
+  const active = selectedDevice && selectedAuthorization && stringValue(selectedAuthorization.status, 40) === "active";
+  const visibleDevice = selectedDevice || devices[0] || null;
+  const status = active
+    ? bridgeSnapshotStatusForDevice(selectedDevice)
+    : visibleDevice
+      ? "source_registered"
+      : "not_installed";
+
+  return {
+    status,
+    ready: status === "connected",
+    authorized: Boolean(active),
+    connected: status === "connected",
+    deviceId: active ? selectedDeviceId || null : null,
+    device: active ? selectedDevice : visibleDevice,
+    authorization: active ? selectedAuthorization : null,
+    outlet: active ? {
+      deviceId: selectedDeviceId || null,
+      status,
+      ready: status === "connected",
+      device: selectedDevice,
+      authorization: selectedAuthorization,
+    } : null,
+  };
+}
+
+export function bridgeDelegatedConnectIntentStatusModel(payload = {}, token = "") {
+  const data = objectValue(payload);
+  const intent = objectValue(data.connect_intent || data.connectIntent);
+  const authorization = firstObject(data.authorization);
+  const device = firstObject(data.device);
+  const deviceId = stringValue(intent.device_id || intent.deviceId, 200) || (device ? stringValue(device.id, 200) : "");
+  const active = Boolean(deviceId && device && authorization && stringValue(authorization.status, 40) === "active");
+  const status = active ? bridgeSnapshotStatusForDevice(device) : "authorization_pending";
+
+  return {
+    status,
+    ready: status === "connected",
+    authorized: active,
+    connected: status === "connected",
+    deviceId: active ? deviceId : null,
+    device,
+    authorization: active ? authorization : null,
+    intentId: stringValue(token, 300) || stringValue(data.token, 300) || null,
+    expiresAt: stringValue(intent.expires_at || intent.expiresAt, 80) || null,
+    deepLink: stringValue(data.deep_link || data.deepLink, 500) || null,
+  };
+}
+
+export function bridgeSnapshotStatusForDevice(device = {}) {
+  const value = objectValue(device);
+  return value.online === true || stringValue(value.status, 40) === "online" ? "connected" : "device_offline";
+}
+
+function bridgeAuthorizationState(status) {
+  if (status === "connected" || status === "device_offline") {
+    return { state: "authorized", authorized: true, action: "manage_authorization" };
+  }
+  if (status === "authorization_pending") {
+    return { state: "pending", authorized: false, action: "confirm_on_desktop" };
+  }
+  if (status === "revoked") {
+    return { state: "revoked", authorized: false, action: "authorize_product" };
+  }
+  if (status === "denied") {
+    return { state: "denied", authorized: false, action: "authorize_product" };
+  }
+  if (status === "expired") {
+    return { state: "expired", authorized: false, action: "authorize_product" };
+  }
+  if (status === "scope_insufficient") {
+    return { state: "insufficient", authorized: false, action: "authorize_product" };
+  }
+  if (status === "bridge_cloud_unavailable" || status === "control_surface_missing" || status === "stale_state") {
+    return { state: "unknown", authorized: false, action: "refresh_status" };
+  }
+  return { state: "missing", authorized: false, action: "authorize_product" };
+}
+
+function bridgeConnectionState(status, device) {
+  if (status === "authorization_pending") {
+    return { state: "waiting", connected: false, action: "confirm_on_desktop" };
+  }
+  if (status === "connected" && device.deviceOnline) {
+    return { state: "connected", connected: true, action: "ready" };
+  }
+  if (status === "bridge_cloud_unavailable" || status === "control_surface_missing") {
+    return { state: "unknown", connected: false, action: "refresh_status" };
+  }
+  if (device.hasDevice || device.deviceInstalled || status === "device_offline" || status === "connected") {
+    return { state: "disconnected", connected: false, action: "open_bridge" };
+  }
+  return { state: "not_ready", connected: false, action: "download_bridge" };
+}
+
+function bridgeNextAction(authorization, connection, downloaded) {
+  if (!downloaded) return "download_bridge";
+  if (!authorization.authorized) return authorization.action;
+  if (!connection.connected) return connection.action;
+  return "ready";
+}
+
 export function createBridgeClient(options = {}) {
   const apiBase = String(options.apiBase || "").replace(/\/$/, "");
   const productId = options.productId || "panda-chat";
@@ -377,6 +525,19 @@ function authorizationPolicyDisplay(policy) {
 
 function objectValue(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
+function arrayValue(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function firstObject(value) {
+  const object = objectValue(value);
+  return hasObjectKeys(object) ? object : null;
+}
+
+function hasObjectKeys(value) {
+  return Object.keys(value).length > 0;
 }
 
 function stringValue(value, max = 1000) {
