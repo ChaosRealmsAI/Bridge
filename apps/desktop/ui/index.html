@@ -1,533 +1,378 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="light">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Panda Connector</title>
-  <style>
-    :root{
-      --accent:#0a84ff;--accent-soft:rgba(10,132,255,.12);
-      --text:#1c1c1e;--muted:#797982;--faint:#abacb3;
-      --line:rgba(0,0,0,.08);--hair:rgba(0,0,0,.05);
-      --green:#34c759;--amber:#ff9f0a;--red:#ff453a;
-      --side-bg:rgba(255,255,255,.62);--detail-bg:rgba(255,255,255,.74);
-      --card:rgba(255,255,255,.7);--card-hover:#fff;--btn:rgba(255,255,255,.85);
-      --hover:rgba(0,0,0,.045);--okgreen:#267a4a;--warn:#b45f06;
-      --codex-bg:rgba(255,255,255,.48);--codex-bd:rgba(0,0,0,.08);--ico-set:#8a8f99;
-      color-scheme: light;
-      font-family:-apple-system,"SF Pro Display","SF Pro Text","Helvetica Neue",sans-serif;
-    }
-    [data-theme="dark"]{
-      color-scheme: dark;
-      --text:#ededf0;--muted:#9a9ca3;--faint:#6a6d75;
-      --line:rgba(255,255,255,.1);--hair:rgba(255,255,255,.06);
-      --side-bg:rgba(26,27,30,.9);--detail-bg:rgba(20,21,24,.84);
-      --card:rgba(255,255,255,.07);--card-hover:rgba(255,255,255,.12);--btn:rgba(255,255,255,.09);
-      --hover:rgba(255,255,255,.06);--okgreen:#64d487;--warn:#ffb14a;--accent-soft:rgba(10,132,255,.22);
-      --codex-bg:rgba(255,255,255,.07);--codex-bd:rgba(255,255,255,.1);--ico-set:#6c707a;
-    }
-    *{box-sizing:border-box;margin:0;padding:0}
-    html,body{height:100%}
-    body{background:transparent;color:var(--text);-webkit-font-smoothing:antialiased;overflow:hidden}
-    .app{height:100vh;display:grid;grid-template-columns:230px 1fr}
-
-    .side{background:var(--side-bg);backdrop-filter:blur(30px) saturate(180%);
-      -webkit-backdrop-filter:blur(30px) saturate(180%);border-right:.5px solid var(--line);
-      padding:14px 11px;display:flex;flex-direction:column;gap:3px;overflow:auto}
-    .codex{display:flex;align-items:center;gap:9px;padding:9px 10px;margin-bottom:6px;border-radius:10px;
-      background:var(--codex-bg);border:.5px solid var(--codex-bd)}
-    .codex.bad{background:var(--codex-bg);border-color:var(--codex-bd)}
-    .codex .d,.state-dot{width:7px;height:7px;border-radius:50%;background:var(--green);flex:none}
-    .codex.bad .d{background:var(--amber)}
-    .state-dot.off{background:var(--faint)}.state-dot.pending{background:var(--amber)}
-    .codex .t{font-size:12.5px;font-weight:650}
-    .codex .s{font-size:10.5px;color:var(--muted);margin-top:1px}
-
-    .grp{font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--faint);padding:10px 8px 4px}
-    .item{display:flex;align-items:center;gap:10px;padding:8px;border-radius:8px;cursor:pointer;transition:.12s}
-    .item:hover{background:var(--hover)}
-    .item.sel{background:var(--accent);box-shadow:0 1px 4px rgba(10,132,255,.35)}
-    .item.sel *{color:#fff !important}
-    .item .ic{width:26px;height:26px;border-radius:7px;display:grid;place-items:center;font-size:13px;font-weight:700;color:#fff;flex:none}
-    .item .nm{font-size:13.5px;font-weight:550;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-    .item .tail{margin-left:auto;flex:none;display:flex;align-items:center;gap:7px}
-    .item .cnt{font-size:11.5px;color:var(--faint)}
-    .item .on{width:6px;height:6px;border-radius:50%;background:var(--green)}
-    .item .on.off{background:var(--faint)}.item .on.pending{background:var(--amber)}
-    .item .alert{width:8px;height:8px;border-radius:50%;background:var(--amber);display:block}
-    .side .spacer{flex:1;min-height:12px}
-    .setitem{margin-top:2px;border-top:.5px solid var(--line);padding-top:11px}
-    .setitem .ic{background:var(--ico-set) !important;font-size:14px}
-
-    .detail{background:var(--detail-bg);backdrop-filter:blur(20px) saturate(160%);
-      -webkit-backdrop-filter:blur(20px) saturate(160%);padding:26px 28px;overflow:auto}
-    .dhead{display:flex;align-items:center;gap:14px;margin-bottom:4px}
-    .dhead .big{width:50px;height:50px;border-radius:13px;display:grid;place-items:center;font-size:19px;font-weight:700;color:#fff;flex:none}
-    .dhead .big.set{background:linear-gradient(135deg,#cfd4dd,#a6acba);font-size:23px}
-    .dhead h2{font-size:22px;font-weight:750;letter-spacing:-.02em}
-    .dhead p{font-size:13px;color:var(--muted);margin-top:3px}
-    .dhead .open{margin-left:auto;height:32px;padding:0 15px;border-radius:8px;border:.5px solid var(--line);
-      background:var(--btn);font:inherit;font-size:12.5px;font-weight:600;cursor:pointer;color:var(--accent)}
-    .dhead .open:hover{background:var(--card-hover)}
-
-    .lbl{display:flex;align-items:center;font-size:11.5px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--faint);margin:26px 0 11px}
-    .lbl .add{margin-left:auto;text-transform:none;letter-spacing:0;font-size:13px;color:var(--accent);cursor:pointer;font-weight:600}
-
-    .acct{display:grid;grid-template-columns:34px minmax(0,1fr) auto;gap:13px;padding:14px 15px;background:var(--card);border:.5px solid var(--line);border-radius:8px;margin-bottom:9px}
-    .acct .av{width:34px;height:34px;border-radius:50%;flex:none;display:grid;place-items:center;font-size:12.5px;font-weight:700;color:#22356f;background:linear-gradient(135deg,#cfdcff,#9fb6ff)}
-    .acct .em{font-size:14px;font-weight:550;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-    .acct .ok{font-size:11px;color:var(--muted);margin-top:2px;display:flex;align-items:center;gap:5px}
-    .acct .rv{margin-left:auto;font-size:12.5px;color:var(--muted);cursor:pointer;font-weight:550;flex:none}
-    .acct .rv:hover{color:var(--red)}
-    .devlist{grid-column:2/4;border-top:.5px solid var(--hair);margin-top:2px;padding-top:9px;display:grid;gap:7px}
-    .devrow{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px;align-items:center;font-size:12px;color:var(--muted)}
-    .devname{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text);font-weight:520}
-    .devstate{display:flex;align-items:center;gap:6px;white-space:nowrap;color:var(--muted)}
-    .acctempty{text-align:center;color:var(--faint);font-size:13.5px;padding:34px 16px;line-height:1.7;border:1px dashed var(--line);border-radius:8px;background:var(--card)}
-    .grant{background:var(--card);border:.5px solid var(--line);border-radius:8px;padding:14px 15px;margin:18px 0 8px}
-    .grantgrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 18px}
-    .gk{font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--faint);margin-bottom:3px}
-    .gv{font-size:12.5px;font-weight:550;color:var(--text);min-width:0;overflow-wrap:anywhere;line-height:1.45}
-    .chips{display:flex;flex-wrap:wrap;gap:6px}
-    .chip{font-size:11.5px;font-weight:600;padding:3px 7px;border-radius:6px;background:rgba(10,132,255,.08);color:var(--accent);border:.5px solid rgba(10,132,255,.16)}
-    .chip.warn,.risk{color:var(--warn);background:rgba(255,159,10,.1);border-color:rgba(255,159,10,.24)}
-    .diff{font-size:11px;color:var(--warn);margin-top:4px;line-height:1.45}
-    .subline{font-size:11.5px;color:var(--muted);margin-top:3px;overflow-wrap:anywhere}
-    @media (max-width: 620px){.app{grid-template-columns:180px 1fr}.detail{padding:20px 18px}.grantgrid{grid-template-columns:1fr}}
-
-    .segtheme{display:flex;gap:10px;margin-bottom:6px}
-    .themecard{flex:1;border:1.5px solid var(--line);border-radius:13px;padding:8px 8px 9px;cursor:pointer;text-align:center;transition:.14s;background:var(--card)}
-    .themecard:hover{background:var(--card-hover)}
-    .themecard.on{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
-    .themecard.on .nm{color:var(--accent)}
-    .thumb{display:grid;grid-template-columns:34% 66%;height:46px;border-radius:7px;overflow:hidden;border:.5px solid var(--line);margin-bottom:8px}
-    .thumb .ct{padding:7px 7px;display:flex;flex-direction:column;gap:4px;justify-content:center}
-    .thumb .ct i{height:5px;border-radius:2px;display:block}
-    .thumb .ct i:first-child{width:74%}.thumb .ct i:last-child{width:46%}
-    .thumb.light .sb{background:#e6e9ee}.thumb.light .ct{background:#fcfcfd}.thumb.light .ct i{background:#d6dae1}
-    .thumb.dark .sb{background:#26272c}.thumb.dark .ct{background:#161719}.thumb.dark .ct i{background:#35373d}
-    .thumb.auto .sb{background:#e6e9ee}.thumb.auto .ct{background:#161719}.thumb.auto .ct i{background:#3b3d44}
-    .themecard .nm{font-size:12px;font-weight:600;color:var(--text)}
-    .listcard{background:var(--card);border:.5px solid var(--line);border-radius:13px;overflow:hidden}
-    .lrow{display:flex;align-items:center;padding:13px 16px;cursor:pointer;font-size:14px;font-weight:500;transition:.1s;color:var(--text)}
-    .lrow+.lrow{border-top:.5px solid var(--hair)}
-    .lrow:hover{background:var(--hover)}
-    .lrow.on{font-weight:650}
-    .lrow .ck{margin-left:auto;color:var(--accent);font-weight:800;font-size:15px}
-
-    .reqp{background:var(--card);border:.5px solid var(--line);border-radius:8px;padding:22px;margin-top:10px;box-shadow:0 6px 20px -10px rgba(10,40,90,.18);text-align:left}
-    .reqtop{display:grid;grid-template-columns:52px minmax(0,1fr);gap:14px;align-items:center}
-    .reqp .av{width:52px;height:52px;border-radius:50%;display:grid;place-items:center;font-size:15px;font-weight:700;color:#22356f;background:linear-gradient(135deg,#cfdcff,#9fb6ff)}
-    .reqp .em{font-size:17px;font-weight:700;letter-spacing:-.01em;min-width:0;overflow-wrap:anywhere}
-    .reqp .origin{font-size:12.5px;color:var(--text);font-weight:650;margin-top:4px;overflow-wrap:anywhere}
-    .reqp .desc{font-size:13px;color:var(--muted);margin:8px 0 18px;line-height:1.6}
-    .reqp .desc b{color:var(--text)}
-    .reqp .scope{margin:16px 0 18px;text-align:left;border:.5px solid var(--line);border-radius:10px;overflow:hidden;background:rgba(255,255,255,.35)}
-    .reqp .sr{display:grid;grid-template-columns:92px 1fr;gap:10px;padding:10px 12px;font-size:12px;line-height:1.45}
-    .reqp .sr+.sr{border-top:.5px solid var(--hair)}
-    .reqp .sk{color:var(--faint);font-weight:700;text-transform:uppercase;letter-spacing:.04em}
-    .reqp .sv{color:var(--text);font-weight:550;min-width:0;overflow-wrap:anywhere}
-    .reqp .qrow{display:flex;gap:12px;margin-top:14px}
-    .btn{flex:1;height:44px;border-radius:11px;border:.5px solid var(--line);background:var(--btn);font:inherit;font-size:14px;font-weight:600;cursor:pointer;transition:.13s;color:var(--text)}
-    .btn:hover{background:var(--card-hover)}
-    .btn.primary{flex:1.5;background:var(--accent);border-color:var(--accent);color:#fff}
-    .btn.primary:hover{background:#0a78e6}
-    .bigbtn{height:44px;padding:0 26px;border-radius:11px;border:.5px solid var(--line);background:var(--btn);font:inherit;font-size:13.5px;font-weight:600;cursor:pointer;color:var(--accent);margin-top:14px;transition:.13s}
-    .bigbtn:hover{background:var(--card-hover)}
-
-    .empty{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;text-align:center;color:var(--muted);gap:6px;padding:20px}
-    .empty .ico{font-size:46px;margin-bottom:6px}
-    .empty h2{font-size:19px;font-weight:700;color:var(--text);letter-spacing:-.01em}
-    .empty p{font-size:13px;color:var(--faint);max-width:30ch;line-height:1.6}
-
-    .toast{position:fixed;left:50%;bottom:18px;transform:translate(-50%,18px);background:rgba(40,40,44,.94);backdrop-filter:blur(10px);color:#fff;font-size:12.5px;font-weight:600;padding:10px 17px;border-radius:9px;opacity:0;transition:.25s;z-index:30}
-    .toast.on{opacity:1;transform:translate(-50%,0)}
-  </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Panda Bridge</title>
+<style>
+:root{
+  --mono:ui-monospace,"SF Mono",Menlo,monospace;
+  --ease:cubic-bezier(.22,.61,.36,1);--dur:170ms;
+  --brand-a:#2f7bff;--brand-b:#6a5cff;
+  --ok:#30b14f;--warn:#cf7a00;--danger:#e0382f;--retry:#2f7bff;
+}
+[data-theme="light"]{
+  --desk1:#d6d9e0;--desk2:#c2c6d3;
+  --win:#f5f5f7;--surface:#fff;--surface-2:#ededf0;
+  --ink:#1a1a21;--ink-2:#52525b;--ink-3:#8b8b94;
+  --line:rgba(20,20,40,.10);--line-soft:rgba(20,20,40,.06);
+  --sel:rgba(47,99,255,.10);--accent:#2563eb;
+  --danger-bg:#fcebe9;--warn-bg:#faf1df;
+  --win-shadow:0 30px 90px rgba(15,18,40,.36),0 4px 18px rgba(15,18,40,.15);
+  --card-shadow:0 1px 2px rgba(15,18,40,.05);
+  --sheet-shadow:0 18px 50px rgba(10,12,35,.32);
+}
+[data-theme="dark"]{
+  --desk1:#26262e;--desk2:#15151b;
+  --win:#1d1d22;--surface:#28282e;--surface-2:#222227;
+  --ink:#f2f2f5;--ink-2:#b8b8c2;--ink-3:#83838e;
+  --line:rgba(255,255,255,.10);--line-soft:rgba(255,255,255,.06);
+  --sel:rgba(86,130,255,.18);--accent:#6f9bff;
+  --danger-bg:rgba(224,56,47,.16);--warn-bg:rgba(207,122,0,.16);
+  --win-shadow:0 30px 90px rgba(0,0,0,.62),0 4px 18px rgba(0,0,0,.4);
+  --card-shadow:0 1px 2px rgba(0,0,0,.35);
+  --sheet-shadow:0 18px 50px rgba(0,0,0,.55);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+button,select{font:inherit;color:inherit}
+button{background:none;border:0;cursor:pointer}
+html,body{height:100%}
+body{
+  font:13px/1.45 -apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","Hiragino Sans GB",sans-serif;
+  color:var(--ink);-webkit-font-smoothing:antialiased;overflow:hidden;
+  background:radial-gradient(900px 600px at 30% 8%,var(--desk1),var(--desk2));
+  display:grid;place-items:center;
+}
+.win{
+  position:relative;width:760px;height:500px;border-radius:13px;overflow:hidden;
+  background:var(--win);box-shadow:var(--win-shadow);
+  display:grid;grid-template-columns:188px 1fr;border:1px solid rgba(255,255,255,.15);
+}
+.rail{border-right:1px solid var(--line-soft);background:var(--surface-2);display:flex;flex-direction:column;padding:12px 8px 10px}
+.lights{display:flex;gap:7px;padding:2px 6px 14px}
+.lights i{width:12px;height:12px;border-radius:50%}
+.lights i:nth-child(1){background:#ff5f57}.lights i:nth-child(2){background:#febc2e}.lights i:nth-child(3){background:#28c840}
+.brand{display:flex;align-items:center;gap:8px;padding:0 8px 14px}
+.logo{width:26px;height:26px;border-radius:7px;display:grid;place-items:center;color:#fff;background:linear-gradient(150deg,#3a3a44,#17171d);box-shadow:inset 0 1px 0 rgba(255,255,255,.18),0 1px 3px rgba(0,0,0,.25);flex:none}
+.brand b{font-size:13px;font-weight:650}
+.lab{font-size:10.5px;font-weight:600;color:var(--ink-3);padding:0 8px 6px;letter-spacing:.02em}
+.ptab{display:flex;align-items:center;gap:9px;padding:7px 9px;border-radius:8px;text-align:left;transition:background var(--dur) var(--ease);width:100%;animation:enter .24s var(--ease)}
+.ptab:hover{background:var(--line-soft)}
+.ptab[aria-current="true"]{background:var(--surface);box-shadow:var(--card-shadow),0 0 0 1px var(--line-soft)}
+.pico{width:28px;height:28px;border-radius:7px;flex:none;display:grid;place-items:center;color:#fff;font-size:10.5px;font-weight:700;box-shadow:inset 0 1px 0 rgba(255,255,255,.3),0 1px 3px rgba(0,0,0,.15)}
+.pt-main{min-width:0}
+.pn{font-size:12.5px;font-weight:550;line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pm{font-size:10px;color:var(--ink-3)}
+.dot{width:7px;height:7px;border-radius:50%;flex:none}
+.ptab .dot{margin-left:auto}
+.dot.ok{background:var(--ok);box-shadow:0 0 6px rgba(48,177,79,.55)}
+.dot.off{background:var(--ink-3);opacity:.65}
+.dot.warn{background:var(--warn)}
+.dot.retry{background:var(--retry);animation:pulse 1.2s ease-in-out infinite}
+.spacer{flex:1}
+.pane{min-width:0;display:flex;flex-direction:column;padding:14px 16px;overflow-y:auto;position:relative}
+.phead{display:flex;align-items:center;gap:11px;padding:0 2px 12px;flex:none}
+.phead .nm{font-size:15.5px;font-weight:650;letter-spacing:-.015em}
+.phead .org{font-family:var(--mono);font-size:11px;color:var(--ink-3);margin-top:1px}
+.phead .end{margin-left:auto;display:flex;gap:6px;align-items:center}
+.btn{padding:5px 13px;border-radius:7px;border:1px solid var(--line);background:var(--surface);font-size:12px;box-shadow:var(--card-shadow);transition:filter var(--dur) var(--ease),background var(--dur) var(--ease)}
+.btn:hover{filter:brightness(.97)}
+.btn.primary{border:0;color:#fff;font-weight:500;background:linear-gradient(160deg,var(--brand-a),var(--brand-b));box-shadow:0 2px 8px rgba(63,94,255,.35),inset 0 1px 0 rgba(255,255,255,.25)}
+.btn.mini{padding:3.5px 10px;font-size:11px;border-radius:6px}
+.btn.dangerfill{border:0;color:#fff;font-weight:500;background:linear-gradient(160deg,#ff6c5f,#e0382f);box-shadow:0 2px 8px rgba(224,56,47,.3)}
+.acct{display:flex;align-items:center;gap:11px;padding:11px 13px;min-height:56px;background:var(--surface);border:1px solid var(--line-soft);border-radius:11px;box-shadow:var(--card-shadow);margin-bottom:8px;animation:enter .28s var(--ease);transition:background var(--dur) var(--ease),opacity var(--dur) var(--ease),transform var(--dur) var(--ease)}
+.acct:hover{background:color-mix(in srgb,var(--surface) 92%,var(--accent) 8%)}
+[data-theme="dark"] .acct:hover{background:color-mix(in srgb,var(--surface) 90%,#fff 4%)}
+.acct.leaving{opacity:0;transform:translateY(-4px)}
+.who{flex:1;min-width:0;margin-right:8px}
+.em{font-size:13px;font-weight:550;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.swg{display:flex;align-items:center;gap:14px;flex:none;margin-left:auto}
+.swi{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--ink-2);white-space:nowrap}
+.swi.dis{opacity:.42}
+.switch{width:32px;height:19px;border-radius:99px;background:var(--line);position:relative;transition:background var(--dur) var(--ease),opacity var(--dur) var(--ease);flex:none;vertical-align:middle}
+.switch::after{content:"";position:absolute;top:2px;left:2px;width:15px;height:15px;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.25);transition:left var(--dur) var(--ease)}
+.switch[aria-checked="true"]{background:var(--ok)}
+.switch[aria-checked="true"]::after{left:15px}
+.switch.retry{background:rgba(47,123,255,.55);animation:pulse 1.2s ease-in-out infinite}
+.switch[disabled],.switch[aria-disabled="true"]{cursor:default}
+.del{width:26px;height:26px;border-radius:7px;display:grid;place-items:center;color:var(--ink-3);flex:none;margin-left:6px}
+.del:hover{background:var(--danger-bg);color:var(--danger)}
+.empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding-bottom:14px}
+.empty h2{font-size:18px;font-weight:700;letter-spacing:-.02em}
+.sub{font-size:12.5px;color:var(--ink-3);margin:5px 0 22px}
+.hint{font-size:11.5px;color:var(--ink-3);margin-top:14px}
+.rows{background:var(--surface);border:1px solid var(--line-soft);border-radius:12px;box-shadow:var(--card-shadow)}
+.rows>*{display:flex;align-items:center;gap:10px;padding:9px 13px;min-height:43px}
+.rows>*+*{border-top:1px solid var(--line-soft)}
+.rows .t{font-size:12.5px;font-weight:500}
+.rows .d{font-size:10.5px;color:var(--ink-3)}
+.rows .end{margin-left:auto;display:flex;align-items:center;gap:8px;flex:none}
+.rico{width:26px;height:26px;border-radius:6.5px;flex:none;display:grid;place-items:center;color:#fff;box-shadow:inset 0 1px 0 rgba(255,255,255,.25);font-size:13px}
+.n-blue{background:linear-gradient(165deg,#4d96ff,#2563eb)}
+.n-purple{background:linear-gradient(165deg,#9d7bff,#6d4fe0)}
+.n-orange{background:linear-gradient(165deg,#ffab47,#f07b16)}
+.n-gray{background:linear-gradient(165deg,#9aa0ad,#6b7280)}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:7px;overflow:hidden;background:var(--surface)}
+.seg button{padding:2.5px 10px;font-size:11px;color:var(--ink-2)}
+.seg button+button{border-left:1px solid var(--line-soft)}
+.seg button[aria-current="true"]{background:var(--sel);color:var(--accent);font-weight:500}
+.select{border:1px solid var(--line);border-radius:7px;background:var(--surface);font-size:11.5px;padding:4px 24px 4px 9px}
+.mono{font-family:var(--mono);font-size:11.5px;color:var(--ink-3)}
+#modalRoot{display:contents}
+.sheetwrap{position:absolute;inset:0;z-index:8;display:none;background:rgba(12,13,26,.30);backdrop-filter:blur(4px)}
+.sheetwrap.on{display:block}
+.sheet{position:absolute;top:50%;left:50%;transform:translate(-50%,-46%) scale(.96);opacity:0;width:360px;background:var(--win);border-radius:14px;box-shadow:var(--sheet-shadow);border:1px solid var(--line-soft);transition:all .22s var(--ease)}
+.sheetwrap.on .sheet{transform:translate(-50%,-50%) scale(1);opacity:1}
+.dsrc{display:flex;flex-direction:column;align-items:center;gap:7px;padding:26px 24px 4px;text-align:center}
+.dsrc h3{font-size:16px;font-weight:700;letter-spacing:-.02em}
+.dsrc .org{font-family:var(--mono);font-size:11.5px;color:var(--ink-3)}
+.dacct{text-align:center;font-size:12.5px;font-weight:550;color:var(--ink-2);padding:6px 24px 2px;overflow-wrap:anywhere}
+.dfoot{display:flex;gap:8px;padding:14px 18px 16px}
+.dfoot .btn{flex:1;padding:7.5px;font-size:13px;text-align:center;border-radius:8px}
+.pop{position:fixed;z-index:20;min-width:190px;background:var(--surface);border:1px solid var(--line);border-radius:11px;box-shadow:0 14px 44px rgba(10,12,35,.28),0 2px 8px rgba(10,12,35,.12);padding:5px;animation:popin .14s var(--ease)}
+[data-theme="dark"] .pop{box-shadow:0 14px 44px rgba(0,0,0,.55),0 2px 8px rgba(0,0,0,.35)}
+.pop .cf-t{font-size:13px;font-weight:600;padding:8px 10px 2px}
+.pop .cf-d{font-size:11.5px;color:var(--ink-3);padding:0 10px 8px;line-height:1.5}
+.pop .cf-row{display:flex;gap:6px;padding:2px 6px 4px}
+.pop .cf-row .btn{flex:1;text-align:center;padding:5.5px;font-size:12px;border-radius:7px}
+.toast{position:absolute;left:50%;bottom:14px;transform:translate(-50%,16px);opacity:0;z-index:9;display:flex;align-items:center;gap:7px;padding:7px 15px;border-radius:99px;font-size:12px;font-weight:500;background:rgba(26,28,38,.92);color:#fff;box-shadow:0 8px 26px rgba(0,0,0,.35);transition:all .26s var(--ease);pointer-events:none}
+.toast.on{transform:translate(-50%,0);opacity:1}
+.netbar{display:flex;align-items:center;gap:7px;margin:0 0 10px;padding:7px 12px;border-radius:9px;background:var(--warn-bg);color:var(--warn);font-size:11.5px;font-weight:500;animation:enter .26s var(--ease)}
+.dot.pulse{animation:pulse 1.2s ease-in-out infinite}
+.waiting{display:flex;align-items:center;gap:7px;margin-top:24px;font-size:11.5px;color:var(--ink-3)}
+/* 在 wry 真窗口内运行（存在 window.ipc）：原生标题栏自带红绿灯，窗体即视口，去掉假桌面/假窗框 */
+html.app body{background:var(--win);display:block}
+html.app .win{width:100%;height:100%;border-radius:0;box-shadow:none;border:0}
+html.app .lights{display:none}
+@keyframes enter{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+@keyframes popin{from{opacity:0;transform:translateY(-3px) scale(.98)}to{opacity:1;transform:none}}
+@keyframes pulse{50%{opacity:.35}}
+@media (prefers-reduced-motion:reduce){.dot.retry,.switch.retry{animation:none}}
+</style>
 </head>
 <body>
-  <div class="app">
-    <aside class="side" id="side"></aside>
-    <section class="detail" id="detail"></section>
-  </div>
-  <div class="toast" id="toast"></div>
-
-  <script>
-    const DEFAULT_API = "https://api.bridge.otherline.cc";
-    const WEB_URL = "https://bridge.otherline.cc";
-    const TAGLINES = { "Panda Chat":"chat", "Panda Dev":"dev", "Panda Spec":"spec", "Panda Lab":"lab", "PandaArt":"art" };
-
-    // ── i18n ──
-    const LANGS = [{code:"zh-CN",name:"简体中文"},{code:"zh-TW",name:"繁體中文"},{code:"en",name:"English"},{code:"ja",name:"日本語"}];
-    const TAGS = {
-      chat:{ "zh-CN":"手机 · 网页 · 多端对话","zh-TW":"手機 · 網頁 · 多端對話","en":"Phone · web · multi-device chat","ja":"スマホ · ウェブ · マルチ端末チャット" },
-      dev:{ "zh-CN":"本地项目 · 代码生成","zh-TW":"本地專案 · 程式生成","en":"Local projects · code gen","ja":"ローカルプロジェクト · コード生成" },
-      spec:{ "zh-CN":"规格文档 · 评审","zh-TW":"規格文件 · 評審","en":"Specs · review","ja":"仕様書 · レビュー" },
-      lab:{ "zh-CN":"内部实验产品","zh-TW":"內部實驗產品","en":"Internal experiments","ja":"社内実験プロダクト" },
-      art:{ "zh-CN":"AI 创意生成","zh-TW":"AI 創意生成","en":"AI creative gen","ja":"AI クリエイティブ生成" },
-    };
-    const I18N = {
-      "zh-CN":{ ready:"本机 AI 已就绪",readySub:"这台电脑可被你的账号使用",codexBad:"未检测到 Codex",codexBadSub:"请在本机运行 codex login",noLogin:"未登录",noLoginSub:"登录后即可使用",
-        apps:"应用",pending:"待授权",noApps:"还没有应用",settings:"设置",open:"打开",accounts:"已授权账号",addAccount:"授权新账号",
-        acctOk:"已授权 · 可用这台电脑",signOut:"退出",noAccts:"还没有账号授权 {name}<br>点右上「{add}」从网页 / 手机发起连接",
-        emptyTitle:"让你的应用用上这台电脑",emptyDesc:"在 Panda Chat 等应用里点「连接本机 Agent」，授权账号后就会出现在这里。",login:"登录",
-        reqLine:"{product} 想让这个账号用上你这台电脑的 AI。",reqLine2:"允许后即可使用。",deny:"拒绝",allow:"允许",
-        language:"语言",appearance:"外观",thAuto:"跟随系统",thLight:"浅色",thDark:"深色",
-        devOnline:"在线",devOffline:"离线",devPending:"等待同步",justNow:"刚刚",minsAgo:"{n} 分钟前",hoursAgo:"{n} 小时前",daysAgo:"{n} 天前",tAuth:"已授权 · {name}",tFail:"授权失败",tOut:"已退出该账号",tWeb:"已打开网页，去登录并授权" },
-      "zh-TW":{ ready:"本機 AI 已就緒",readySub:"這台電腦可被你的帳號使用",codexBad:"未偵測到 Codex",codexBadSub:"請在本機執行 codex login",noLogin:"未登入",noLoginSub:"登入後即可使用",
-        apps:"應用",pending:"待授權",noApps:"還沒有應用",settings:"設定",open:"開啟",accounts:"已授權帳號",addAccount:"授權新帳號",
-        acctOk:"已授權 · 可用這台電腦",signOut:"退出",noAccts:"還沒有帳號授權 {name}<br>點右上「{add}」從網頁 / 手機發起連接",
-        emptyTitle:"讓你的應用用上這台電腦",emptyDesc:"在 Panda Chat 等應用裡點「連接本機 Agent」，授權帳號後就會出現在這裡。",login:"登入",
-        reqLine:"{product} 想讓這個帳號用上你這台電腦的 AI。",reqLine2:"允許後即可使用。",deny:"拒絕",allow:"允許",
-        language:"語言",appearance:"外觀",thAuto:"跟隨系統",thLight:"淺色",thDark:"深色",
-        devOnline:"在線",devOffline:"離線",devPending:"等待同步",justNow:"剛剛",minsAgo:"{n} 分鐘前",hoursAgo:"{n} 小時前",daysAgo:"{n} 天前",tAuth:"已授權 · {name}",tFail:"授權失敗",tOut:"已退出該帳號",tWeb:"已開啟網頁，去登入並授權" },
-      "en":{ ready:"Local AI is ready",readySub:"This Mac can be used by your accounts",codexBad:"Codex not found",codexBadSub:"Run codex login on this Mac",noLogin:"Not signed in",noLoginSub:"Sign in to get started",
-        apps:"Apps",pending:"Pending",noApps:"No apps yet",settings:"Settings",open:"Open",accounts:"Authorized accounts",addAccount:"Authorize account",
-        acctOk:"Authorized · can use this Mac",signOut:"Sign out",noAccts:"No account has authorized {name} yet<br>Tap “{add}” to connect from web / phone",
-        emptyTitle:"Let your apps use this Mac",emptyDesc:"In Panda Chat and other apps, tap “Connect local Agent”. Authorized accounts show up here.",login:"Sign in",
-        reqLine:"{product} wants this account to use the AI on this Mac.",reqLine2:"Allow to start using it.",deny:"Deny",allow:"Allow",
-        language:"Language",appearance:"Appearance",thAuto:"System",thLight:"Light",thDark:"Dark",
-        devOnline:"Online",devOffline:"Offline",devPending:"Waiting to sync",justNow:"just now",minsAgo:"{n} min ago",hoursAgo:"{n} h ago",daysAgo:"{n} d ago",tAuth:"Authorized · {name}",tFail:"Authorization failed",tOut:"Account signed out",tWeb:"Opened web — sign in and authorize" },
-      "ja":{ ready:"ローカル AI 準備完了",readySub:"この Mac をアカウントで利用できます",codexBad:"Codex が見つかりません",codexBadSub:"この Mac で codex login を実行",noLogin:"未ログイン",noLoginSub:"ログインして開始",
-        apps:"アプリ",pending:"承認待ち",noApps:"アプリがありません",settings:"設定",open:"開く",accounts:"承認済みアカウント",addAccount:"アカウントを承認",
-        acctOk:"承認済み · この Mac を利用可",signOut:"解除",noAccts:"{name} を承認したアカウントはまだありません<br>右上の「{add}」からウェブ / スマホで接続",
-        emptyTitle:"アプリにこの Mac を使わせる",emptyDesc:"Panda Chat などで「ローカル Agent に接続」をタップ。承認したアカウントがここに表示されます。",login:"ログイン",
-        reqLine:"{product} がこのアカウントでこの Mac の AI を使おうとしています。",reqLine2:"許可するとすぐ使えます。",deny:"拒否",allow:"許可",
-        language:"言語",appearance:"外観",thAuto:"システムに合わせる",thLight:"ライト",thDark:"ダーク",
-        devOnline:"オンライン",devOffline:"オフライン",devPending:"同期待ち",justNow:"たった今",minsAgo:"{n} 分前",hoursAgo:"{n} 時間前",daysAgo:"{n} 日前",tAuth:"承認済み · {name}",tFail:"承認に失敗",tOut:"アカウントを解除しました",tWeb:"ウェブを開きました — ログインして承認" },
-    };
-    let langMode="auto"; try{ langMode=localStorage.getItem("panda_lang")||"auto"; }catch(e){}
-    function detectSystemLang(){
-      const n=(navigator.language||navigator.userLanguage||"en").toLowerCase();
-      if(n.indexOf("zh")===0) return /tw|hk|hant|mo/.test(n)?"zh-TW":"zh-CN";
-      if(n.indexOf("ja")===0) return "ja";
-      return "en";
+<div class="win">
+  <aside class="rail">
+    <div class="lights"><i></i><i></i><i></i></div>
+    <div class="brand">
+      <div class="logo"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M4 15a4 4 0 0 1 4-4h8a4 4 0 0 1 4 4"/><circle cx="6.2" cy="17.6" r="2.2"/><circle cx="17.8" cy="17.6" r="2.2"/><path d="M12 11V5.5"/><circle cx="12" cy="4.4" r="1.3"/></svg></div>
+      <b>Panda Bridge</b>
+    </div>
+    <div class="lab" id="productLabel">产品</div>
+    <div id="railTabs"></div>
+    <div class="spacer"></div>
+    <button class="ptab" id="settingsTab" onclick="pickSettings()">
+      <span class="pico n-gray"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M19.2 12a7.2 7.2 0 0 0-.1-1.2l2-1.5-2-3.4-2.3 1a7.2 7.2 0 0 0-2.1-1.2L14.3 3h-4l-.4 2.7a7.2 7.2 0 0 0-2.1 1.2l-2.3-1-2 3.4 2 1.5a7.3 7.3 0 0 0 0 2.4l-2 1.5 2 3.4 2.3-1a7.2 7.2 0 0 0 2.1 1.2l.4 2.7h4l.4-2.7a7.2 7.2 0 0 0 2.1-1.2l2.3 1 2-3.4-2-1.5c.07-.4.1-.8.1-1.2z"/></svg></span>
+      <span class="pt-main"><span class="pn" id="settingsLabel">设置</span></span>
+    </button>
+  </aside>
+  <main class="pane" id="pane"></main>
+  <div id="modalRoot"></div>
+  <div class="toast" id="toast"><i class="dot ok"></i><span id="toastTxt"></span></div>
+</div>
+<script>
+const DEFAULT_API="https://api.bridge.otherline.cc";
+if(window.ipc)document.documentElement.classList.add("app");
+const BASE_PRODUCTS=[
+  {id:"pandart",name:"Pandart",origin:"pandart.cc",web_url:"https://pandart.cc",initials:"PT",color:"linear-gradient(150deg,#34c3c8,#0c8c98)",accounts:[],connected:false,connection:"offline"},
+  {id:"otherline",name:"Otherline",origin:"otherline.cc",web_url:"https://otherline.cc",initials:"OT",color:"linear-gradient(150deg,#7c74ff,#5040d9)",accounts:[],connected:false,connection:"offline"}
+];
+const LANG_OPTIONS=[
+  ["auto","跟随系统"],["zh-CN","简体中文"],["zh-TW","繁體中文"],["en","English"],["ja","日本語"]
+];
+const TEXT={
+  "zh-CN":{products:"产品",settings:"设置",notConnected:"未连接",accounts:"{n} 个账号",open:"打开",auth:"授权",conn:"连接",delete:"删除",cancel:"取消",confirmDelete:"删除 {name}？",deleteDesc:"该账号将无法再使用这台 Mac 的 AI。",useOnMac:"在这台 Mac 上使用 {name}",emptySub:"授权后，{name} 就能调用本机的 AI",emptyHint:"登录后点「连接本机」，回到这里确认即可",waiting:"已就绪，等待连接请求…",netbar:"网络中断，自动重连中 — 恢复后任务自动继续，无需操作",launch:"开机时启动",appearance:"外观",system:"跟随系统",light:"浅色",dark:"深色",language:"语言",cloud:"云端地址",deny:"拒绝",allow:"允许",wants:"{name} 想连接这台 Mac",opened:"已打开网页",paused:"已暂停授权",resumed:"已恢复授权",removed:"已删除",failed:"操作失败"},
+  "zh-TW":{products:"產品",settings:"設定",notConnected:"未連接",accounts:"{n} 個帳號",open:"開啟",auth:"授權",conn:"連接",delete:"刪除",cancel:"取消",confirmDelete:"刪除 {name}？",deleteDesc:"該帳號將無法再使用這台 Mac 的 AI。",useOnMac:"在這台 Mac 上使用 {name}",emptySub:"授權後，{name} 就能呼叫本機的 AI",emptyHint:"登入後點「連接本機」，回到這裡確認即可",waiting:"已就緒，等待連接請求…",netbar:"網路中斷，自動重連中 — 恢復後任務自動繼續，無需操作",launch:"開機時啟動",appearance:"外觀",system:"跟隨系統",light:"淺色",dark:"深色",language:"語言",cloud:"雲端地址",deny:"拒絕",allow:"允許",wants:"{name} 想連接這台 Mac",opened:"已開啟網頁",paused:"已暫停授權",resumed:"已恢復授權",removed:"已刪除",failed:"操作失敗"},
+  en:{products:"Products",settings:"Settings",notConnected:"Not connected",accounts:"{n} accounts",open:"Open",auth:"Authorization",conn:"Connection",delete:"Delete",cancel:"Cancel",confirmDelete:"Delete {name}?",deleteDesc:"This account will no longer use the AI on this Mac.",useOnMac:"Use {name} on this Mac",emptySub:"After authorization, {name} can use the AI on this Mac",emptyHint:"Sign in, choose Connect this Mac, then return here to confirm",waiting:"Ready — waiting for connection requests…",netbar:"Network interrupted — reconnecting automatically. Tasks resume on recovery.",launch:"Launch at login",appearance:"Appearance",system:"System",light:"Light",dark:"Dark",language:"Language",cloud:"Cloud address",deny:"Deny",allow:"Allow",wants:"{name} wants to connect to this Mac",opened:"Opened web",paused:"Authorization paused",resumed:"Authorization restored",removed:"Deleted",failed:"Action failed"},
+  ja:{products:"製品",settings:"設定",notConnected:"未接続",accounts:"{n} アカウント",open:"開く",auth:"承認",conn:"接続",delete:"削除",cancel:"キャンセル",confirmDelete:"{name} を削除しますか？",deleteDesc:"このアカウントはこの Mac の AI を使えなくなります。",useOnMac:"この Mac で {name} を使う",emptySub:"承認後、{name} はこの Mac の AI を使えます",emptyHint:"ログインして「この Mac に接続」を選び、ここに戻って確認します",waiting:"準備完了 — 接続リクエスト待機中…",netbar:"ネットワーク切断 — 自動再接続中。復旧後はタスクが自動で再開します",launch:"ログイン時に起動",appearance:"外観",system:"システム",light:"ライト",dark:"ダーク",language:"言語",cloud:"クラウドアドレス",deny:"拒否",allow:"許可",wants:"{name} がこの Mac に接続しようとしています",opened:"ウェブを開きました",paused:"承認を一時停止しました",resumed:"承認を再開しました",removed:"削除しました",failed:"操作に失敗しました"}
+};
+const ui={view:"product",selected:"pandart",products:BASE_PRODUCTS.map(clone),settings:{launch_at_login:true,appearance:"auto",language:"auto",api_base:DEFAULT_API},pending:null,status:null};
+const mq=window.matchMedia("(prefers-color-scheme: dark)");
+const ipcState={seq:0,calls:new Map()};
+window.PandaBridge={
+  call(command,params={}){
+    const id=String(++ipcState.seq);
+    window.ipc.postMessage(JSON.stringify({id,command,params}));
+    return new Promise((resolve,reject)=>ipcState.calls.set(id,{resolve,reject}));
+  },
+  receive(message){
+    if(message.type==="response"){
+      const item=ipcState.calls.get(message.id); if(!item)return;
+      ipcState.calls.delete(message.id);
+      message.ok?item.resolve(message.result):item.reject(new Error(message.error||"desktop command failed"));
+      return;
     }
-    function curLang(){ return langMode==="auto" ? detectSystemLang() : langMode; }
-    function t(k,vars){ const lang=curLang(); let s=(I18N[lang]||I18N["zh-CN"])[k]??I18N["zh-CN"][k]??k; if(vars) for(const x in vars) s=s.split("{"+x+"}").join(vars[x]); return s; }
-    function tag(p){ const key=TAGLINES[p.name]; const lang=curLang(); return key&&TAGS[key]?(TAGS[key][lang]||TAGS[key]["zh-CN"]):""; }
-    function setLang(m){ langMode=m; try{localStorage.setItem("panda_lang",m);}catch(e){} document.documentElement.lang=curLang(); render(); }
-
-    // ── theme (light / dark / auto) ──
-    let theme="auto"; try{ theme=localStorage.getItem("panda_theme")||"auto"; }catch(e){}
-    const THEMES=[{v:"auto",k:"thAuto"},{v:"light",k:"thLight"},{v:"dark",k:"thDark"}];
-    const mq = window.matchMedia("(prefers-color-scheme: dark)");
-    function effectiveDark(){ return theme==="dark" || (theme==="auto" && mq.matches); }
-    function applyTheme(){ document.documentElement.dataset.theme = effectiveDark()?"dark":"light"; }
-    if (mq.addEventListener) mq.addEventListener("change", ()=>{ if(theme==="auto") applyTheme(); });
-    function setTheme(v){ theme=v; try{localStorage.setItem("panda_theme",v);}catch(e){} applyTheme(); render(); }
-
-    // ── IPC bridge (contract with Rust host — do not rename) ──
-    const ipcState = { seq: 0, calls: new Map() };
-    window.PandaBridge = {
-      call(command, params = {}) {
-        const id = String(++ipcState.seq);
-        window.ipc.postMessage(JSON.stringify({ id, command, params }));
-        return new Promise((resolve, reject) => ipcState.calls.set(id, { resolve, reject }));
-      },
-      receive(message) {
-        if (message.type === "response") {
-          const item = ipcState.calls.get(message.id);
-          if (!item) return;
-          ipcState.calls.delete(message.id);
-          if (message.ok) item.resolve(message.result); else item.reject(new Error(message.error || "desktop command failed"));
-          return;
-        }
-        if (message.type === "event" && message.event === "deep_link") handleDeepLink(message.url).catch(()=>{});
-        if (message.type === "event" && message.event === "refresh") refresh().catch(()=>{});
-      },
-    };
-
-    // ── state ──
-    const ui = { view: "app", sel: null, selReq: 0, products: [], pending: [], ready: false, connected: false };
-
-    function ini(name){ const p=(name||"").trim().split(/[\s·_\-]+/).filter(Boolean);
-      if(p.length>=2) return (p[0][0]+p[1][0]).toUpperCase();
-      const s=(name||"P").replace(/[^A-Za-z一-龥]/g,""); return s.slice(0,2).toUpperCase()||"P"; }
-    function av(email){ const s=(email||"").replace(/[^a-z0-9]/ig,""); return (s.slice(0,2)||"?").toUpperCase(); }
-    function esc(value){ return String(value??"").replace(/[&<>"']/g, ch=>({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;" }[ch])); }
-    const COLORS=["#34a06f","#3f6fd1","#c8923a","#8b5cf6","#e0648a","#2bb3c0"];
-    function colorFor(id){ let h=0; for(const ch of (id||"x")) h=(h*31+ch.charCodeAt(0))>>>0; return COLORS[h%COLORS.length]; }
-
-    function buildFromStatus(s){
-      const list = Array.isArray(s.authorized_products) ? s.authorized_products : [];
-      const hasAuthorizedProduct = list.length > 0;
-      ui.ready = !!(s.device_id && s.codex_available && hasAuthorizedProduct);
-      ui.connected = !!(s.device_id && hasAuthorizedProduct);
-      ui.products = list.map(p=>({ id:p.id, name:p.name||p.id,
-        origin:p.origin||null,
-        capabilities:Array.isArray(p.capabilities)?p.capabilities:[],
-        policy:p.policy&&typeof p.policy==="object"?p.policy:{},
-        authorized_at:p.authorized_at||"",
-        accounts: dedupeAccounts(Array.isArray(p.accounts) ? p.accounts : (s.account_display ? [{ id:s.account_id||null, email:s.account_display, device_id:s.device_id||null, device_name:s.device_name||null }] : []), p, s) }));
-    }
-
-    function dedupeAccounts(accounts,p,s){ s=s||{};
-      const map=new Map();
-      for(const raw of accounts){
-        const a=raw&&typeof raw==="object"?raw:{ email:String(raw||"") };
-        const id=a.id||a.account_id||null;
-        const email=a.email||a.display_name||"Panda Account";
-        const key=id||email;
-        const devices=Array.isArray(a.devices)&&a.devices.length?a.devices:[a.device_id?{ id:a.device_id, name:a.device_name||a.name||(a.device_id===s.device_id?s.device_name:null)||a.device_id, online:a.online, last_seen_at:a.last_seen_at, authorized_at:a.authorized_at||p.authorized_at||"" }:null].filter(Boolean);
-        if(!map.has(key)) map.set(key,{ id, email, display_name:a.display_name||email, origin:a.origin||p.origin||null, authorized_at:a.authorized_at||p.authorized_at||"", devices:[] });
-        const item=map.get(key);
-        for(const d of devices){
-          const did=d.id||d.device_id;
-          if(!did || item.devices.some(x=>x.id===did)) continue;
-          item.devices.push({ id:did, name:d.name||d.device_name||did, online:typeof d.online==="boolean"?d.online:null, last_seen_at:d.last_seen_at||null, authorized_at:d.authorized_at||item.authorized_at||"" });
-        }
-        if(!item.devices.length && a.device_id) item.devices.push({ id:a.device_id, name:(a.device_id===s.device_id?s.device_name:null)||a.device_id, online:null, last_seen_at:null, authorized_at:item.authorized_at });
-      }
-      return Array.from(map.values());
-    }
-
-    function productStatus(p){
-      const devices=p.accounts.flatMap(a=>a.devices||[]);
-      if(devices.some(d=>d.online===true)) return "online";
-      if(devices.some(d=>d.online===null || typeof d.online==="undefined")) return devices.length ? "pending" : "off";
-      return "off";
-    }
-
-    function renderSide(){
-      let h = `<div class="codex ${ui.ready?'':'bad'}"><span class="d"></span>
-          <div><div class="t">${ui.ready?t('ready'):(ui.connected?t('codexBad'):t('noLogin'))}</div>
-          <div class="s">${ui.ready?t('readySub'):(ui.connected?t('codexBadSub'):t('noLoginSub'))}</div></div></div>`;
-      if (ui.pending.length){
-        h += `<div class="grp">${t('pending')} (${ui.pending.length})</div>`;
-        h += ui.pending.map((p,i)=>`<div class="item ${ui.view==='request'&&ui.selReq===i?'sel':''}" onclick="openReq(${i})">
-            <div class="ic" style="background:${colorFor(p.product_id)}">${ini(p.product_name)}</div>
-            <span class="nm">${p.product_name||'Panda'}</span><span class="tail"><span class="alert">!</span></span></div>`).join("");
-      }
-      h += `<div class="grp">${t('apps')}</div>`;
-      if (ui.products.length){
-        h += ui.products.map(p=>`<div class="item ${ui.view==='app'&&ui.sel===p.id?'sel':''}" onclick="openApp('${p.id}')">
-            <div class="ic" style="background:${colorFor(p.id)}">${ini(p.name)}</div>
-            <span class="nm">${p.name}</span>
-            <span class="tail"><span class="cnt">${p.accounts.length}</span><span class="on ${productStatus(p)==='online'?'':productStatus(p)}"></span></span></div>`).join("");
-      } else {
-        h += `<div class="item" style="cursor:default"><span class="nm" style="color:var(--faint)">${t('noApps')}</span></div>`;
-      }
-      h += `<div class="spacer"></div>
-        <div class="item setitem ${ui.view==='settings'?'sel':''}" onclick="go('settings')">
-          <div class="ic">⚙</div><span class="nm">${t('settings')}</span></div>`;
-      document.getElementById("side").innerHTML = h;
-    }
-
-    function renderDetail(){
-      const el = document.getElementById("detail");
-      if (ui.view === "settings") return el.innerHTML = settingsView();
-      if (ui.view === "request" && ui.pending[ui.selReq]) return el.innerHTML = requestView(ui.pending[ui.selReq]);
-      const p = ui.products.find(x=>x.id===ui.sel) || ui.products[0];
-      if (!p) return el.innerHTML = `<div class="empty"><div class="ico">🐼</div>
-          <h2>${t('emptyTitle')}</h2><p>${t('emptyDesc')}</p>
-          <button class="bigbtn" onclick="connectNew()">${t('login')}</button></div>`;
-      ui.sel = p.id;
-      return el.innerHTML = appView(p);
-    }
-
-    function appView(p){
-      return `<div class="dhead">
-          <div class="big" style="background:${colorFor(p.id)}">${ini(p.name)}</div>
-          <div><h2>${p.name}</h2><p>${tag(p)}</p></div>
-          <button class="open" onclick="openWeb()">${t('open')} ↗</button></div>
-        <div class="grant">${grantView(p)}</div>
-        <div class="lbl">${t('accounts')} · ${p.accounts.length}<span class="add" onclick="addAccount('${p.id}')">＋ ${t('addAccount')}</span></div>
-        ${p.accounts.length ? p.accounts.map((a,ai)=>`<div class="acct">
-            <div class="av">${av(a.email)}</div>
-            <div style="min-width:0"><div class="em">${esc(a.email)}</div><div class="ok">${t('acctOk')} · ${a.devices.length} device${a.devices.length===1?'':'s'}</div></div>
-            <span class="rv" onclick="revoke('${p.id}',${ai})">${t('signOut')}</span>
-            <div class="devlist">${deviceRows(a.devices)}</div></div>`).join("")
-          : `<div class="acctempty">${t('noAccts',{name:p.name,add:t('addAccount')})}</div>`}`;
-    }
-
-    function deviceRows(devices){
-      const list=Array.isArray(devices)?devices:[];
-      if(!list.length) return `<div class="devrow"><span class="devname">Unknown device</span><span class="devstate"><span class="state-dot pending"></span>pending</span></div>`;
-      return list.map(d=>{
-        const st=d.online===true?"online":(d.online===false?"off":"pending");
-        const label=st==="online"?t("devOnline"):(st==="off"?t("devOffline"):t("devPending"));
-        const time=relativeTime(d.last_seen_at||d.authorized_at);
-        return `<div class="devrow"><span class="devname">${esc(d.name||shortId(d.id)||"Device")} <span class="subline">${esc(shortId(d.id))}</span></span><span class="devstate"><span class="state-dot ${st}"></span>${label}${time?` · ${esc(time)}`:""}</span></div>`;
-      }).join("");
-    }
-
-    function grantView(p){
-      const policy=p.policy||{};
-      const caps=Array.isArray(p.capabilities)?p.capabilities:(Array.isArray(policy.capabilities)?policy.capabilities:[]);
-      const origin=policy.source_origin||p.origin||"unknown";
-      return `<div class="grantgrid">
-          <div><div class="gk">Origin</div><div class="gv">${esc(origin)}</div></div>
-          <div><div class="gk">Scope</div><div class="gv">${chips(caps)}</div></div>
-          <div><div class="gk">Workspace</div><div class="gv">${esc(workspaceSummary(policy)||"default workspace")}</div></div>
-          <div><div class="gk">Sandbox</div><div class="gv">${esc(policy.sandbox_floor||"workspace-write")}</div></div>
-          <div><div class="gk">Approval</div><div class="gv">${esc(policy.approval_policy_floor||"on-request")}</div></div>
-          <div><div class="gk">Authorized</div><div class="gv">${esc(formatTime(p.authorized_at)||"unknown")}</div></div>
-        </div>`;
-    }
-
-    function chips(items){
-      const list=Array.isArray(items)?items:[];
-      if(!list.length) return `<div class="chips"><span class="chip">none</span></div>`;
-      return `<div class="chips">${list.map(item=>`<span class="chip ${dangerText(item)?'warn':''}">${esc(item)}</span>`).join("")}</div>`;
-    }
-
-    function workspaceSummary(policy){
-      const roots=Array.isArray(policy.workspace_roots)?policy.workspace_roots:[];
-      return roots.map(item=>item.path_display||item.id).filter(Boolean).join(", ");
-    }
-
-    function shortId(value){ const s=String(value||""); return s.length>14?`${s.slice(0,7)}...${s.slice(-5)}`:s; }
-    function formatTime(value){
-      if(!value) return "";
-      if(/^unix:\d+$/.test(String(value))){
-        value=Number(String(value).slice(5))*1000;
-      }
-      const d=new Date(value);
-      if(Number.isNaN(d.getTime())) return value;
-      try{return d.toLocaleString(curLang(),{year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit"});}catch(e){return value;}
-    }
-    function relativeTime(value){
-      if(!value) return "";
-      const d=new Date(value); if(Number.isNaN(d.getTime())) return formatTime(value);
-      const sec=Math.round((Date.now()-d.getTime())/1000);
-      if(sec<60) return t("justNow");
-      const min=Math.round(sec/60); if(min<60) return t("minsAgo",{n:min});
-      const hr=Math.round(min/60); if(hr<24) return t("hoursAgo",{n:hr});
-      const day=Math.round(hr/24); if(day<7) return t("daysAgo",{n:day});
-      return formatTime(value);
-    }
-    function dangerText(value){ const s=String(value||""); return /danger-full-access|approval never|approval_policy_floor.*never|\bnever\b|full-access/i.test(s); }
-
-    function requestView(p){
-      const policy = p.local_policy || {};
-      const capItems = Array.isArray(p.capabilities) ? p.capabilities : (Array.isArray(policy.capabilities) ? policy.capabilities : []);
-      const origin= p.cloud_origin||p.origin||policy.source_origin||"unknown";
-      if(p.confirmation_mode==="light"){
-        return `<div class="reqp light"><div class="reqtop"><div class="av">${av(p.email)}</div><div>
-          <div class="em">Otherline 已授权</div><div class="origin">${esc(origin)}</div></div></div>
-          <div class="desc">确认刷新连接后，${esc(p.product_name||"Panda")} 将继续使用当前已授权范围。</div>
-          <div class="scope">
-            <div class="sr"><div class="sk">Origin</div><div class="sv">${esc(origin)}</div></div>
-            <div class="sr"><div class="sk">Scope</div><div class="sv">${chips(capItems)}</div></div>
-            <div class="sr"><div class="sk">Workspace</div><div class="sv">${esc(workspaceSummary(policy)||"All local files")}</div></div>
-            <div class="sr"><div class="sk">Sandbox</div><div class="sv ${dangerText(policy.sandbox_floor)?'risk':''}">${esc(policy.sandbox_floor||"danger-full-access")}</div></div>
-            <div class="sr"><div class="sk">Approval</div><div class="sv ${dangerText(policy.approval_policy_floor)?'risk':''}">${esc(policy.approval_policy_floor||"never")}</div></div>
-          </div>
-          <div class="qrow"><button class="btn primary" onclick="approve(${ui.selReq})">确认刷新连接</button></div></div>`;
-      }
-      return `<div class="reqp"><div class="reqtop"><div class="av">${av(p.email)}</div><div>
-          <div class="em">${esc(p.email||'Panda')}</div><div class="origin">${esc(origin)}</div></div></div>
-          <div class="desc">${t('reqLine',{product:'<b>'+esc(p.product_name||'Panda')+'</b>'})}<br>${t('reqLine2')}</div>
-          <div class="scope">
-            <div class="sr"><div class="sk">Origin</div><div class="sv">${esc(origin)}</div></div>
-            <div class="sr"><div class="sk">Scope</div><div class="sv">${chips(capItems)}${diffLine(p.scope_diff?.capabilities?.added,"新增权限")}</div></div>
-            <div class="sr"><div class="sk">Workspace</div><div class="sv">${esc(workspaceSummary(policy)||"All local files")}${workspaceDiff(p.scope_diff)}</div></div>
-            <div class="sr"><div class="sk">Sandbox</div><div class="sv ${dangerText(policy.sandbox_floor)?'risk':''}">${esc(policy.sandbox_floor||"danger-full-access")}${changeDiff(p.scope_diff?.sandbox)}</div></div>
-            <div class="sr"><div class="sk">Approval</div><div class="sv ${dangerText(policy.approval_policy_floor)?'risk':''}">${esc(policy.approval_policy_floor||"never")}${changeDiff(p.scope_diff?.approval)}</div></div>
-            <div class="sr"><div class="sk">Instructions</div><div class="sv">${esc(policy.allow_developer_instructions?"allowed":"denied")}</div></div>
-          </div>
-          <div class="qrow"><button class="btn" onclick="deny(${ui.selReq})">${t('deny')}</button>
-            <button class="btn primary" onclick="approve(${ui.selReq})">${t('allow')}</button></div></div>`;
-    }
-    function diffLine(items,label){ return Array.isArray(items)&&items.length?`<div class="diff">${label}: ${items.map(esc).join(", ")}</div>`:""; }
-    function workspaceDiff(diff){
-      if(!diff?.workspace?.widening) return "";
-      if(diff.workspace.to_all&&!diff.workspace.from_all) return `<div class="diff">新增范围: All local files</div>`;
-      return diffLine(diff.workspace.added,"新增目录");
-    }
-    function changeDiff(item){ return item?.widening?`<div class="diff">${esc(item.from||"default")} → ${esc(item.to||"default")}</div>`:""; }
-
-    function settingsView(){
-      return `<div class="dhead"><div class="big set">⚙</div><div><h2>${t('settings')}</h2></div></div>
-        <div class="lbl">${t('appearance')}</div>
-        <div class="segtheme">${THEMES.map(o=>`<div class="themecard ${theme===o.v?'on':''}" onclick="setTheme('${o.v}')">
-            <div class="thumb ${o.v}"><div class="sb"></div><div class="ct"><i></i><i></i></div></div>
-            <div class="nm">${t(o.k)}</div></div>`).join("")}</div>
-        <div class="lbl">${t('language')}</div>
-        <div class="listcard">
-          <div class="lrow ${langMode==='auto'?'on':''}" onclick="setLang('auto')"><span>${t('thAuto')}</span>${langMode==='auto'?'<span class="ck">✓</span>':''}</div>
-          ${LANGS.map(l=>`<div class="lrow ${langMode===l.code?'on':''}" onclick="setLang('${l.code}')"><span>${l.name}</span>${langMode===l.code?'<span class="ck">✓</span>':''}</div>`).join("")}</div>`;
-    }
-
-    function render(){ renderSide(); renderDetail(); }
-
-    // ── navigation ──
-    function go(view){ ui.view=view; render(); }
-    function openApp(id){ ui.view="app"; ui.sel=id; render(); }
-    function openReq(i){ ui.view="request"; ui.selReq=i; render(); }
-
-    // ── commands (real IPC) ──
-    async function handleDeepLink(raw){
-      const url = new URL(raw); const intent = url.searchParams.get("intent"); const api = url.searchParams.get("api") || DEFAULT_API;
-      if (!intent) return;
-      const pre = await window.PandaBridge.call("preview_intent", { api, intent });
-      ui.pending.push({ product_id: pre.product_id, product_name: pre.product_name, email: pre.user_display_name, cloud_origin: pre.cloud_origin, capabilities: pre.capabilities, local_policy: pre.local_policy, confirmation_mode: pre.confirmation_mode, scope_widening: pre.scope_widening, scope_diff: pre.scope_diff, _api: api, _intent: intent });
-      ui.view = "request"; ui.selReq = ui.pending.length - 1; render();
-    }
-    async function approve(i){
-      const p = ui.pending[i]; if (!p) return;
-      try{
-        const r = await window.PandaBridge.call("claim_intent", { api: p._api, intent: p._intent, device_name: deviceName() });
-        ui.pending.splice(i,1); await startWorker(); await refresh();
-        ui.view = "app"; ui.sel = p.product_id; render();
-        toast(t('tAuth',{name:r.product_name||p.product_name||""}));
-      }catch(e){ toast(t('tFail')); }
-    }
-    function deny(i){ ui.pending.splice(i,1); ui.view="app"; ui.sel=ui.products[0]?.id||null; render(); }
-    async function revoke(pid,ai){
-      const p=ui.products.find(x=>x.id===pid); if(!p || !p.accounts[ai]) return;
-      const account=p.accounts[ai];
-      try{
-        await window.PandaBridge.call("revoke_authorization", { product_id: pid, account_id: account.id });
-        await refresh();
-        toast(t('tOut'));
-      }catch(e){ toast(`${t('tFail')} · ${safeErr(e)}`); }
-    }
-    async function addAccount(pid){ try{ await window.PandaBridge.call("open_web", { url: `${WEB_URL}?desktop_login=1${pid?'&product='+encodeURIComponent(pid):''}` }); toast(t('tWeb')); }catch(e){} }
-    async function connectNew(){ try{ await window.PandaBridge.call("open_web", { url: `${WEB_URL}?desktop_login=1` }); toast(t('tWeb')); }catch(e){} }
-    async function openWeb(){ try{ await window.PandaBridge.call("open_web", { url: WEB_URL }); }catch(e){} }
-    async function startWorker(){ try{ await window.PandaBridge.call("start_worker"); }catch(e){} }
-
-    async function refresh(){
-      const s = await window.PandaBridge.call("status");
-      buildFromStatus(s);
-      if (ui.view==="app" && !ui.products.find(x=>x.id===ui.sel)) ui.sel = ui.products[0]?.id || null;
-      render(); return s;
-    }
-    function deviceName(){ return `Panda Connector ${navigator.platform||"Desktop"}`; }
-    let tt; function toast(m){ const e=document.getElementById("toast"); e.textContent=m; e.classList.add("on"); clearTimeout(tt); tt=setTimeout(()=>e.classList.remove("on"),1700); }
-    function safeErr(e){ return String(e?.message||e||"failed").replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/g,"Bearer [redacted]").replace(/(device_token|pb_session|token)[^\\s\"']*/ig,"$1=[redacted]").slice(0,160); }
-
-    // ── boot ──
-    document.documentElement.lang = curLang(); applyTheme();
-    refresh().then((s)=>{ if((s?.authorized_products||[]).length) startWorker(); }).catch(()=>{});
-
-    // ── preview fallback ──
-    if (!window.ipc){
-      document.body.style.background = "radial-gradient(800px 520px at 16% 6%,#ffe2c0,transparent 60%),radial-gradient(720px 600px at 88% 20%,#ccd8ff,transparent 55%),linear-gradient(135deg,#f4c8d8,#bcd0ff 58%,#bfe9d9)";
-      const mock = { account_display:"chaos.realms.ai@gmail.com", device_id:"dev_macbookpro_8f21", device_name:"MacBook Pro",
-        api_base:"https://api.bridge.otherline.cc", cloud_origin:"bridge.otherline.cc", worker_running:true, realtime_connected:true, codex_available:true,
-        authorized_products:[
-          {id:"panda-chat",name:"Panda Chat",origin:"https://bridge.otherline.cc",capabilities:["codex.chat","codex.run"],authorized_at:new Date().toISOString(),policy:{version:"AUTH-SCOPE-v1",source_origin:"https://bridge.otherline.cc",capabilities:["codex.chat","codex.run"],workspace_roots:[{id:"default",path_display:"[local]/default"}],sandbox_floor:"workspace-write",approval_policy_floor:"on-request",display:{workspace:"[local]/default",sandbox:"workspace-write or stricter",approval:"on-request or stricter"}},accounts:[{id:"acct_demo",email:"chaos.realms.ai@gmail.com",device_id:"dev_macbookpro_8f21",authorized_at:new Date().toISOString()},{id:"acct_final",email:"panda-final@bridge.otherline.cc",device_id:"dev_macbookpro_8f21",authorized_at:new Date().toISOString()}]},
-          {id:"panda-dev",name:"Panda Dev",origin:"https://dev.otherline.cc",capabilities:["codex.chat","codex.run","codex.rpc"],authorized_at:new Date().toISOString(),policy:{version:"AUTH-SCOPE-v1",source_origin:"https://dev.otherline.cc",capabilities:["codex.chat","codex.run","codex.rpc"],workspace_roots:[{id:"default",path_display:"[local]/default"}],sandbox_floor:"workspace-write",approval_policy_floor:"on-request",display:{workspace:"[local]/default",sandbox:"workspace-write or stricter",approval:"on-request or stricter"}},accounts:[{id:"acct_dev",email:"dev@otherline.cc",device_id:"dev_macbookpro_8f21",authorized_at:new Date().toISOString()}]},
-          {id:"panda-spec",name:"Panda Spec",origin:"https://spec.otherline.cc",capabilities:["codex.chat","codex.run"],authorized_at:new Date().toISOString(),policy:{version:"AUTH-SCOPE-v1",source_origin:"https://spec.otherline.cc",capabilities:["codex.chat","codex.run"],workspace_roots:[{id:"default",path_display:"[local]/default"}],sandbox_floor:"workspace-write",approval_policy_floor:"on-request",display:{workspace:"[local]/default",sandbox:"workspace-write or stricter",approval:"on-request or stricter"}},accounts:[]} ] };
-      window.ipc = { postMessage(raw){
-        const { id, command } = JSON.parse(raw);
-        const reply = (ok, payload)=> setTimeout(()=>window.PandaBridge.receive({ type:"response", id, ok, result: payload }), 70);
-        if (command==="status") return reply(true, JSON.parse(JSON.stringify(mock)));
-        if (command==="preview_intent") return reply(true, { product_id:"panda-chat", product_name:"Panda Chat", user_display_name:"team-demo@otherline.cc", cloud_origin:"bridge.otherline.cc", capabilities:["codex.chat","codex.run","codex.rpc","saas.custom.run"], local_policy:{ version:"AUTH-SCOPE-v1", workspace_roots:[{id:"all",path_display:"All local files",allow_all:true}], sandbox_floor:"danger-full-access", approval_policy_floor:"never", allow_approval_never:true, allow_developer_instructions:true, display:{workspace:"All local files",sandbox:"danger-full-access",approval:"never",developer_instructions:"allowed"} } });
-        if (command==="claim_intent"){ mock.authorized_products[0].accounts.push({id:"acct_team",email:"team-demo@otherline.cc",device_id:"dev_macbookpro_8f21",authorized_at:new Date().toISOString()}); return reply(true, { product_id:"panda-chat", product_name:"Panda Chat", account_display:"team-demo@otherline.cc", authorized_products:mock.authorized_products }); }
-        if (command==="revoke_authorization"){
-          const { params } = JSON.parse(raw);
-          mock.authorized_products = mock.authorized_products.filter(p=>p.id!==params.product_id);
-          return reply(true,{ok:true,product_id:params.product_id,authorized_products:mock.authorized_products});
-        }
-        if (command==="open_web"||command==="start_worker"||command==="stop_worker"||command==="disconnect") return reply(true,{ok:true,message:"ok"});
-        return reply(false,"unknown command: "+command);
-      }};
-      refresh();
-      setTimeout(()=>window.PandaBridge.receive({ type:"event", event:"deep_link", url:"panda-bridge://connect?intent=demo123&api=https://api.bridge.otherline.cc" }), 800);
-    }
-  </script>
+    if(message.type==="event"&&message.event==="deep_link")handleDeepLink(message.url).catch(showError);
+    if(message.type==="event"&&message.event==="refresh")refresh().catch(()=>{});
+  }
+};
+function clone(x){return JSON.parse(JSON.stringify(x))}
+function sysLang(){const n=(navigator.language||"en").toLowerCase();if(n.startsWith("zh"))return /tw|hk|hant|mo/.test(n)?"zh-TW":"zh-CN";if(n.startsWith("ja"))return"ja";return"en"}
+function lang(){return ui.settings.language==="auto"?sysLang():ui.settings.language}
+function t(k,vars){let s=(TEXT[lang()]||TEXT["zh-CN"])[k]||k;if(vars)for(const key in vars)s=s.split("{"+key+"}").join(vars[key]);return s}
+function esc(x){return String(x??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
+function applyTheme(){const mode=ui.settings.appearance||"auto";document.documentElement.dataset.theme=(mode==="dark"||(mode==="auto"&&mq.matches))?"dark":"light"}
+if(mq.addEventListener)mq.addEventListener("change",applyTheme);
+function render(){
+  document.documentElement.lang=lang();
+  document.getElementById("productLabel").textContent=t("products");
+  document.getElementById("settingsLabel").textContent=t("settings");
+  document.getElementById("railTabs").innerHTML=ui.products.map(p=>tabHtml(p)).join("");
+  document.getElementById("settingsTab").setAttribute("aria-current",ui.view==="settings"?"true":"false");
+  const pane=document.getElementById("pane");
+  pane.innerHTML=ui.view==="settings"?settingsHtml():productHtml(productById(ui.selected)||ui.products[0]);
+  document.getElementById("modalRoot").innerHTML=modalHtml();
+  applyTheme();
+}
+function tabHtml(p){
+  const n=(p.accounts||[]).length;
+  const dot=p.connected?"ok":(p.connection==="reconnecting"?"retry":((p.accounts||[]).some(a=>a.authorized==="paused")?"warn":"off"));
+  return `<button class="ptab" aria-current="${ui.view==="product"&&ui.selected===p.id}" onclick="pick('${p.id}')">
+    <span class="pico" style="background:${p.color||BASE_PRODUCTS.find(x=>x.id===p.id)?.color}">${esc(p.initials||p.name.slice(0,2).toUpperCase())}</span>
+    <span class="pt-main"><span class="pn">${esc(p.name)}</span><br><span class="pm">${n?t("accounts",{n}):t("notConnected")}</span></span>
+    <i class="dot ${dot}"></i>
+  </button>`;
+}
+function productHtml(p){
+  if(!p)return"";
+  const accounts=p.accounts||[];
+  if(!accounts.length)return `<div class="phead"><div><div class="nm">${esc(p.name)}</div><div class="org">${esc(displayHost(p))}</div></div><div class="end"><button class="btn mini" onclick="openProduct('${p.id}')">${t("open")} ↗</button></div></div>${emptyHtml(p)}`;
+  const offline=!!(ui.status&&ui.status.worker_running&&!ui.status.realtime_connected&&accounts.some(a=>a.authorized!=="paused"));
+  return `<div class="phead"><div><div class="nm">${esc(p.name)}</div><div class="org">${esc(displayHost(p))}</div></div><div class="end"><button class="btn mini" onclick="openProduct('${p.id}')">${t("open")} ↗</button></div></div>
+    ${offline?`<div class="netbar"><i class="dot warn pulse"></i>${t("netbar")}</div>`:""}
+    ${accounts.map((a,i)=>accountHtml(p,a,i)).join("")}`;
+}
+function emptyHtml(p){return `<div class="empty">
+  <h2>${t("useOnMac",{name:esc(p.name)})}</h2>
+  <div class="sub">${t("emptySub",{name:esc(p.name)})}</div>
+  <button class="btn primary" style="padding:8px 22px;font-size:13px;border-radius:9px" onclick="openProduct('${p.id}')">${t("open")} ${esc(p.name)} ↗</button>
+  <div class="hint">${t("emptyHint")}</div>
+  <div class="waiting"><i class="dot ok pulse"></i>${t("waiting")}</div>
+</div>`}
+function accountHtml(p,a,i){
+  const active=a.authorized!=="paused";
+  const connected=active&&!!a.connected;
+  const retry=active&&!connected&&a.connection==="reconnecting";
+  const accountLabel=esc(a.email||"Panda Account");
+  return `<div class="acct" id="acct-${p.id}-${i}">
+    <div class="who"><div class="em">${accountLabel}</div></div>
+    <div class="swg">
+      <span class="swi">${t("auth")} <button class="switch" role="switch" aria-checked="${active}" onclick="toggleAuth('${p.id}',${i})"></button></span>
+      <span class="swi ${active?"":"dis"}">${t("conn")} <button class="switch ${retry?"retry":""}" role="switch" aria-checked="${connected}" aria-disabled="true" ${active?"tabindex='-1'":"disabled"}></button></span>
+      <button class="del" title="${t("delete")}" onclick="confirmDelete(event,'${p.id}',${i})"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M5 7h14M9 7V5h6v2M8 7l.8 12.5h6.4L16 7"/></svg></button>
+    </div>
+  </div>`;
+}
+function settingsHtml(){
+  const s=ui.settings;
+  return `<div class="phead"><div><div class="nm">${t("settings")}</div></div></div>
+  <div class="rows">
+    <div><span class="rico n-blue">↟</span><span class="t">${t("launch")}</span><div class="end"><button class="switch" role="switch" aria-checked="${!!s.launch_at_login}" onclick="setLaunch(${!s.launch_at_login})"></button></div></div>
+    <div><span class="rico n-purple">◐</span><span class="t">${t("appearance")}</span><div class="end"><div class="seg">${["auto","light","dark"].map(v=>`<button aria-current="${s.appearance===v}" onclick="setAppearance('${v}')">${t(v==="auto"?"system":v)}</button>`).join("")}</div></div></div>
+    <div><span class="rico n-orange">文</span><span class="t">${t("language")}</span><div class="end"><select class="select" onchange="setLanguage(this.value)">${LANG_OPTIONS.map(([code,label])=>`<option value="${code}" ${s.language===code?"selected":""}>${esc(label)}</option>`).join("")}</select></div></div>
+    <div><span class="rico n-gray">☁</span><span class="t">${t("cloud")}</span><div class="end mono">${esc(hostOnly(s.api_base||DEFAULT_API))}</div></div>
+  </div>`;
+}
+function modalHtml(){
+  if(!ui.pending)return`<div class="sheetwrap" id="sheetwrap"></div>`;
+  return `<div class="sheetwrap on" id="sheetwrap"><div class="sheet">
+    <div class="dsrc"><h3>${t("wants",{name:esc(ui.pending.product_name)})}</h3><div class="org">${esc(ui.pending.domain)}</div></div>
+    <div class="dacct">${esc(ui.pending.account)}</div>
+    <div class="dfoot"><button class="btn" onclick="denyIntent()">${t("deny")}</button><button class="btn primary" onclick="allowIntent()">${t("allow")}</button></div>
+  </div></div>`;
+}
+function productById(id){return ui.products.find(p=>p.id===id)}
+function displayHost(p){return p.origin||p.domain||hostOnly(p.web_url)}
+function hostOnly(value){try{return new URL(value).host}catch{return String(value||"").replace(/^https?:\/\//,"").replace(/\/.*$/,"")}}
+function pick(id){ui.view="product";ui.selected=id;closePop();render()}
+function pickSettings(){ui.view="settings";closePop();render()}
+async function toggleAuth(productId,index){
+  const p=productById(productId),a=p?.accounts?.[index];if(!a)return;
+  try{await window.PandaBridge.call("toggle_authorization",{product_id:productId,account:a.id||a.email});toast(a.authorized==="paused"?t("resumed"):t("paused"));await refresh()}catch(e){showError(e)}
+}
+async function removeAccount(productId,index){
+  const p=productById(productId),a=p?.accounts?.[index];if(!a)return;
+  const row=document.getElementById(`acct-${productId}-${index}`);if(row)row.classList.add("leaving");
+  closePop();
+  try{await window.PandaBridge.call("remove_authorization",{product_id:productId,account_id:a.id||a.email,account:a.id||a.email});toast(t("removed"));await refresh()}catch(e){showError(e);await refresh()}
+}
+async function openProduct(productId){try{await window.PandaBridge.call("open_web",{product_id:productId});toast(t("opened"))}catch(e){showError(e)}}
+async function setLaunch(value){ui.settings.launch_at_login=value;render();await saveSettings({launch_at_login:value})}
+async function setAppearance(value){ui.settings.appearance=value;render();await saveSettings({appearance:value})}
+async function setLanguage(value){ui.settings.language=value;render();await saveSettings({language:value})}
+async function saveSettings(patch){try{ui.settings=await window.PandaBridge.call("update_settings",patch);render()}catch(e){showError(e)}}
+async function refresh(){
+  const status=await window.PandaBridge.call("status");
+  ui.status=status;ui.settings={...ui.settings,...(status.settings||{})};
+  ui.products=normalizeProducts(status.products||[]);
+  if(!productById(ui.selected))ui.selected=ui.products[0]?.id||"pandart";
+  render();return status;
+}
+function normalizeProducts(items){
+  return BASE_PRODUCTS.map(base=>{
+    const src=(items||[]).find(p=>p.id===base.id)||{};
+    const accounts=Array.isArray(src.accounts)?src.accounts.map(a=>({
+      id:a.id||null,email:a.email||"Panda Account",authorized:a.authorized||"active",connected:!!a.connected,connection:a.connection||"reconnecting"
+    })):[];
+    return {...clone(base),...src,initials:base.initials,color:base.color,accounts};
+  });
+}
+async function handleDeepLink(raw){
+  const url=new URL(raw);const intent=url.searchParams.get("intent");if(!intent)return;
+  const api=url.searchParams.get("api")||DEFAULT_API;
+  const pre=await window.PandaBridge.call("preview_intent",{api,intent});
+  const known=knownFrom(pre.product_id,pre.product_name,pre.cloud_origin);
+  ui.pending={api,intent,product_id:pre.product_id,product_name:known.name,domain:known.origin,account:pre.user_display_name||"Panda Account",select:known.id};
+  render();
+}
+function knownFrom(id,name,origin){
+  const hay=[id,name,origin].join(" ").toLowerCase();
+  return hay.includes("pandart")||hay.includes("pandaart")?BASE_PRODUCTS[0]:BASE_PRODUCTS[1];
+}
+function denyIntent(){ui.pending=null;render()}
+async function allowIntent(){
+  const p=ui.pending;if(!p)return;
+  try{await window.PandaBridge.call("claim_intent",{api:p.api,intent:p.intent,device_name:`Panda Bridge ${navigator.platform||"Desktop"}`});ui.pending=null;ui.selected=p.select;ui.view="product";await window.PandaBridge.call("start_worker");await refresh()}catch(e){showError(e)}
+}
+let popEl=null;
+function closePop(){if(popEl){popEl.remove();popEl=null}}
+function confirmDelete(ev,productId,index){
+  ev.stopPropagation();const p=productById(productId),a=p?.accounts?.[index];if(!a)return;
+  closePop();popEl=document.createElement("div");popEl.className="pop";
+  const short=String(a.email||"").split("@")[0]||a.email;
+  popEl.innerHTML=`<div class="cf-t">${t("confirmDelete",{name:esc(short)})}</div><div class="cf-d">${t("deleteDesc")}</div><div class="cf-row"><button class="btn" onclick="closePop()">${t("cancel")}</button><button class="btn dangerfill" onclick="removeAccount('${productId}',${index})">${t("delete")}</button></div>`;
+  document.body.appendChild(popEl);
+  const r=ev.currentTarget.getBoundingClientRect(),pw=popEl.offsetWidth,ph=popEl.offsetHeight;
+  let x=Math.min(r.right-pw+4,innerWidth-pw-8),y=r.bottom+6;if(y+ph>innerHeight-8)y=r.top-ph-6;
+  popEl.style.left=Math.max(8,x)+"px";popEl.style.top=y+"px";
+}
+document.addEventListener("pointerdown",e=>{if(popEl&&!popEl.contains(e.target))closePop()},true);
+document.addEventListener("keydown",e=>{if(e.key==="Escape"){closePop();denyIntent()}});
+let toastTimer;
+function toast(msg){document.getElementById("toastTxt").textContent=msg;const el=document.getElementById("toast");el.classList.add("on");clearTimeout(toastTimer);toastTimer=setTimeout(()=>el.classList.remove("on"),1900)}
+function showError(e){toast(`${t("failed")} · ${String(e?.message||e).slice(0,120)}`)}
+function installFallback(){
+  const emptyPandart=new URLSearchParams(location.search).get("empty");
+  const mock={settings:{launch_at_login:true,appearance:new URLSearchParams(location.search).get("theme")||"auto",language:"auto",api_base:DEFAULT_API},products:normalizeProducts([
+    {id:"pandart",name:"Pandart",origin:"pandart.cc",web_url:"https://pandart.cc",accounts:emptyPandart?[]:[{id:"demo_pt",email:"dreamsmoke57086",authorized:"active",connected:true,connection:"connected"}],connected:!emptyPandart,connection:emptyPandart?"offline":"connected"},
+    {id:"otherline",name:"Otherline",origin:"otherline.cc",web_url:"https://otherline.cc",accounts:[{id:"demo_ot",email:"chaos.realms.ai@gmail.com",authorized:"active",connected:true,connection:"connected"},{id:"demo_pause",email:"panda-final@bridge.otherline.cc",authorized:"paused",connected:false,connection:"disabled"}],connected:true,connection:"connected"}
+  ])};
+  window.ipc={postMessage(raw){const req=JSON.parse(raw);const reply=(ok,result,error)=>setTimeout(()=>window.PandaBridge.receive({type:"response",id:req.id,ok,result,error}),50);
+    if(req.command==="status")return reply(true,clone(mock));
+    if(req.command==="settings")return reply(true,clone(mock.settings));
+    if(req.command==="update_settings"){mock.settings={...mock.settings,...req.params};return reply(true,clone(mock.settings))}
+    if(req.command==="toggle_authorization"){const p=mock.products.find(x=>x.id===req.params.product_id);const a=p?.accounts.find(x=>x.id===req.params.account||x.email===req.params.account);if(a){a.authorized=a.authorized==="paused"?"active":"paused";a.connected=a.authorized==="active";a.connection=a.connected?"connected":"disabled"}return reply(true,{ok:true})}
+    if(req.command==="remove_authorization"){const p=mock.products.find(x=>x.id===req.params.product_id);if(p)p.accounts=p.accounts.filter(x=>x.id!==req.params.account_id&&x.email!==req.params.account_id);return reply(true,{ok:true})}
+    if(req.command==="preview_intent")return reply(true,{product_id:"otherline",product_name:"Otherline",cloud_origin:"otherline.cc",user_display_name:"team-demo@otherline.cc"});
+    if(req.command==="claim_intent"){mock.products[1].accounts.push({id:"team",email:"team-demo@otherline.cc",authorized:"active",connected:true,connection:"connected"});return reply(true,{ok:true})}
+    if(req.command==="open_web"||req.command==="start_worker")return reply(true,{ok:true});
+    reply(false,null,"unknown command");
+  }};
+  if(new URLSearchParams(location.search).get("settings"))ui.view="settings";
+  if(new URLSearchParams(location.search).get("sheet"))setTimeout(()=>window.PandaBridge.receive({type:"event",event:"deep_link",url:"panda-bridge://connect?intent=demo&api=https://api.bridge.otherline.cc"}),120);
+}
+if(!window.ipc)installFallback();
+refresh().then(status=>{if((status.products||[]).some(p=>(p.accounts||[]).some(a=>a.authorized==="active")))window.PandaBridge.call("start_worker").catch(()=>{})}).catch(()=>render());
+</script>
 </body>
 </html>
