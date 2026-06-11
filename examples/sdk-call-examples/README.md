@@ -22,11 +22,12 @@ Covered SDK groups:
 - `queue.summary()`
 - `auth.session()`, `auth.password()`, `auth.guest()`, `auth.share()`, `auth.join()`, `auth.logout()`
 - `devices.list()`, `devices.createPairingCode()`, `devices.revoke()`
-- `connect.createIntent()`, `connect.intent()`, `connect.claim()`
-- `products.list()`, `products.requestAuthorization()`, `products.authorization()`, `products.revokeAuthorization()`
+- `authorization.createIntent()`, `authorization.list()`, `authorization.authorize()`, `authorization.pause()`, `authorization.resume()`, `authorization.remove()`
+- `connect.intent()`, `connect.claim()`
+- `products.list()`
 - `codex.chat()`, `codex.run()`, `codex.rpc()`
 - `jobs.create()`, `jobs.get()`, `jobs.events()`, `jobs.wait()`, `jobs.stream()`, `jobs.cancel()`
-- `ensureReady()` with a mocked BRIDGE-STATE-v1 flow
+- `ensureReady()` with a mocked account-level authorization and automatic connection flow
 - `createBridgeServerClient().state()` and `.createConnectIntent()`
 
 The product side uses the SDK. The local fixture executor uses public connector

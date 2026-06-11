@@ -1,7 +1,6 @@
 import {
   BridgeError,
-  bridgeDelegatedAccountStatusModel,
-  bridgeDesktopInstallTarget,
+  bridgeStateModel,
 } from "./index.js";
 
 export function createBridgeServerClient(options = {}) {
@@ -59,13 +58,36 @@ export function createBridgeServerClient(options = {}) {
     const deviceId = input.deviceId || input.device_id || "account";
     const statePath = `/v1/products/${encodeURIComponent(productId)}/delegated/state`;
     try {
-      return await request("GET", statePath, null, { userId, deviceId });
+      return bridgeStateModel(await request("GET", statePath, null, { userId, deviceId }), productId);
     } catch (error) {
       if (!(error instanceof BridgeError) || error.status !== 404) throw error;
       const legacy = await request("GET", `/v1/products/${encodeURIComponent(productId)}/delegated/status`, null, { userId, deviceId });
-      return legacyDelegatedStatusToBridgeState(legacy, productId);
+      return bridgeStateModel(legacy, productId);
     }
   };
+  const listAuthorization = async (input = {}) => normalizeAuthorizationResponse(
+    await request("GET", delegatedAuthorizationPath(productId, input), null, input),
+    productId,
+  );
+  const setAuthorizationStatus = async (status, input = {}) => normalizeAuthorizationResponse(
+    await request("PATCH", delegatedAuthorizationPath(productId, input), { status }, input),
+    productId,
+  );
+  const removeAuthorization = async (input = {}) => normalizeAuthorizationResponse(
+    await request("DELETE", delegatedAuthorizationPath(productId, input), null, input),
+    productId,
+  );
+  const authorization = Object.assign(
+    (input = {}) => listAuthorization(input),
+    {
+      list: listAuthorization,
+      authorize: (input = {}) => setAuthorizationStatus("active", input),
+      pause: (input = {}) => setAuthorizationStatus("paused", input),
+      resume: (input = {}) => setAuthorizationStatus("active", input),
+      remove: removeAuthorization,
+      revoke: removeAuthorization,
+    },
+  );
 
   return {
     productId,
@@ -87,18 +109,10 @@ export function createBridgeServerClient(options = {}) {
       null,
       { userId: input.userId || input.user_id, deviceId: input.deviceId || input.device_id || "pending" },
     ),
-    authorization: (input = {}) => request(
-      "GET",
-      `/v1/products/${encodeURIComponent(productId)}/delegated/authorization?device_id=${encodeURIComponent(input.deviceId || input.device_id || "")}`,
-      null,
-      input,
-    ),
-    revoke: (input = {}) => request(
-      "DELETE",
-      `/v1/products/${encodeURIComponent(productId)}/delegated/authorization?device_id=${encodeURIComponent(input.deviceId || input.device_id || "")}`,
-      null,
-      input,
-    ),
+    authorization,
+    pause: authorization.pause,
+    resume: authorization.resume,
+    revoke: authorization.remove,
     createJob: (input = {}) => request(
       "POST",
       `/v1/products/${encodeURIComponent(productId)}/delegated/jobs`,
@@ -124,57 +138,90 @@ function normalizeDelegatedJob(input = {}, productId = "") {
   };
 }
 
-function legacyDelegatedStatusToBridgeState(payload = {}, productId = "") {
-  const model = bridgeDelegatedAccountStatusModel(payload);
-  const devices = arrayValue(payload.devices).map((device) => normalizeStateDevice(device, model.deviceId));
-  const state = model.ready
-    ? "ready"
-    : model.authorized
-      ? "authorized_offline"
-      : devices.length
-        ? "not_authorized"
-        : "no_device";
-  return {
-    bridge_state: state,
+function delegatedAuthorizationPath(productId, input = {}) {
+  const params = new URLSearchParams();
+  const deviceId = stringValue(input.deviceId || input.device_id, 200);
+  const accountId = stringValue(input.accountId || input.account_id, 200);
+  if (deviceId) params.set("device_id", deviceId);
+  if (accountId) params.set("account_id", accountId);
+  const query = params.toString();
+  return `/v1/products/${encodeURIComponent(productId)}/delegated/authorization${query ? `?${query}` : ""}`;
+}
+
+function normalizeAuthorizationResponse(payload = {}, productId = "") {
+  const data = objectValue(payload);
+  if (Array.isArray(data.accounts)) {
+    const state = bridgeStateModel(data, productId);
+    const account = state.current_account || null;
+    return {
+      ...state,
+      authorization: account?.authorization || null,
+      account: account?.account || null,
+      connected: account?.connected === true,
+      current_device: account?.current_device || null,
+    };
+  }
+  const authorization = normalizeAuthorization(data.authorization);
+  const account = firstObject(data.account || data.user);
+  const device = normalizeDevice(data.current_device || data.currentDevice || data.device || data.selected_device || data.selectedDevice);
+  const connected = authorization?.status === "active" && deviceOnline(device);
+  const state = bridgeStateModel({
     product_id: productId,
-    install: bridgeInstallModel(),
-    devices,
-    authorization: model.authorization,
-    intent: null,
-    actions: state === "ready" ? [] : bridgeActionsForState(state),
+    product: data.product,
+    accounts: authorization || account || device ? [{
+      account,
+      authorization,
+      current_device: device,
+      connected,
+    }] : [],
+  }, productId);
+  return {
+    ...state,
+    authorization,
+    account,
+    connected,
+    current_device: device,
+    ...(Number.isFinite(Number(data.cancelled_jobs ?? data.cancelledJobs))
+      ? { cancelled_jobs: Number(data.cancelled_jobs ?? data.cancelledJobs) }
+      : {}),
   };
 }
 
-function normalizeStateDevice(device = {}, selectedDeviceId = "") {
-  const value = objectValue(device);
-  const id = stringValue(value.id, 200);
+function normalizeAuthorization(input = {}) {
+  const value = objectValue(input);
+  const status = stringValue(value.status, 40);
+  if (!["active", "paused", "revoked"].includes(status)) return null;
   return {
-    id,
+    ...(stringValue(value.id, 200) ? { id: stringValue(value.id, 200) } : {}),
+    ...(stringValue(value.device_id || value.deviceId, 200) ? { device_id: stringValue(value.device_id || value.deviceId, 200) } : {}),
+    status,
+    ...(stringValue(value.authorized_at || value.authorizedAt || value.created_at || value.createdAt, 100)
+      ? { authorized_at: stringValue(value.authorized_at || value.authorizedAt || value.created_at || value.createdAt, 100) }
+      : {}),
+    ...(stringValue(value.updated_at || value.updatedAt, 100)
+      ? { updated_at: stringValue(value.updated_at || value.updatedAt, 100) }
+      : {}),
+    ...(stringValue(value.origin || value.source_origin || value.sourceOrigin, 300)
+      ? { origin: stringValue(value.origin || value.source_origin || value.sourceOrigin, 300) }
+      : {}),
+  };
+}
+
+function normalizeDevice(input = {}) {
+  const value = objectValue(input);
+  if (!Object.keys(value).length) return null;
+  return {
+    id: stringValue(value.id, 200) || null,
     name: stringValue(value.name || value.device_name || value.deviceName, 200) || null,
-    online: value.online === true || stringValue(value.status, 40) === "online",
+    online: deviceOnline(value),
     last_seen_at: stringValue(value.last_seen_at || value.lastSeenAt, 100) || null,
-    current: id && id === selectedDeviceId,
+    current: value.current === true,
   };
 }
 
-function bridgeActionsForState(state) {
-  if (state === "no_device") return [{ kind: "download", url: bridgeInstallModel().downloadUrl }];
-  if (state === "authorized_offline") return [{ kind: "open_desktop", url: bridgeInstallModel().openUrl }];
-  if (state === "not_authorized") return [{ kind: "authorize" }];
-  if (state === "authorization_pending") return [{ kind: "confirm_on_desktop" }];
-  if (state === "no_session") return [{ kind: "login" }];
-  return [];
-}
-
-function bridgeInstallModel() {
-  const target = bridgeDesktopInstallTarget();
-  return {
-    download_url: target.downloadUrl,
-    version: target.version,
-    sha256: target.sha256,
-    open_url: target.openUrl,
-    platform: target.platform,
-  };
+function deviceOnline(device = {}) {
+  const value = objectValue(device);
+  return value.online === true || stringValue(value.status, 40) === "online" || stringValue(value.connection, 40) === "connected";
 }
 
 function bridgeErrorFromResponse(status, payload = {}) {
@@ -226,6 +273,11 @@ function hex(buffer) {
 
 function objectValue(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
+function firstObject(value) {
+  const object = objectValue(value);
+  return Object.keys(object).length ? object : null;
 }
 
 function arrayValue(value) {

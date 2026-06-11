@@ -8,7 +8,7 @@ import {
   bridgeDesktopInstallTarget,
   bridgeDesktopStatusModel,
   bridgeSnapshotStatusForDevice,
-  bridgeFullAccessPolicy,
+  bridgeStateModel,
   createBridgeClient,
 } from "../src/index.js";
 
@@ -49,68 +49,80 @@ assert.equal(bridgeDesktopInstallTarget().sha256.length, 64);
 assert.throws(() => bridgeDesktopInstallTarget({ platform: "windows" }), /unsupported_bridge_desktop_platform/);
 
 const installTarget = bridgeDesktopInstallTarget({ channel: "test" });
-const readyModel = bridgeDesktopStatusModel({
-  status: "connected",
-  device: { id: "dev_1", online: true, installed: true },
-}, installTarget);
+const readyState = bridgeStateFixture("active", true);
+const readyModel = bridgeDesktopStatusModel(readyState, installTarget);
 assert.equal(readyModel.ready, true);
-assert.equal(readyModel.authorization.state, "authorized");
+assert.equal(readyModel.authorization.status, "active");
 assert.equal(readyModel.connection.state, "connected");
 assert.equal(readyModel.nextAction, "ready");
 assert.equal(readyModel.download.downloadUrl, installTarget.downloadUrl);
 
-const authorizedOfflineModel = bridgeDesktopStatusModel({
-  status: "device_offline",
-  device: { id: "dev_1", online: false, installed: true },
-}, installTarget);
-assert.equal(authorizedOfflineModel.ready, false);
-assert.equal(authorizedOfflineModel.authorization.state, "authorized");
-assert.equal(authorizedOfflineModel.connection.state, "disconnected");
-assert.equal(authorizedOfflineModel.nextAction, "open_bridge");
+const offlineModel = bridgeDesktopStatusModel(bridgeStateFixture("active", false), installTarget);
+assert.equal(offlineModel.ready, false);
+assert.equal(offlineModel.authorization.status, "active");
+assert.equal(offlineModel.connection.state, "reconnecting");
+assert.equal(offlineModel.nextAction, "wait_for_device");
 
-const pendingModel = bridgeDesktopStatusModel({
-  status: "authorization_pending",
-  device: { id: "dev_1", online: true, installed: true },
-}, installTarget);
-assert.equal(pendingModel.ready, false);
-assert.equal(pendingModel.authorization.state, "pending");
-assert.equal(pendingModel.connection.state, "waiting");
-assert.equal(pendingModel.nextAction, "confirm_on_desktop");
+const pausedModel = bridgeDesktopStatusModel(bridgeStateFixture("paused", true), installTarget);
+assert.equal(pausedModel.ready, false);
+assert.equal(pausedModel.authorization.status, "paused");
+assert.equal(pausedModel.connection.connected, false);
+assert.equal(pausedModel.nextAction, "resume_authorization");
 
-const accountReady = bridgeDelegatedAccountStatusModel({
+const directState = bridgeStateModel({
+  product: { id: "panda-chat" },
+  install: stateInstall(),
+  accounts: [{
+    account: { id: "acct_1", email: "panda@example.test" },
+    authorization: { id: "auth_1", status: "active", policy: { capabilities: ["codex.chat"] } },
+    connected: true,
+    current_device: { id: "dev_1", device_name: "Mac Studio", status: "online" },
+  }],
+});
+assert.equal(directState.product_id, "panda-chat");
+assert.equal(directState.ready, true);
+assert.equal(directState.accounts[0].authorization.status, "active");
+assert.equal(directState.accounts[0].authorization.policy, undefined);
+assert.equal(directState.accounts[0].connected, true);
+assert.equal(directState.accounts[0].current_device.id, "dev_1");
+assert.equal(directState.bridge_state, undefined);
+
+const legacyOffline = bridgeStateModel({
+  bridge_state: "authorized_offline",
+  product_id: "panda-chat",
+  install: stateInstall(),
+  devices: [{ id: "dev_1", device_name: "Mac Studio", status: "offline", current: true }],
+  authorization: { id: "auth_1", status: "active", policy: { workspace_roots: [] } },
+});
+assert.equal(legacyOffline.accounts[0].authorization.status, "active");
+assert.equal(legacyOffline.accounts[0].connected, false);
+assert.equal(legacyOffline.bridge_state, undefined);
+
+const delegatedReady = bridgeDelegatedAccountStatusModel({
   devices: [{ id: "dev_1", device_name: "Mac Studio", status: "online" }],
   authorized_devices: [{ id: "dev_1", device_name: "Mac Studio", status: "online" }],
-  authorizations: [{ id: "auth_1", device_id: "dev_1", status: "active" }],
+  authorizations: [{ id: "auth_1", device_id: "dev_1", status: "active", policy: { capabilities: ["codex.chat"] } }],
   selected_device: { id: "dev_1", device_name: "Mac Studio", status: "online" },
   authorization: { id: "auth_1", device_id: "dev_1", status: "active" },
 });
-assert.equal(accountReady.status, "connected");
-assert.equal(accountReady.ready, true);
-assert.equal(accountReady.deviceId, "dev_1");
-assert.equal(accountReady.outlet.deviceId, "dev_1");
+assert.equal(delegatedReady.ready, true);
+assert.equal(delegatedReady.connected, true);
+assert.equal(delegatedReady.authorization.status, "active");
+assert.equal(delegatedReady.current_device.id, "dev_1");
 
-const accountOffline = bridgeDelegatedAccountStatusModel({
-  authorized_devices: [{ id: "dev_1", device_name: "Mac Studio", status: "offline" }],
-  authorizations: [{ id: "auth_1", device_id: "dev_1", status: "active" }],
-});
-assert.equal(accountOffline.status, "device_offline");
-assert.equal(accountOffline.authorized, true);
-assert.equal(accountOffline.connected, false);
-
-const accountUntrusted = bridgeDelegatedAccountStatusModel({
+const delegatedPaused = bridgeDelegatedAccountStatusModel({
   devices: [{ id: "dev_1", device_name: "Mac Studio", status: "online" }],
+  authorization: { id: "auth_1", device_id: "dev_1", status: "paused" },
 });
-assert.equal(accountUntrusted.status, "source_registered");
-assert.equal(accountUntrusted.deviceId, null);
-assert.equal(accountUntrusted.authorization, null);
-assert.equal(bridgeSnapshotStatusForDevice({ status: "online" }), "connected");
-assert.equal(bridgeSnapshotStatusForDevice({ status: "offline" }), "device_offline");
+assert.equal(delegatedPaused.ready, false);
+assert.equal(delegatedPaused.connected, false);
+assert.equal(delegatedPaused.authorization.status, "paused");
 
 const pendingIntentModel = bridgeDelegatedConnectIntentStatusModel({
   deep_link: "panda-bridge://connect?intent=pbi_test&api=https%3A%2F%2Fapi.bridge.otherline.cc",
   connect_intent: { id: "intent_1", expires_at: "2099-01-01T00:00:00Z" },
 }, "pbi_test");
-assert.equal(pendingIntentModel.status, "authorization_pending");
+assert.equal(pendingIntentModel.ready, false);
 assert.equal(pendingIntentModel.authorized, false);
 assert.equal(pendingIntentModel.intentId, "pbi_test");
 assert.equal(pendingIntentModel.expiresAt, "2099-01-01T00:00:00Z");
@@ -122,9 +134,11 @@ const claimedIntentModel = bridgeDelegatedConnectIntentStatusModel({
   device: { id: "dev_1", status: "online" },
   authorization: { id: "auth_1", status: "active" },
 }, "pbi_test");
-assert.equal(claimedIntentModel.status, "connected");
+assert.equal(claimedIntentModel.ready, true);
 assert.equal(claimedIntentModel.authorized, true);
-assert.equal(claimedIntentModel.deviceId, "dev_1");
+assert.equal(claimedIntentModel.current_device.id, "dev_1");
+assert.equal(bridgeSnapshotStatusForDevice({ status: "online" }), "connected");
+assert.equal(bridgeSnapshotStatusForDevice({ status: "offline" }), "reconnecting");
 
 await client.connect.createIntent({ deviceName: "Mac" });
 assert.equal(calls[1].url, "https://api.example.test/v1/connect-intents");
@@ -132,6 +146,7 @@ assert.equal(JSON.parse(calls[1].init.body).product_id, "panda-chat");
 assert.equal(JSON.parse(calls[1].init.body).policy.workspace_roots[0].allow_all, true);
 assert.equal(JSON.parse(calls[1].init.body).policy.sandbox_floor, "danger-full-access");
 assert.equal(JSON.parse(calls[1].init.body).policy.approval_policy_floor, "never");
+assert.equal(JSON.parse(calls[1].init.body).policy.display, undefined);
 
 await client.auth.share();
 assert.equal(calls[2].url, "https://api.example.test/v1/sessions/share");
@@ -147,55 +162,55 @@ assert.equal(JSON.parse(calls[4].init.body).email, "panda-test@example.com");
 await client.products.list();
 assert.equal(calls[5].url, "https://api.example.test/v1/products");
 
-await client.products.revokeAuthorization("dev_1");
-assert.equal(calls[6].url, "https://api.example.test/v1/products/panda-chat/authorization?device_id=dev_1");
-assert.equal(calls[6].init.method, "DELETE");
-
-await client.diagnostics();
-assert.equal(calls[7].url, "https://api.example.test/v1/diagnostics");
-assert.equal(calls[7].init.method, "GET");
-
-await client.queue.summary();
-assert.equal(calls[8].url, "https://api.example.test/v1/queue/summary");
-assert.equal(calls[8].init.method, "GET");
-
-const devCalls = [];
-const devClient = createBridgeClient({
+const authCalls = [];
+const authClient = createBridgeClient({
   apiBase: "https://api.example.test",
-  productId: "panda-dev",
+  productId: "panda-chat",
   fetch: async (url, init) => {
-    devCalls.push({ url, init });
-    return new Response(JSON.stringify({ job: { id: "job_dev_1", status: "queued" }, items: [] }), {
-      status: 201,
+    authCalls.push({ url, init });
+    const body = init.body ? JSON.parse(init.body) : {};
+    return new Response(JSON.stringify({
+      authorization: { id: "auth_1", device_id: "dev_1", status: body.status || "active", policy: { capabilities: ["codex.chat"] } },
+      device: { id: "dev_1", status: body.status === "paused" ? "online" : "online" },
+      cancelled_jobs: init.method === "DELETE" ? 2 : 0,
+    }), {
+      status: 200,
       headers: { "content-type": "application/json" },
     });
   },
 });
+const listed = await authClient.authorization.list({ deviceId: "dev_1" });
+assert.equal(listed.authorization.status, "active");
+assert.equal(listed.authorization.policy, undefined);
+assert.equal(authCalls[0].url, "https://api.example.test/v1/products/panda-chat/authorization?device_id=dev_1");
+assert.equal(authCalls[0].init.method, "GET");
 
-await devClient.connect.createIntent({
-  deviceName: "Dev Mac",
-  permissions: bridgeFullAccessPolicy({
-    display: { workspace: "Custom caller scope" },
-  }),
-});
-assert.equal(devCalls[0].url, "https://api.example.test/v1/connect-intents");
-assert.equal(JSON.parse(devCalls[0].init.body).product_id, "panda-dev");
-assert.equal(JSON.parse(devCalls[0].init.body).policy.display.workspace, "All local files");
+const paused = await authClient.authorization.pause({ deviceId: "dev_1" });
+assert.equal(paused.authorization.status, "paused");
+assert.equal(paused.connected, false);
+assert.equal(authCalls[1].url, "https://api.example.test/v1/products/panda-chat/authorization?device_id=dev_1");
+assert.equal(authCalls[1].init.method, "PATCH");
+assert.deepEqual(JSON.parse(authCalls[1].init.body), { status: "paused" });
 
-await devClient.products.authorization("dev_2");
-assert.equal(devCalls[1].url, "https://api.example.test/v1/products/panda-dev/authorization?device_id=dev_2");
+await authClient.authorization.resume({ deviceId: "dev_1" });
+assert.equal(authCalls[2].init.method, "PATCH");
+assert.deepEqual(JSON.parse(authCalls[2].init.body), { status: "active" });
 
-await devClient.codex.rpc({ deviceId: "dev_2", calls: [{ method: "initialize" }] });
-assert.equal(devCalls[2].url, "https://api.example.test/v1/products/panda-dev/jobs");
-assert.equal(JSON.parse(devCalls[2].init.body).kind, "codex.rpc");
-assert.equal(JSON.parse(devCalls[2].init.body).product_id, "panda-dev");
+const removed = await authClient.authorization.remove({ deviceId: "dev_1" });
+assert.equal(removed.cancelled_jobs, 2);
+assert.equal(authCalls[3].init.method, "DELETE");
 
-await devClient.jobs.events("job_dev_1", 4);
-assert.equal(devCalls[3].url, "https://api.example.test/v1/jobs/job_dev_1/events?after=4");
+await authClient.products.revokeAuthorization("dev_1");
+assert.equal(authCalls[4].url, "https://api.example.test/v1/products/panda-chat/authorization?device_id=dev_1");
+assert.equal(authCalls[4].init.method, "DELETE");
 
-await devClient.jobs.cancel("job_dev_1");
-assert.equal(devCalls[4].url, "https://api.example.test/v1/jobs/job_dev_1/cancel");
-assert.equal(devCalls[4].init.method, "POST");
+await client.diagnostics();
+assert.equal(calls[6].url, "https://api.example.test/v1/diagnostics");
+assert.equal(calls[6].init.method, "GET");
+
+await client.queue.summary();
+assert.equal(calls[7].url, "https://api.example.test/v1/queue/summary");
+assert.equal(calls[7].init.method, "GET");
 
 const customCalls = [];
 const customClient = createBridgeClient({
@@ -264,92 +279,48 @@ const readyPreflightResult = await readyPreflight.client.preflight();
 assert.equal(readyPreflightResult.ready, true);
 assert.equal(readyPreflightResult.selected_device.id, "dev_1");
 assert.equal(readyPreflightResult.authorized_devices.length, 1);
-assert.equal(readyPreflightResult.queue.counts.total, 1);
 assert.deepEqual(readyPreflightResult.issues, []);
-assert.deepEqual(readyPreflight.calls.map((call) => call.path), [
-  "/v1/diagnostics",
-  "/v1/session",
-  "/v1/devices",
-  "/v1/products/panda-chat/authorization?device_id=dev_1",
-  "/v1/queue/summary",
-]);
 
-const missingAuthorizationPreflight = mockClient([
-  { body: { ok: true } },
-  { body: { authenticated: true, user: { id: "user_1" } } },
-  { body: { items: [{ id: "dev_1", status: "online" }] } },
-  { body: { authorization: null } },
-  { body: { counts: { total: 0 }, devices: [] } },
-]);
-const missingAuthorizationResult = await missingAuthorizationPreflight.client.preflight();
-assert.equal(missingAuthorizationResult.ready, false);
-assert.equal(missingAuthorizationResult.issues.some((item) => item.code === "product_not_authorized"), true);
-assert.equal(missingAuthorizationResult.actions.some((item) => item.code === "authorize_product"), true);
-
-const targetMismatchPreflight = mockClient([
-  { body: { ok: true } },
-  { body: { authenticated: true, user: { id: "user_1" } } },
-  { body: { items: [{ id: "dev_1", status: "online" }] } },
-  { body: { counts: { total: 0 }, devices: [] } },
-]);
-const targetMismatchResult = await targetMismatchPreflight.client.preflight({ deviceId: "missing_dev" });
-assert.equal(targetMismatchResult.ready, false);
-assert.equal(targetMismatchResult.issues.some((item) => item.code === "device_not_found"), true);
-assert.equal(targetMismatchPreflight.calls.some((call) => call.path.includes("/authorization")), false);
-
-const bridgeStates = ["no_session", "no_device", "authorization_pending", "authorized_offline", "not_authorized", "ready"];
-for (const bridge_state of bridgeStates) {
-  const stateClient = mockClient([{ body: bridgeStateFixture(bridge_state) }]);
-  const state = await stateClient.client.state();
-  assert.equal(state.bridge_state, bridge_state);
-  assert.equal(stateClient.calls[0].path, "/v1/bridge/state?product_id=panda-chat");
-}
+const stateClient = mockClient([{ body: bridgeStateFixture("active", true) }]);
+const state = await stateClient.client.state();
+assert.equal(state.ready, true);
+assert.equal(state.accounts[0].authorization.status, "active");
+assert.equal(state.accounts[0].connected, true);
+assert.equal(state.bridge_state, undefined);
+assert.equal(stateClient.calls[0].path, "/v1/bridge/state?product_id=panda-chat");
 
 const install = client.install();
 assert.equal(install.version, "0.1.0");
 assert.equal(install.openUrl, "panda-bridge://open");
 assert.equal(install.sha256.length, 64);
 
-const readyEnsure = mockClient([{ body: bridgeStateFixture("ready") }]);
+const readyEnsure = mockClient([{ body: bridgeStateFixture("active", true) }]);
 const readyResult = await readyEnsure.client.ensureReady({ intervalMs: 1, timeoutMs: 10 });
 assert.equal(readyResult.ready, true);
+assert.equal(readyResult.account.authorization.status, "active");
 assert.equal(readyEnsure.calls.length, 1);
 
-const offlineEnsure = mockClient([{ body: bridgeStateFixture("authorized_offline") }]);
+const offlineEnsure = mockClient([{ body: bridgeStateFixture("active", false) }]);
 const offlineResult = await offlineEnsure.client.ensureReady({ intervalMs: 1, timeoutMs: 10 });
 assert.equal(offlineResult.ready, false);
-assert.equal(offlineResult.action.kind, "open_desktop");
+assert.equal(offlineResult.action.kind, "wait_for_device");
 assert.equal(offlineEnsure.calls.some((call) => call.path === "/v1/connect-intents"), false);
 
-let openedDeepLink = "";
-const authorizeEnsure = mockClient([
-  { body: bridgeStateFixture("not_authorized") },
-  { status: 201, body: { token: "pbi_test", deep_link: "panda-bridge://connect?intent=pbi_test", connect_intent: { expires_at: "2099-01-01T00:00:00Z" } } },
-  { body: bridgeStateFixture("ready") },
-]);
-const authorizeResult = await authorizeEnsure.client.ensureReady({
-  intervalMs: 1,
-  timeoutMs: 200,
-  openDeepLink: (deepLink) => {
-    openedDeepLink = deepLink;
-  },
-});
-assert.equal(authorizeResult.ready, true);
-assert.equal(openedDeepLink, "panda-bridge://connect?intent=pbi_test");
-assert.deepEqual(authorizeEnsure.calls.map((call) => call.path), [
-  "/v1/bridge/state?product_id=panda-chat",
-  "/v1/connect-intents",
-  "/v1/bridge/state?product_id=panda-chat",
-]);
+const pausedEnsure = mockClient([{ body: bridgeStateFixture("paused", true) }]);
+const pausedResult = await pausedEnsure.client.ensureReady({ intervalMs: 1, timeoutMs: 10 });
+assert.equal(pausedResult.ready, false);
+assert.equal(pausedResult.action.kind, "resume_authorization");
 
-const alreadyAuthorizedEnsure = mockClient([
-  { body: bridgeStateFixture("not_authorized") },
-  { body: { already_authorized: true, state: "ready", authorization: { status: "active" }, device: { id: "dev_1", status: "online" } } },
+const waitedEnsure = mockClient([
+  { body: bridgeStateFixture("active", false) },
+  { body: bridgeStateFixture("active", true) },
 ]);
-const alreadyAuthorizedResult = await alreadyAuthorizedEnsure.client.ensureReady({ intervalMs: 1, timeoutMs: 20 });
-assert.equal(alreadyAuthorizedResult.ready, true);
-assert.equal(alreadyAuthorizedResult.state.bridge_state, "ready");
-assert.equal(alreadyAuthorizedEnsure.calls.length, 2);
+const waitedResult = await waitedEnsure.client.ensureReady({ intervalMs: 1, timeoutMs: 200, wait: true });
+assert.equal(waitedResult.ready, true);
+assert.deepEqual(waitedEnsure.calls.map((call) => call.path), [
+  "/v1/bridge/state?product_id=panda-chat",
+  "/v1/bridge/state?product_id=panda-chat",
+]);
 
 const originalWebSocket = globalThis.WebSocket;
 class FakeWebSocket {
@@ -373,16 +344,16 @@ class FakeWebSocket {
 globalThis.WebSocket = FakeWebSocket;
 try {
   const watched = mockClient([
-    { body: bridgeStateFixture("authorization_pending") },
-    { body: bridgeStateFixture("ready") },
+    { body: bridgeStateFixture("active", false) },
+    { body: bridgeStateFixture("active", true) },
   ]);
   const generator = watched.client.watchState({ intervalMs: 5, timeoutMs: 100 });
   const first = await generator.next();
-  assert.equal(first.value.bridge_state, "authorization_pending");
+  assert.equal(first.value.ready, false);
   assert.equal(FakeWebSocket.instances[0].url, "wss://api.example.test/v1/realtime/devices/dev_1?role=web");
   FakeWebSocket.instances[0].emit("message", { type: "bridge.state" });
   const second = await generator.next();
-  assert.equal(second.value.bridge_state, "ready");
+  assert.equal(second.value.ready, true);
   await generator.return();
 } finally {
   globalThis.WebSocket = originalWebSocket;
@@ -392,10 +363,10 @@ const errorClient = createBridgeClient({
   apiBase: "https://api.example.test",
   productId: "panda-chat",
   fetch: async () => new Response(JSON.stringify({
-    error: "request_body_too_large",
-    limit_bytes: 64,
+    error: "authorization_paused",
+    message: "authorization_paused",
   }), {
-    status: 413,
+    status: 403,
     headers: { "content-type": "application/json" },
   }),
 });
@@ -404,48 +375,46 @@ await assert.rejects(
   () => errorClient.diagnostics(),
   (error) => {
     assert.equal(error instanceof BridgeError, true);
-    assert.equal(BridgeErrorCodes.request_body_too_large, "request_body_too_large");
-    assert.equal(error.code, "request_body_too_large");
-    assert.equal(error.message, "request_body_too_large");
-    assert.equal(error.status, 413);
-    assert.deepEqual(error.payload, { error: "request_body_too_large", limit_bytes: 64 });
+    assert.equal(BridgeErrorCodes.authorization_paused, "authorization_paused");
+    assert.equal(BridgeErrorCodes.device_offline, undefined);
+    assert.equal(error.code, "authorization_paused");
+    assert.equal(error.message, "authorization_paused");
+    assert.equal(error.status, 403);
+    assert.deepEqual(error.payload, { error: "authorization_paused", message: "authorization_paused" });
     return true;
   },
 );
 
 console.log("[sdk.test] pass");
 
-function bridgeStateFixture(bridge_state) {
+function bridgeStateFixture(status, connected) {
   return {
-    bridge_state,
     product_id: "panda-chat",
-    install: {
-      download_url: "https://assets.bridge.otherline.cc/downloads/panda-bridge-macos.dmg",
-      version: "0.1.0",
-      sha256: "e65e04f08373ffe2363616dc1426516b74f12123f52c71d7225af4bac7225962",
-      platform: "macos",
-      open_url: "panda-bridge://open",
-    },
-    devices: bridge_state === "no_session" || bridge_state === "no_device"
-      ? []
-      : [{ id: "dev_1", name: "Mac", online: bridge_state !== "authorized_offline", last_seen_at: "2099-01-01T00:00:00Z", current: true }],
-    authorization: bridge_state === "ready" || bridge_state === "authorized_offline"
-      ? { status: "active", policy: { version: "AUTH-SCOPE-v1" }, authorized_at: "2099-01-01T00:00:00Z", origin: "https://chat.example.test" }
-      : null,
-    intent: bridge_state === "authorization_pending"
-      ? { token: "pbi_pending", expires_at: "2099-01-01T00:00:00Z", deep_link: "panda-bridge://connect?intent=pbi_pending" }
-      : null,
-    actions: bridgeStateActions(bridge_state),
+    install: stateInstall(),
+    accounts: [{
+      account: { id: "acct_1", email: "panda@example.test" },
+      authorization: { id: "auth_1", status, policy: { capabilities: ["codex.chat"] } },
+      connected,
+      current_device: {
+        id: "dev_1",
+        name: "Mac",
+        status: connected ? "online" : "offline",
+        online: connected,
+        last_seen_at: "2099-01-01T00:00:00Z",
+        current: true,
+      },
+    }],
   };
 }
 
-function bridgeStateActions(bridge_state) {
-  if (bridge_state === "no_session") return [{ kind: "login" }];
-  if (bridge_state === "no_device") return [{ kind: "download", url: "https://assets.bridge.otherline.cc/downloads/panda-bridge-macos.dmg" }];
-  if (bridge_state === "authorization_pending") return [{ kind: "confirm_on_desktop", deep_link: "panda-bridge://connect?intent=pbi_pending" }];
-  if (bridge_state === "authorized_offline") return [{ kind: "open_desktop", url: "panda-bridge://open" }];
-  if (bridge_state === "not_authorized") return [{ kind: "authorize" }];
-  return [];
+function stateInstall() {
+  return {
+    download_url: "https://assets.bridge.otherline.cc/downloads/panda-bridge-macos.dmg",
+    version: "0.1.0",
+    sha256: "e65e04f08373ffe2363616dc1426516b74f12123f52c71d7225af4bac7225962",
+    platform: "macos",
+    open_url: "panda-bridge://open",
+  };
 }
 
 function mockClient(responses) {

@@ -4,6 +4,7 @@ export type JsonObject = { [key: string]: JsonValue };
 export type BridgeErrorCode =
   | "already_authorized"
   | "authorization_import_proof_required"
+  | "authorization_paused"
   | "authorization_scope_denied"
   | "bridge_cloud_unavailable"
   | "connect_intent_not_found"
@@ -11,7 +12,6 @@ export type BridgeErrorCode =
   | "delegated_device_mismatch"
   | "desktop_claim_required"
   | "device_not_found"
-  | "device_offline"
   | "device_queue_full"
   | "idempotency_key_conflict"
   | "install_id_required"
@@ -39,7 +39,7 @@ export type BridgeErrorCode =
   | "bridge_ready_timeout";
 
 export const BRIDGE_SDK_VERSION: string;
-export const BridgeErrorCodes: Readonly<Record<BridgeErrorCode, BridgeErrorCode>>;
+export const BridgeErrorCodes: Readonly<Partial<Record<BridgeErrorCode, BridgeErrorCode>>>;
 
 export class BridgeError extends Error {
   code: BridgeErrorCode | string;
@@ -86,20 +86,14 @@ export const bridgeDesktopInstallDefaults: Readonly<{
 
 export function bridgeDesktopInstallTarget(options?: BridgeDesktopInstallOptions): BridgeDesktopInstallTarget;
 
-export type BridgeCompositeState =
-  | "no_session"
-  | "no_device"
-  | "authorization_pending"
-  | "authorized_offline"
-  | "not_authorized"
-  | "ready";
+export type BridgeAuthorizationStatus = "active" | "paused" | "revoked";
 
-export type BridgeActionKind = "download" | "open_desktop" | "authorize" | "confirm_on_desktop" | "login";
-
-export type BridgeStateAction = {
-  kind: BridgeActionKind;
-  url?: string | null;
-  deep_link?: string | null;
+export type BridgeStateInstall = {
+  download_url: string;
+  version: string;
+  sha256: string;
+  platform: "macos" | string;
+  open_url: string;
 };
 
 export type BridgeStateDevice = {
@@ -110,12 +104,20 @@ export type BridgeStateDevice = {
   current: boolean;
 };
 
-export type BridgeStateInstall = {
-  download_url: string;
-  version: string;
-  sha256: string;
-  platform: "macos" | string;
-  open_url: string;
+export type BridgeStateAuthorization = {
+  id?: string;
+  device_id?: string;
+  status: BridgeAuthorizationStatus;
+  authorized_at?: string;
+  updated_at?: string;
+  origin?: string;
+};
+
+export type BridgeStateAccount = {
+  account: JsonObject | null;
+  authorization: BridgeStateAuthorization | null;
+  connected: boolean;
+  current_device: BridgeStateDevice | null;
 };
 
 export type BridgeStateIntent = {
@@ -124,56 +126,39 @@ export type BridgeStateIntent = {
   deep_link: string | null;
 };
 
-export type BridgeAuthorizationPolicy = {
-  version?: "AUTH-SCOPE-v1" | string;
-  preset?: string;
-  request_source?: string;
+export type BridgeStateModel = {
   product_id?: string;
-  source_origin?: string;
-  capabilities?: string[];
-  workspace_roots?: Array<{ id?: string; path_display?: string; allow_all?: boolean; [key: string]: JsonValue | undefined }>;
-  sandbox_floor?: string;
-  approval_policy_floor?: string;
-  allow_approval_never?: boolean;
-  allow_developer_instructions?: boolean;
-  display?: { workspace?: string; sandbox?: string; approval?: string; developer_instructions?: string };
-  [key: string]: JsonValue | undefined;
+  product?: JsonObject;
+  install: BridgeStateInstall;
+  accounts: BridgeStateAccount[];
+  ready: boolean;
+  current_account: BridgeStateAccount | null;
 };
 
-export type BridgeStateAuthorization = {
-  status?: string;
-  policy?: BridgeAuthorizationPolicy;
-  authorized_at?: string;
-  origin?: string;
-  [key: string]: JsonValue | undefined;
-} | null;
+export function bridgeStateModel(payload?: JsonObject, productId?: string): BridgeStateModel;
 
-export type BridgeStateModel = {
-  bridge_state: BridgeCompositeState;
-  product_id?: string;
-  install: BridgeStateInstall;
-  devices: BridgeStateDevice[];
-  authorization: BridgeStateAuthorization;
-  intent: BridgeStateIntent | null;
-  actions: BridgeStateAction[];
-  [key: string]: JsonValue | BridgeStateInstall | BridgeStateDevice[] | BridgeStateAuthorization | BridgeStateIntent | BridgeStateAction[] | undefined;
+export type BridgeReadyActionKind = "authorize" | "resume_authorization" | "wait_for_device";
+
+export type BridgeReadyAction = {
+  kind: BridgeReadyActionKind;
+  reason: string;
 };
 
 export type EnsureReadyResult = {
   state: BridgeStateModel;
   ready: boolean;
-  action: BridgeStateAction | null;
-  response?: JsonObject;
+  action: BridgeReadyAction | null;
+  account?: BridgeStateAccount | null;
 };
 
 export type EnsureReadyOptions = {
-  openDeepLink?: (deepLink: string, context: { state: BridgeStateModel; intent: BridgeStateIntent }) => void | Promise<void>;
-  deviceName?: string;
-  device_name?: string;
-  policy?: BridgeAuthorizationPolicy;
-  permissions?: BridgeAuthorizationPolicy;
   intervalMs?: number;
+  interval_ms?: number;
   timeoutMs?: number;
+  timeout_ms?: number;
+  wait?: boolean;
+  waitForReady?: boolean;
+  wait_for_ready?: boolean;
 };
 
 export type WatchStateOptions = {
@@ -184,34 +169,16 @@ export type WatchStateOptions = {
   realtime?: boolean;
 };
 
-export type BridgeDesktopAuthorizationState =
-  | "authorized"
-  | "pending"
-  | "missing"
-  | "revoked"
-  | "denied"
-  | "expired"
-  | "insufficient"
-  | "unknown";
-
-export type BridgeDesktopConnectionState =
-  | "connected"
-  | "disconnected"
-  | "waiting"
-  | "not_ready"
-  | "unknown";
-
 export type BridgeDesktopStatusAction =
   | "ready"
   | "download_bridge"
   | "open_bridge"
   | "authorize_product"
   | "manage_authorization"
-  | "confirm_on_desktop"
-  | "refresh_status";
+  | "resume_authorization"
+  | "wait_for_device";
 
 export type BridgeDesktopStatusModel = {
-  status: string;
   ready: boolean;
   download: {
     state: "available" | "needed";
@@ -222,12 +189,12 @@ export type BridgeDesktopStatusModel = {
     openUrl: string | null;
   };
   authorization: {
-    state: BridgeDesktopAuthorizationState;
+    status: BridgeAuthorizationStatus | "missing";
     authorized: boolean;
     action: BridgeDesktopStatusAction;
   };
   connection: {
-    state: BridgeDesktopConnectionState;
+    state: "connected" | "reconnecting" | "offline";
     connected: boolean;
     action: BridgeDesktopStatusAction;
   };
@@ -240,32 +207,24 @@ export function bridgeDesktopStatusModel(
 ): BridgeDesktopStatusModel;
 
 export type BridgeDelegatedAccountStatusModel = {
-  status: "connected" | "device_offline" | "source_registered" | "not_installed";
   ready: boolean;
-  authorized: boolean;
   connected: boolean;
-  deviceId: string | null;
-  device: JsonObject | null;
-  authorization: JsonObject | null;
-  outlet: {
-    deviceId: string | null;
-    status: "connected" | "device_offline";
-    ready: boolean;
-    device: JsonObject;
-    authorization: JsonObject;
-  } | null;
+  account: JsonObject | null;
+  authorization: BridgeStateAuthorization | null;
+  current_device: BridgeStateDevice | null;
+  accounts: BridgeStateAccount[];
 };
 
 export function bridgeDelegatedAccountStatusModel(payload?: JsonObject): BridgeDelegatedAccountStatusModel;
 
 export type BridgeDelegatedConnectIntentStatusModel = {
-  status: "connected" | "device_offline" | "authorization_pending";
   ready: boolean;
   authorized: boolean;
   connected: boolean;
-  deviceId: string | null;
-  device: JsonObject | null;
-  authorization: JsonObject | null;
+  account: JsonObject | null;
+  current_device: BridgeStateDevice | null;
+  authorization: BridgeStateAuthorization | null;
+  accounts: BridgeStateAccount[];
   intentId: string | null;
   expiresAt: string | null;
   deepLink: string | null;
@@ -276,7 +235,44 @@ export function bridgeDelegatedConnectIntentStatusModel(
   token?: string,
 ): BridgeDelegatedConnectIntentStatusModel;
 
-export function bridgeSnapshotStatusForDevice(device?: JsonObject): "connected" | "device_offline";
+export function bridgeSnapshotStatusForDevice(device?: JsonObject): "connected" | "reconnecting";
+
+export type BridgeAuthorizationPolicy = {
+  version?: string;
+  preset?: string;
+  request_source?: string;
+  product_id?: string;
+  source_origin?: string;
+  capabilities?: string[];
+  workspace_roots?: Array<{ id?: string; path_display?: string; allow_all?: boolean; [key: string]: JsonValue | undefined }>;
+  sandbox_floor?: string;
+  approval_policy_floor?: string;
+  allow_approval_never?: boolean;
+  allow_developer_instructions?: boolean;
+  [key: string]: JsonValue | undefined;
+};
+
+export type BridgeAuthorizationInput = {
+  deviceId?: string;
+  device_id?: string;
+  accountId?: string;
+  account_id?: string;
+  policy?: BridgeAuthorizationPolicy;
+};
+
+export type BridgeAuthorizationResponse = {
+  product_id?: string;
+  product?: JsonObject;
+  install?: BridgeStateInstall;
+  ready?: boolean;
+  current_account?: BridgeStateAccount | null;
+  authorization: BridgeStateAuthorization | null;
+  account: JsonObject | null;
+  connected: boolean;
+  current_device: BridgeStateDevice | null;
+  accounts: BridgeStateAccount[];
+  cancelled_jobs?: number;
+};
 
 export type BridgeJobInput = {
   kind?: string;
@@ -320,11 +316,21 @@ export type BridgeClient = {
     intent(token: string): Promise<JsonObject>;
     claim(token: string, input?: JsonObject): Promise<JsonObject>;
   };
+  authorization: {
+    list(input?: BridgeAuthorizationInput): Promise<BridgeAuthorizationResponse>;
+    authorize(input?: BridgeAuthorizationInput): Promise<BridgeAuthorizationResponse>;
+    pause(input?: BridgeAuthorizationInput): Promise<BridgeAuthorizationResponse>;
+    resume(input?: BridgeAuthorizationInput): Promise<BridgeAuthorizationResponse>;
+    remove(input?: BridgeAuthorizationInput): Promise<BridgeAuthorizationResponse>;
+    createIntent(input?: { productId?: string; product_id?: string; deviceName?: string; device_name?: string; policy?: BridgeAuthorizationPolicy; permissions?: BridgeAuthorizationPolicy; permission?: BridgeAuthorizationPolicy }): Promise<JsonObject>;
+  };
   products: {
     list(): Promise<JsonObject>;
-    requestAuthorization(deviceId: string, policy?: JsonObject): Promise<JsonObject>;
-    authorization(deviceId: string): Promise<JsonObject>;
-    revokeAuthorization(deviceId: string): Promise<JsonObject>;
+    requestAuthorization(deviceId: string, policy?: BridgeAuthorizationPolicy): Promise<BridgeAuthorizationResponse>;
+    authorization(deviceId: string): Promise<BridgeAuthorizationResponse>;
+    revokeAuthorization(deviceId: string): Promise<BridgeAuthorizationResponse>;
+    pauseAuthorization(deviceId: string): Promise<BridgeAuthorizationResponse>;
+    resumeAuthorization(deviceId: string): Promise<BridgeAuthorizationResponse>;
   };
   codex: {
     chat(input: BridgeJobInput): Promise<JsonObject>;
@@ -346,5 +352,3 @@ export function createBridgeClient(options: {
   productId?: string;
   fetch?: typeof fetch;
 }): BridgeClient;
-
-export function bridgeFullAccessPolicy(overrides?: BridgeAuthorizationPolicy): BridgeAuthorizationPolicy;
