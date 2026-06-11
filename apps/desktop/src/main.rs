@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     env, fs,
     io::{BufRead, BufReader, BufWriter, Read, Write},
     net::{TcpListener, TcpStream},
@@ -87,6 +87,10 @@ struct Credentials {
     #[serde(default)]
     install_identity_bound: Option<bool>,
     #[serde(default)]
+    device_online: Option<bool>,
+    #[serde(default)]
+    device_last_seen_at: Option<String>,
+    #[serde(default)]
     connections: Vec<Credentials>,
     claimed_at: String,
 }
@@ -120,6 +124,20 @@ struct ProductGrantAccount {
     origin: Option<String>,
     #[serde(default)]
     authorized_at: String,
+    #[serde(default)]
+    devices: Vec<ProductGrantDevice>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct ProductGrantDevice {
+    id: String,
+    name: String,
+    #[serde(default)]
+    online: Option<bool>,
+    #[serde(default)]
+    last_seen_at: Option<String>,
+    #[serde(default)]
+    authorized_at: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -149,6 +167,9 @@ struct IntentPreview {
     user_id: Option<String>,
     user_display_name: String,
     expires_at: String,
+    confirmation_mode: String,
+    scope_widening: bool,
+    scope_diff: Value,
 }
 
 #[derive(Debug, Serialize)]
@@ -198,6 +219,8 @@ struct ClaimResponse {
     product: Option<ProductInfo>,
     #[serde(default)]
     authorization: Option<AuthorizationInfo>,
+    #[serde(default)]
+    devices: Option<Vec<CloudDevice>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -220,6 +243,23 @@ struct RotateTokenResponse {
 struct Device {
     id: String,
     device_name: String,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+struct CloudDevice {
+    id: String,
+    #[serde(default, alias = "device_name")]
+    name: Option<String>,
+    #[serde(default)]
+    online: Option<bool>,
+    #[serde(default)]
+    last_seen_at: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct HeartbeatResponse {
+    #[serde(default)]
+    devices: Option<Vec<CloudDevice>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1380,7 +1420,24 @@ fn preview_intent(api: &str, intent: &str) -> Result<IntentPreview, String> {
         &cloud_origin,
         &product_capabilities,
     );
-    let capabilities = authorization_policy_capabilities(&local_policy).unwrap_or(product_capabilities);
+    let capabilities =
+        authorization_policy_capabilities(&local_policy).unwrap_or(product_capabilities);
+    let existing_grant = payload
+        .connect_intent
+        .user
+        .as_ref()
+        .and_then(|user| user.id.as_deref())
+        .and_then(|user_id| existing_grant_for_intent(&api_base, user_id, &product_id));
+    let scope_diff = existing_grant
+        .as_ref()
+        .map(|grant| scope_diff(&grant.policy, &local_policy))
+        .unwrap_or_else(|| scope_diff(&Value::Null, &local_policy));
+    let scope_widening = existing_grant
+        .as_ref()
+        .map(|grant| is_scope_widening(&grant.policy, &local_policy))
+        .unwrap_or(true);
+    let confirmation_mode =
+        confirmation_mode_for_existing_grant(existing_grant.as_ref(), scope_widening);
     Ok(IntentPreview {
         product_id,
         product_name,
@@ -1403,7 +1460,189 @@ fn preview_intent(api: &str, intent: &str) -> Result<IntentPreview, String> {
             .map(display_account)
             .unwrap_or_else(|| "Panda Account".to_string()),
         expires_at: payload.connect_intent.expires_at,
+        confirmation_mode,
+        scope_widening,
+        scope_diff,
     })
+}
+
+fn existing_grant_for_intent(
+    api_base: &str,
+    account_id: &str,
+    product_id: &str,
+) -> Option<ProductGrant> {
+    let credentials = load_credentials().ok()?;
+    credentials_connections(&credentials)
+        .into_iter()
+        .filter(|connection| {
+            connection.api_base == api_base && connection.account_id.as_deref() == Some(account_id)
+        })
+        .flat_map(|connection| connection_products(&connection))
+        .find(|grant| grant.id == product_id)
+}
+
+fn is_scope_widening(existing: &Value, requested: &Value) -> bool {
+    scope_diff(existing, requested)
+        .get("widening")
+        .and_then(Value::as_bool)
+        .unwrap_or(true)
+}
+
+fn confirmation_mode_for_existing_grant(
+    existing_grant: Option<&ProductGrant>,
+    scope_widening: bool,
+) -> String {
+    if existing_grant.is_some() && !scope_widening {
+        "light".to_string()
+    } else {
+        "full".to_string()
+    }
+}
+
+fn scope_diff(existing: &Value, requested: &Value) -> Value {
+    let existing_capabilities = policy_string_set(existing, "capabilities");
+    let requested_capabilities = policy_string_set(requested, "capabilities");
+    let added_capabilities = sorted_difference(&requested_capabilities, &existing_capabilities);
+
+    let existing_workspace_all = policy_allows_all_workspace(existing);
+    let requested_workspace_all = policy_allows_all_workspace(requested);
+    let existing_workspace_ids = policy_workspace_ids(existing);
+    let requested_workspace_ids = policy_workspace_ids(requested);
+    let added_workspace_ids = sorted_difference(&requested_workspace_ids, &existing_workspace_ids);
+    let workspace_widening = (requested_workspace_all && !existing_workspace_all)
+        || (!requested_workspace_all && !existing_workspace_all && !added_workspace_ids.is_empty());
+
+    let existing_sandbox =
+        policy_string(existing, "sandbox_floor").unwrap_or_else(|| "workspace-write".to_string());
+    let requested_sandbox =
+        policy_string(requested, "sandbox_floor").unwrap_or_else(|| "workspace-write".to_string());
+    let sandbox_widening = sandbox_rank(&requested_sandbox) > sandbox_rank(&existing_sandbox);
+
+    let existing_approval = policy_string(existing, "approval_policy_floor")
+        .unwrap_or_else(|| "on-request".to_string());
+    let requested_approval = policy_string(requested, "approval_policy_floor")
+        .unwrap_or_else(|| "on-request".to_string());
+    let existing_allow_never = existing
+        .get("allow_approval_never")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        || existing_approval == "never";
+    let requested_allow_never = requested
+        .get("allow_approval_never")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        || requested_approval == "never";
+    let approval_widening = approval_rank(&requested_approval) > approval_rank(&existing_approval)
+        || (requested_allow_never && !existing_allow_never);
+
+    let existing_dev = existing
+        .get("allow_developer_instructions")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let requested_dev = requested
+        .get("allow_developer_instructions")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let developer_instructions_widening = requested_dev && !existing_dev;
+
+    let widening = !added_capabilities.is_empty()
+        || workspace_widening
+        || sandbox_widening
+        || approval_widening
+        || developer_instructions_widening;
+
+    json!({
+        "widening": widening,
+        "capabilities": { "added": added_capabilities },
+        "workspace": {
+            "added": added_workspace_ids,
+            "from_all": existing_workspace_all,
+            "to_all": requested_workspace_all,
+            "widening": workspace_widening
+        },
+        "sandbox": {
+            "from": existing_sandbox,
+            "to": requested_sandbox,
+            "widening": sandbox_widening
+        },
+        "approval": {
+            "from": existing_approval,
+            "to": requested_approval,
+            "from_allow_never": existing_allow_never,
+            "to_allow_never": requested_allow_never,
+            "widening": approval_widening
+        },
+        "developer_instructions": {
+            "from": existing_dev,
+            "to": requested_dev,
+            "widening": developer_instructions_widening
+        }
+    })
+}
+
+fn policy_string_set(policy: &Value, key: &str) -> HashSet<String> {
+    policy
+        .get(key)
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|item| !item.is_empty())
+                .map(ToOwned::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn policy_workspace_ids(policy: &Value) -> HashSet<String> {
+    policy
+        .get("workspace_roots")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.get("id").and_then(Value::as_str))
+                .map(str::trim)
+                .filter(|item| !item.is_empty() && *item != "all" && *item != "*")
+                .map(ToOwned::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn policy_allows_all_workspace(policy: &Value) -> bool {
+    policy
+        .get("workspace_roots")
+        .and_then(Value::as_array)
+        .map(|items| items.iter().any(root_allows_all_workspaces))
+        .unwrap_or(false)
+}
+
+fn sorted_difference(left: &HashSet<String>, right: &HashSet<String>) -> Vec<String> {
+    let mut out = left.difference(right).cloned().collect::<Vec<_>>();
+    out.sort();
+    out
+}
+
+fn sandbox_rank(value: &str) -> i32 {
+    match value {
+        "read-only" => 0,
+        "workspace-write" => 1,
+        "danger-full-access" => 2,
+        _ => 3,
+    }
+}
+
+fn approval_rank(value: &str) -> i32 {
+    match value {
+        "untrusted" => 0,
+        "on-request" => 1,
+        "on-failure" => 2,
+        "never" => 3,
+        _ => 4,
+    }
 }
 
 fn claim_intent(api: &str, intent: &str, device_name: &str) -> Result<ClaimResult, String> {
@@ -1459,18 +1698,20 @@ fn claim_intent(api: &str, intent: &str, device_name: &str) -> Result<ClaimResul
         .as_ref()
         .and_then(|authorization| authorization.source_origin.clone())
         .or_else(|| {
-            payload
-                .authorization
-                .as_ref()
-                .and_then(|authorization| {
-                    authorization
-                        .policy
-                        .get("source_origin")
-                        .and_then(Value::as_str)
-                        .map(ToOwned::to_owned)
-                })
+            payload.authorization.as_ref().and_then(|authorization| {
+                authorization
+                    .policy
+                    .get("source_origin")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned)
+            })
         })
-        .or_else(|| payload.product.as_ref().and_then(|product| product.origin.clone()));
+        .or_else(|| {
+            payload
+                .product
+                .as_ref()
+                .and_then(|product| product.origin.clone())
+        });
     let product_capabilities = payload
         .product
         .as_ref()
@@ -1514,11 +1755,19 @@ fn claim_intent(api: &str, intent: &str, device_name: &str) -> Result<ClaimResul
         device_token_expires_at: payload.token_expires_at,
         device_token_rotated_at_unix: Some(unix_seconds()),
         install_identity_bound: payload.install_identity_bound,
+        device_online: cloud_device_online(&payload.devices, &payload.device.id),
+        device_last_seen_at: cloud_device_last_seen_at(&payload.devices, &payload.device.id),
         connections: Vec::new(),
         claimed_at: now_string(),
     };
     let mut connections = existing_connections;
     upsert_connection(&mut connections, connection.clone());
+    apply_cloud_devices_to_connections(
+        &mut connections,
+        &api_base,
+        account_id.as_deref(),
+        payload.devices.as_deref(),
+    );
     let credentials =
         credentials_from_connections(connections, Some(&connection), existing.as_ref());
     save_credentials(&credentials)?;
@@ -1719,7 +1968,7 @@ fn start_worker(state: &AppState, proxy: EventLoopProxy<UserEvent>) -> Result<Va
             let _ = fallback_proxy.send_event(UserEvent::UiEvent(
                 json!({ "type": "event", "event": "refresh" }),
             ));
-            thread::sleep(Duration::from_millis(1800));
+            thread::sleep(Duration::from_millis(heartbeat_interval_ms()));
         }
     });
     push_event(
@@ -1804,6 +2053,13 @@ fn aggregate_authorized_products(connections: &[Credentials]) -> Vec<ProductGran
     let mut products: Vec<ProductGrant> = Vec::new();
     for connection in connections {
         for product in connection_products(connection) {
+            let device = ProductGrantDevice {
+                id: connection.device_id.clone(),
+                name: connection.device_name.clone(),
+                online: connection.device_online,
+                last_seen_at: connection.device_last_seen_at.clone(),
+                authorized_at: product.authorized_at.clone(),
+            };
             let account = ProductGrantAccount {
                 id: connection.account_id.clone(),
                 email: connection.account_display.clone(),
@@ -1814,17 +2070,35 @@ fn aggregate_authorized_products(connections: &[Credentials]) -> Vec<ProductGran
                     .clone()
                     .or_else(|| connection.cloud_origin.clone()),
                 authorized_at: product.authorized_at.clone(),
+                devices: vec![device],
             };
             if let Some(existing) = products.iter_mut().find(|item| item.id == product.id) {
                 existing.name = product.name.clone();
                 existing.origin = product.origin.clone().or_else(|| existing.origin.clone());
                 existing.capabilities = product.capabilities.clone();
                 existing.authorized_at = product.authorized_at.clone();
-                let duplicate = existing.accounts.iter().any(|item| {
-                    item.device_id.as_deref() == Some(connection.device_id.as_str())
-                        && item.id.as_deref() == connection.account_id.as_deref()
-                });
-                if !duplicate {
+                if let Some(existing_account) = existing
+                    .accounts
+                    .iter_mut()
+                    .find(|item| item.id.as_deref() == connection.account_id.as_deref())
+                {
+                    if !existing_account
+                        .devices
+                        .iter()
+                        .any(|item| item.id == connection.device_id)
+                    {
+                        existing_account.devices.push(account.devices[0].clone());
+                    }
+                    if existing_account.device_id.is_none() {
+                        existing_account.device_id = Some(connection.device_id.clone());
+                    }
+                    if existing_account.email.is_none() {
+                        existing_account.email = connection.account_display.clone();
+                    }
+                    if existing_account.display_name.is_none() {
+                        existing_account.display_name = connection.account_display.clone();
+                    }
+                } else {
                     existing.accounts.push(account);
                 }
             } else {
@@ -1891,6 +2165,8 @@ fn credentials_from_connections(
         device_token_expires_at: primary.device_token_expires_at.clone(),
         device_token_rotated_at_unix: primary.device_token_rotated_at_unix,
         install_identity_bound: primary.install_identity_bound,
+        device_online: primary.device_online,
+        device_last_seen_at: primary.device_last_seen_at.clone(),
         connections: sanitized,
         claimed_at: primary.claimed_at.clone(),
     }
@@ -1920,16 +2196,25 @@ fn empty_credentials() -> Credentials {
         device_token_expires_at: None,
         device_token_rotated_at_unix: None,
         install_identity_bound: None,
+        device_online: None,
+        device_last_seen_at: None,
         connections: Vec::new(),
         claimed_at: now_string(),
     }
 }
 
 fn connection_key(credentials: &Credentials) -> String {
+    if !credentials.device_id.trim().is_empty() {
+        return format!("device:{}:{}", credentials.api_base, credentials.device_id);
+    }
     if let Some(account_id) = credentials.account_id.as_deref() {
         return format!("account:{}:{}", credentials.api_base, account_id);
     }
-    format!("device:{}:{}", credentials.api_base, credentials.device_id)
+    format!(
+        "install:{}:{}",
+        credentials.api_base,
+        credentials.install_id.clone().unwrap_or_default()
+    )
 }
 
 fn upsert_connection(connections: &mut Vec<Credentials>, next: Credentials) {
@@ -2056,21 +2341,85 @@ fn hex_bytes(bytes: &[u8]) -> String {
     out
 }
 
-fn heartbeat(credentials: &Credentials) -> Result<(), String> {
+fn cloud_device_online(devices: &Option<Vec<CloudDevice>>, device_id: &str) -> Option<bool> {
+    devices
+        .as_ref()
+        .and_then(|items| items.iter().find(|item| item.id == device_id))
+        .and_then(|item| item.online)
+}
+
+fn cloud_device_last_seen_at(
+    devices: &Option<Vec<CloudDevice>>,
+    device_id: &str,
+) -> Option<String> {
+    devices
+        .as_ref()
+        .and_then(|items| items.iter().find(|item| item.id == device_id))
+        .and_then(|item| item.last_seen_at.clone())
+}
+
+fn apply_cloud_devices_to_connections(
+    connections: &mut Vec<Credentials>,
+    api_base: &str,
+    account_id: Option<&str>,
+    devices: Option<&[CloudDevice]>,
+) -> bool {
+    let Some(devices) = devices else {
+        return false;
+    };
+    let Some(account_id) = account_id else {
+        return false;
+    };
+    let device_ids: HashSet<&str> = devices.iter().map(|item| item.id.as_str()).collect();
+    let device_map: HashMap<&str, &CloudDevice> = devices
+        .iter()
+        .map(|item| (item.id.as_str(), item))
+        .collect();
+    let before_len = connections.len();
+    connections.retain(|connection| {
+        connection.api_base != api_base
+            || connection.account_id.as_deref() != Some(account_id)
+            || device_ids.contains(connection.device_id.as_str())
+    });
+    let mut changed = connections.len() != before_len;
+    for connection in connections.iter_mut().filter(|connection| {
+        connection.api_base == api_base && connection.account_id.as_deref() == Some(account_id)
+    }) {
+        if let Some(device) = device_map.get(connection.device_id.as_str()) {
+            if let Some(name) = device.name.as_ref().filter(|name| !name.trim().is_empty()) {
+                if connection.device_name != *name {
+                    connection.device_name = name.clone();
+                    changed = true;
+                }
+            }
+            if connection.device_online != device.online {
+                connection.device_online = device.online;
+                changed = true;
+            }
+            if connection.device_last_seen_at != device.last_seen_at {
+                connection.device_last_seen_at = device.last_seen_at.clone();
+                changed = true;
+            }
+        }
+    }
+    changed
+}
+
+fn heartbeat(credentials: &Credentials) -> Result<HeartbeatResponse, String> {
+    let install_id = credentials_install_id(Some(credentials));
     let body = json!({
         "app_version": VERSION,
         "capabilities": capabilities(),
         "local_state": local_state(),
-        "install_id": credentials.install_id.clone().unwrap_or_default()
+        "install_id": install_id
     });
     let url = format!("{}/v1/connectors/heartbeat", credentials.api_base);
-    let _: Value = post_json_with_install(
+    post_json_with_install(
         &url,
         &body,
         Some(&credentials.device_token),
-        credentials.install_id.as_deref(),
-    )?;
-    Ok(())
+        Some(&install_id),
+    )
 }
 
 fn prepare_connections_for_worker(
@@ -2170,6 +2519,13 @@ fn token_rotation_interval_seconds() -> u64 {
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
         .unwrap_or(60 * 60 * 24)
+}
+
+fn heartbeat_interval_ms() -> u64 {
+    env::var("PANDA_BRIDGE_HEARTBEAT_INTERVAL_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(30_000)
 }
 
 fn spawn_missing_realtime_workers(
@@ -2441,9 +2797,26 @@ fn poll_all_connections(credentials: &Credentials) -> Result<Value, String> {
     let mut total = 0_usize;
     let mut results = Vec::new();
     let mut errors = Vec::new();
+    let mut synced_connections = credentials_connections(credentials);
     for connection in connections.iter() {
-        match heartbeat(connection).and_then(|_| poll_once(connection)) {
-            Ok(count) => {
+        match heartbeat(connection)
+            .and_then(|heartbeat| poll_once(connection).map(|count| (heartbeat, count)))
+        {
+            Ok((heartbeat, count)) => {
+                if heartbeat.devices.is_some() {
+                    apply_cloud_devices_to_connections(
+                        &mut synced_connections,
+                        &connection.api_base,
+                        connection.account_id.as_deref(),
+                        heartbeat.devices.as_deref(),
+                    );
+                    let next = credentials_from_connections(
+                        synced_connections.clone(),
+                        Some(connection),
+                        Some(credentials),
+                    );
+                    let _ = save_credentials(&next).and_then(|_| write_connector_state(&next));
+                }
                 total += count;
                 results.push(json!({
                     "ok": true,
@@ -3535,7 +3908,12 @@ fn intent_authorization_policy(
     source_origin: &str,
     product_capabilities: &[String],
 ) -> Value {
-    let mut policy = if intent.policy.as_object().map(|map| !map.is_empty()).unwrap_or(false) {
+    let mut policy = if intent
+        .policy
+        .as_object()
+        .map(|map| !map.is_empty())
+        .unwrap_or(false)
+    {
         intent.policy.clone()
     } else {
         local_policy_preview()
@@ -3579,13 +3957,16 @@ fn intent_authorization_policy(
 }
 
 fn authorization_policy_capabilities(policy: &Value) -> Option<Vec<String>> {
-    policy.get("capabilities").and_then(Value::as_array).map(|items| {
-        items
-            .iter()
-            .filter_map(Value::as_str)
-            .map(ToOwned::to_owned)
-            .collect()
-    })
+    policy
+        .get("capabilities")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(ToOwned::to_owned)
+                .collect()
+        })
 }
 
 fn save_credentials(credentials: &Credentials) -> Result<(), String> {
@@ -3594,11 +3975,11 @@ fn save_credentials(credentials: &Credentials) -> Result<(), String> {
         write_external_state_file(Path::new(&path), &text)?;
         return Ok(());
     }
-    write_file(&fallback_credentials_path()?, &text)?;
     if keychain_enabled() {
         let _ = keychain_entry()
             .and_then(|entry| entry.set_password(&text).map_err(|error| error.to_string()));
     }
+    write_file(&fallback_credentials_path()?, &text)?;
     Ok(())
 }
 
@@ -3612,11 +3993,6 @@ fn load_credentials_text() -> Result<String, String> {
         return fs::read_to_string(path).map_err(|error| error.to_string());
     }
     let fallback_path = fallback_credentials_path()?;
-    if let Ok(text) = fs::read_to_string(&fallback_path) {
-        if !text.trim().is_empty() {
-            return Ok(text);
-        }
-    }
     if keychain_enabled() {
         if let Ok(text) = keychain_entry()
             .and_then(|entry| entry.get_password().map_err(|error| error.to_string()))
@@ -3624,6 +4000,15 @@ fn load_credentials_text() -> Result<String, String> {
             if !text.trim().is_empty() {
                 return Ok(text);
             }
+        }
+    }
+    if let Ok(text) = fs::read_to_string(&fallback_path) {
+        if !text.trim().is_empty() {
+            if keychain_enabled() {
+                let _ = keychain_entry()
+                    .and_then(|entry| entry.set_password(&text).map_err(|error| error.to_string()));
+            }
+            return Ok(text);
         }
     }
     Err(format!(
@@ -3648,7 +4033,7 @@ fn delete_credentials() -> Result<(), String> {
 }
 
 fn keychain_enabled() -> bool {
-    env_flag("PANDA_BRIDGE_USE_KEYCHAIN") && !env_flag("PANDA_BRIDGE_SKIP_KEYCHAIN")
+    !env_flag("PANDA_BRIDGE_SKIP_KEYCHAIN")
 }
 
 fn keychain_entry() -> Result<Entry, String> {
@@ -3855,8 +4240,13 @@ fn allowed_approval_policy(value: &str, scope: Option<&Value>) -> Result<String,
 }
 
 fn root_allows_all_workspaces(root: &Value) -> bool {
-    root.get("allow_all").and_then(Value::as_bool).unwrap_or(false)
-        || root.get("allowAll").and_then(Value::as_bool).unwrap_or(false)
+    root.get("allow_all")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        || root
+            .get("allowAll")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
         || root.get("id").and_then(Value::as_str) == Some("all")
         || root.get("id").and_then(Value::as_str) == Some("*")
 }
@@ -4316,6 +4706,8 @@ mod tests {
             device_token_expires_at: None,
             device_token_rotated_at_unix: None,
             install_identity_bound: None,
+            device_online: None,
+            device_last_seen_at: None,
             connections: Vec::new(),
             claimed_at: now_string(),
         }
@@ -4337,6 +4729,7 @@ mod tests {
     fn credentials_default_to_private_fallback_file_without_keychain() {
         let _guard = ENV_LOCK.lock().unwrap();
         reset_credentials_env();
+        env::set_var("PANDA_BRIDGE_SKIP_KEYCHAIN", "1");
         let old_home = env::var_os("HOME");
         let old_userprofile = env::var_os("USERPROFILE");
         let home = env::temp_dir().join(format!(
@@ -4352,12 +4745,22 @@ mod tests {
         let credentials = test_credentials(vec!["codex.chat"]);
         save_credentials(&credentials).unwrap();
         let path = fallback_credentials_path().unwrap();
-        assert!(path.exists(), "credentials should be written to the private fallback file");
+        assert!(
+            path.exists(),
+            "credentials should be written to the private fallback file"
+        );
         #[cfg(unix)]
         {
-            let dir_mode = fs::metadata(path.parent().unwrap()).unwrap().permissions().mode() & 0o777;
+            let dir_mode = fs::metadata(path.parent().unwrap())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777;
             let file_mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
-            assert_eq!(dir_mode, 0o700, "fallback state directory should be private");
+            assert_eq!(
+                dir_mode, 0o700,
+                "fallback state directory should be private"
+            );
             assert_eq!(file_mode, 0o600, "fallback state file should be private");
         }
         let text = fs::read_to_string(&path).unwrap();
@@ -4367,7 +4770,10 @@ mod tests {
         assert_eq!(loaded.device_token, credentials.device_token);
 
         delete_credentials().unwrap();
-        assert!(!path.exists(), "delete should remove the fallback state file");
+        assert!(
+            !path.exists(),
+            "delete should remove the fallback state file"
+        );
 
         if let Some(value) = old_home {
             env::set_var("HOME", value);
@@ -4381,6 +4787,16 @@ mod tests {
         }
         reset_credentials_env();
         let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn keychain_is_enabled_by_default_and_skip_disables_it() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        reset_credentials_env();
+        assert!(keychain_enabled(), "keychain should be on by default");
+        env::set_var("PANDA_BRIDGE_SKIP_KEYCHAIN", "1");
+        assert!(!keychain_enabled(), "skip env should disable keychain");
+        reset_credentials_env();
     }
 
     #[cfg(unix)]
@@ -4403,8 +4819,14 @@ mod tests {
 
         let parent_mode = fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
         let file_mode = fs::metadata(&state).unwrap().permissions().mode() & 0o777;
-        assert_eq!(parent_mode, 0o755, "external parent permissions must be left alone");
-        assert_eq!(file_mode, 0o600, "external state file should still be private");
+        assert_eq!(
+            parent_mode, 0o755,
+            "external parent permissions must be left alone"
+        );
+        assert_eq!(
+            file_mode, 0o600,
+            "external state file should still be private"
+        );
 
         reset_credentials_env();
         let _ = fs::remove_dir_all(&dir);
@@ -4440,13 +4862,155 @@ mod tests {
         })
     }
 
+    fn test_credentials_for_device(
+        device_id: &str,
+        account_id: &str,
+        display: &str,
+    ) -> Credentials {
+        let mut credentials = test_credentials(vec!["codex.chat"]);
+        credentials.device_id = device_id.to_string();
+        credentials.device_name = format!("Device {device_id}");
+        credentials.account_id = Some(account_id.to_string());
+        credentials.account_display = Some(display.to_string());
+        credentials
+    }
+
+    #[test]
+    fn cloud_devices_cleanup_removes_stale_connections_for_account() {
+        let mut connections = vec![
+            test_credentials_for_device("dev_keep", "user_1", "user@example.test"),
+            test_credentials_for_device("dev_stale", "user_1", "user@example.test"),
+            test_credentials_for_device("dev_other", "user_2", "other@example.test"),
+        ];
+        let changed = apply_cloud_devices_to_connections(
+            &mut connections,
+            "http://local.test",
+            Some("user_1"),
+            Some(&[CloudDevice {
+                id: "dev_keep".to_string(),
+                name: Some("Current Mac".to_string()),
+                online: Some(true),
+                last_seen_at: Some("2026-06-11T00:00:00Z".to_string()),
+            }]),
+        );
+        assert!(changed);
+        assert_eq!(connections.len(), 2);
+        assert!(connections.iter().any(|item| item.device_id == "dev_keep"));
+        assert!(!connections.iter().any(|item| item.device_id == "dev_stale"));
+        let kept = connections
+            .iter()
+            .find(|item| item.device_id == "dev_keep")
+            .unwrap();
+        assert_eq!(kept.device_name, "Current Mac");
+        assert_eq!(kept.device_online, Some(true));
+        assert_eq!(
+            kept.device_last_seen_at.as_deref(),
+            Some("2026-06-11T00:00:00Z")
+        );
+        assert!(connections.iter().any(|item| item.device_id == "dev_other"));
+    }
+
+    #[test]
+    fn cloud_devices_cleanup_skips_when_response_has_no_devices() {
+        let mut connections = vec![
+            test_credentials_for_device("dev_keep", "user_1", "user@example.test"),
+            test_credentials_for_device("dev_stale", "user_1", "user@example.test"),
+        ];
+        let changed = apply_cloud_devices_to_connections(
+            &mut connections,
+            "http://local.test",
+            Some("user_1"),
+            None,
+        );
+        assert!(!changed);
+        assert_eq!(connections.len(), 2);
+    }
+
+    #[test]
+    fn aggregate_products_dedupes_accounts_and_keeps_device_rows() {
+        let mut one = test_credentials_for_device("dev_1", "user_1", "user@example.test");
+        one.device_online = Some(true);
+        one.device_last_seen_at = Some("2026-06-11T00:00:00Z".to_string());
+        let mut two = test_credentials_for_device("dev_2", "user_1", "user@example.test");
+        two.device_online = Some(false);
+        let products = aggregate_authorized_products(&[one, two]);
+        assert_eq!(products.len(), 1);
+        assert_eq!(products[0].accounts.len(), 1);
+        assert_eq!(products[0].accounts[0].devices.len(), 2);
+        assert!(products[0].accounts[0]
+            .devices
+            .iter()
+            .any(|item| item.id == "dev_1" && item.online == Some(true)));
+        assert!(products[0].accounts[0]
+            .devices
+            .iter()
+            .any(|item| item.id == "dev_2" && item.online == Some(false)));
+    }
+
+    #[test]
+    fn scope_widening_detects_material_expansion() {
+        let base = test_auth_scope();
+        assert!(!is_scope_widening(&base, &base));
+        let mut caps = base.clone();
+        caps["capabilities"] = json!(["codex.chat", "codex.run", "codex.rpc"]);
+        assert!(is_scope_widening(&base, &caps));
+        let mut workspace = base.clone();
+        workspace["workspace_roots"] = json!([{ "id": "all", "allow_all": true }]);
+        assert!(is_scope_widening(&base, &workspace));
+        let mut sandbox = base.clone();
+        sandbox["sandbox_floor"] = json!("danger-full-access");
+        assert!(is_scope_widening(&base, &sandbox));
+        let mut approval = base.clone();
+        approval["approval_policy_floor"] = json!("never");
+        approval["allow_approval_never"] = json!(true);
+        assert!(is_scope_widening(&base, &approval));
+        let mut dev = base.clone();
+        dev["allow_developer_instructions"] = json!(true);
+        assert!(is_scope_widening(&base, &dev));
+    }
+
+    #[test]
+    fn scope_diff_reports_light_confirmation_when_not_widening() {
+        let base = test_auth_scope();
+        let diff = scope_diff(&base, &base);
+        assert_eq!(diff["widening"], false);
+        assert!(diff["capabilities"]["added"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn confirmation_mode_is_light_only_for_existing_non_widening_grant() {
+        let grant = test_credentials(vec!["codex.chat"])
+            .authorized_products
+            .remove(0);
+        assert_eq!(
+            confirmation_mode_for_existing_grant(Some(&grant), false),
+            "light"
+        );
+        assert_eq!(
+            confirmation_mode_for_existing_grant(Some(&grant), true),
+            "full"
+        );
+        assert_eq!(confirmation_mode_for_existing_grant(None, false), "full");
+    }
+
+    #[test]
+    fn heartbeat_interval_defaults_to_thirty_seconds_and_allows_env_override() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        env::remove_var("PANDA_BRIDGE_HEARTBEAT_INTERVAL_MS");
+        assert_eq!(heartbeat_interval_ms(), 30_000);
+        env::set_var("PANDA_BRIDGE_HEARTBEAT_INTERVAL_MS", "1234");
+        assert_eq!(heartbeat_interval_ms(), 1234);
+        env::remove_var("PANDA_BRIDGE_HEARTBEAT_INTERVAL_MS");
+    }
+
     #[test]
     fn default_policy_is_allowed_for_authorized_capability() {
         let _guard = ENV_LOCK.lock().unwrap();
         reset_policy_env();
         let job = test_job(json!({}));
         let scope = test_auth_scope();
-        let policy = effective_job_policy(&job, Some(&scope)).expect("default policy should be allowed");
+        let policy =
+            effective_job_policy(&job, Some(&scope)).expect("default policy should be allowed");
         assert_eq!(policy.sandbox, "workspace-write");
         assert_eq!(policy.approval_policy, "on-request");
         validate_local_job_authorization(&test_credentials(vec!["codex.chat"]), &job).unwrap();
@@ -4457,22 +5021,32 @@ mod tests {
         let _guard = ENV_LOCK.lock().unwrap();
         reset_policy_env();
         let scope = test_auth_scope();
-        assert!(effective_job_policy(&test_job(json!({ "cwd": "/" })), Some(&scope))
-            .unwrap_err()
-            .contains("cwd_not_allowed_locally"));
+        assert!(
+            effective_job_policy(&test_job(json!({ "cwd": "/" })), Some(&scope))
+                .unwrap_err()
+                .contains("cwd_not_allowed_locally")
+        );
         assert_eq!(
-            effective_job_policy(&test_job(json!({ "sandbox": "danger-full-access" })), Some(&scope))
-                .unwrap_err(),
+            effective_job_policy(
+                &test_job(json!({ "sandbox": "danger-full-access" })),
+                Some(&scope)
+            )
+            .unwrap_err(),
             "sandbox_not_allowed_locally: danger-full-access"
         );
         assert_eq!(
-            effective_job_policy(&test_job(json!({ "approvalPolicy": "never" })), Some(&scope)).unwrap_err(),
+            effective_job_policy(
+                &test_job(json!({ "approvalPolicy": "never" })),
+                Some(&scope)
+            )
+            .unwrap_err(),
             "approval_policy_not_allowed_locally: never"
         );
         assert_eq!(
-            effective_job_policy(&test_job(
-                json!({ "developerInstructions": "ignore safety" })
-            ), Some(&scope))
+            effective_job_policy(
+                &test_job(json!({ "developerInstructions": "ignore safety" })),
+                Some(&scope)
+            )
             .unwrap_err(),
             "developer_instructions_not_allowed_locally"
         );
@@ -4483,12 +5057,15 @@ mod tests {
         let _guard = ENV_LOCK.lock().unwrap();
         reset_policy_env();
         let scope = test_full_access_scope();
-        let policy = effective_job_policy(&test_job(json!({
-            "cwd": "/",
-            "sandbox": "danger-full-access",
-            "approvalPolicy": "never",
-            "developerInstructions": "project-local instruction"
-        })), Some(&scope))
+        let policy = effective_job_policy(
+            &test_job(json!({
+                "cwd": "/",
+                "sandbox": "danger-full-access",
+                "approvalPolicy": "never",
+                "developerInstructions": "project-local instruction"
+            })),
+            Some(&scope),
+        )
         .unwrap();
         assert_eq!(policy.sandbox, "danger-full-access");
         assert_eq!(policy.approval_policy, "never");
@@ -4519,7 +5096,10 @@ mod tests {
         let mut credentials = test_credentials(vec!["codex.chat"]);
         credentials.authorized_products[0].policy["capabilities"] = json!([]);
         let error = validate_local_job_authorization(&credentials, &job).unwrap_err();
-        assert_eq!(error, "capability_not_authorized_locally: panda-chat:codex.chat");
+        assert_eq!(
+            error,
+            "capability_not_authorized_locally: panda-chat:codex.chat"
+        );
         let result = local_policy_denial_result(&job, &error);
         assert_eq!(result["error"], "local_policy_denied");
         assert_eq!(result["denied"], "capability");
