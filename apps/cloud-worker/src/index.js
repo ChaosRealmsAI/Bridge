@@ -1,12 +1,14 @@
 import { BRIDGE_PROTOCOL_VERSION, EVENT_TYPES, bridgeEvent, validateBridgeJob } from "@panda-bridge/protocol";
-import { allProducts, officialProductOrigins, productById } from "./products.js";
+import { BRIDGE_RUNTIME_CAPABILITY_REGISTRY, allProducts, officialProductOrigins, productById } from "./products.js";
 
 const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 30;
 const SESSION_LINK_TTL_MS = 1000 * 60 * 10;
 const PAIRING_TTL_MS = 1000 * 60 * 10;
 const CONNECT_INTENT_TTL_MS = 1000 * 60 * 10;
 const AUTHORIZATION_IMPORT_PROOF_TTL_MS = 1000 * 60 * 5;
-const DEVICE_ONLINE_GRACE_MS = 1000 * 60 * 10;
+const DEVICE_ONLINE_GRACE_MS = 1000 * 90;
+const DEVICE_HEARTBEAT_INTERVAL_MS = 1000 * 30;
+const BRIDGE_JOB_RETENTION_DAYS = 7;
 const PASSWORD_MAX_FAILED_ATTEMPTS = 5;
 const PASSWORD_ATTEMPT_WINDOW_MS = 1000 * 60 * 15;
 const PASSWORD_LOCK_MS = 1000 * 60 * 15;
@@ -18,7 +20,16 @@ const DEVICE_MAX_QUEUED_JOBS = 150;
 const ACCOUNT_MAX_ACTIVE_JOBS = 500;
 const PRODUCT_MAX_ACTIVE_JOBS = 300;
 const JOB_ASSIGNMENT_GRACE_MS = 1000 * 30;
-const SUPPORTED_JOB_KINDS = Object.freeze(["codex.chat", "codex.run", "codex.rpc", "saas.custom.run"]);
+const SUPPORTED_JOB_KIND_REGISTRY = BRIDGE_RUNTIME_CAPABILITY_REGISTRY;
+const SUPPORTED_JOB_KINDS = Object.freeze(Object.keys(SUPPORTED_JOB_KIND_REGISTRY));
+const BRIDGE_DESKTOP_INSTALL = Object.freeze({
+  platform: "macos",
+  version: "panda-bridge-desktop-lite-v0.1",
+  download_url: "https://assets.bridge.otherline.cc/downloads/panda-bridge-macos.dmg",
+  download_path: "/downloads/panda-bridge-macos.dmg",
+  sha256: "e65e04f08373ffe2363616dc1426516b74f12123f52c71d7225af4bac7225962",
+  open_url: "panda-bridge://open",
+});
 const DEFAULT_JSON_BODY_LIMIT_BYTES = 1024 * 512;
 const MAX_JSON_BODY_LIMIT_BYTES = 1024 * 1024 * 2;
 const memory = makeMemoryStore();
@@ -69,6 +80,7 @@ export default {
       if (realtimeDeviceMatch && request.method === "GET") return await realtimeDevice(request, env, decodeURIComponent(realtimeDeviceMatch[1]));
 
       if (path === "/v1/connect-intents" && request.method === "POST") return await createConnectIntent(request, env);
+      if (path === "/v1/bridge/state" && request.method === "GET") return await bridgeState(request, env);
       const intentMatch = path.match(/^\/v1\/connect-intents\/([^/]+)$/);
       if (intentMatch && request.method === "GET") return await getConnectIntent(request, env, decodeURIComponent(intentMatch[1]));
       const intentClaimMatch = path.match(/^\/v1\/connect-intents\/([^/]+)\/claim$/);
@@ -88,6 +100,8 @@ export default {
       if (delegatedAuthorizationMatch && request.method === "DELETE") return await revokeDelegatedProductAuthorization(request, env, decodeURIComponent(delegatedAuthorizationMatch[1]));
       const delegatedStatusMatch = path.match(/^\/v1\/products\/([^/]+)\/delegated\/status$/);
       if (delegatedStatusMatch && request.method === "GET") return await delegatedProductStatus(request, env, decodeURIComponent(delegatedStatusMatch[1]));
+      const delegatedStateMatch = path.match(/^\/v1\/products\/([^/]+)\/delegated\/state$/);
+      if (delegatedStateMatch && request.method === "GET") return await delegatedBridgeState(request, env, decodeURIComponent(delegatedStateMatch[1]));
       const delegatedAuthorizationClaimMatch = path.match(/^\/v1\/products\/([^/]+)\/delegated\/authorization\/claim$/);
       if (delegatedAuthorizationClaimMatch && request.method === "POST") return await claimDelegatedProductAuthorization(request, env, decodeURIComponent(delegatedAuthorizationClaimMatch[1]));
       const delegatedConnectIntentMatch = path.match(/^\/v1\/products\/([^/]+)\/delegated\/connect-intents$/);
@@ -245,10 +259,29 @@ export class BridgeDeviceRoom {
 
   removeSocket(socketId, role) {
     if (role === "desktop" && this.desktop?.meta?.id === socketId) {
+      const meta = this.desktop.meta;
       this.desktop = null;
+      this.markDesktopOffline(meta).catch(() => {});
     } else {
       this.webs.delete(socketId);
     }
+  }
+
+  async markDesktopOffline(meta) {
+    if (!meta?.deviceId) return;
+    const at = new Date().toISOString();
+    try {
+      await storage(this.env).update("bridge_devices", meta.deviceId, { status: "offline", updated_at: at });
+    } catch {
+      // Presence fanout should not throw from a socket close handler.
+    }
+    this.broadcastWeb({
+      type: "bridge.state",
+      state: "authorized_offline",
+      device_id: meta.deviceId,
+      user_id: meta.userId || null,
+      sent_at: at,
+    });
   }
 }
 
@@ -318,6 +351,13 @@ export class BridgeTestStore {
         const expiresAt = Date.parse(row[column] || "");
         return !Number.isFinite(expiresAt) || expiresAt > Date.now();
       });
+      await this.state.storage.put("tables", tables);
+      return { count: before - tables[tableName].length };
+    }
+    if (input.op === "deleteWhere") {
+      const filters = object(input.filters);
+      const before = rows.length;
+      tables[tableName] = rows.filter((row) => !Object.entries(filters).every(([key, value]) => row[key] === value));
       await this.state.storage.put("tables", tables);
       return { count: before - tables[tableName].length };
     }
@@ -553,6 +593,8 @@ async function createPairingCode(request, env) {
 
 async function claimConnector(request, env) {
   const body = await readJson(request, env);
+  const installId = connectorInstallId(request) || clean(body.install_id, 200);
+  if (!installId) return json({ error: "install_id_required" }, env, 400);
   const codeHash = await sha256Hex(String(body.code || ""));
   const store = storage(env);
   const rows = await store.select("bridge_pairing_codes", { code_hash: codeHash });
@@ -565,7 +607,7 @@ async function claimConnector(request, env) {
     app_version: clean(body.app_version, 80) || null,
     capabilities: object(body.capabilities),
     local_state: object(body.local_state),
-    install_id: connectorInstallId(request) || clean(body.install_id, 200),
+    install_id: installId,
   });
   await store.update("bridge_pairing_codes", pairing.id, { consumed_at: now(), device_id: device.id });
   await audit(env, pairing.user_id, device.id, null, "device.claim", device.id, { app_version: body.app_version || null });
@@ -575,6 +617,7 @@ async function claimConnector(request, env) {
     token_type: "Bearer",
     token_expires_at: tokenExpiresAt,
     install_identity_bound: Boolean(device.install_id_hash),
+    devices: await publicAccountDevices(env, pairing.user_id, device.id),
   }, env, 201);
 }
 
@@ -592,8 +635,14 @@ async function createConnectIntent(request, env) {
     product,
     source_origin,
   );
+  const alreadyAuthorized = await alreadyAuthorizedConnectPayload(env, session.user, product, policy);
+  if (alreadyAuthorized) return json(alreadyAuthorized, env);
+  const authorizedOffline = await authorizedOfflineConnectPayload(env, session.user, product, policy);
+  if (authorizedOffline) return json(authorizedOffline, env);
   const token = randomToken("pbi_");
+  const tokenRecovery = await recoverableIntentTokenPatch(env, token);
   const row = await storage(env).insert("bridge_connect_intents", {
+    ...tokenRecovery,
     user_id: session.user.id,
     device_id: null,
     product_id: productId,
@@ -608,7 +657,7 @@ async function createConnectIntent(request, env) {
   await audit(env, session.user.id, null, product.id, "connect_intent.create", row.id, { device_name: deviceName, source_origin, policy });
   return json({
     token,
-    deep_link: `${desktopProtocol(env)}://connect?intent=${encodeURIComponent(token)}&api=${encodeURIComponent(publicApiBase(env))}`,
+    deep_link: connectIntentDeepLink(env, token),
     connect_intent: publicConnectIntent(row, session.user, env),
     account: publicAccount(session.user),
     product,
@@ -624,11 +673,24 @@ async function getConnectIntent(request, env, token) {
   const product = requireOfficialProduct(intent.product_id, env);
   const user = (await storage(env).select("bridge_users", { id: intent.user_id }))[0] || null;
   return json({
-    deep_link: `${desktopProtocol(env)}://connect?intent=${encodeURIComponent(token)}&api=${encodeURIComponent(publicApiBase(env))}`,
+    deep_link: connectIntentDeepLink(env, token),
     connect_intent: publicConnectIntent(intent, user, env),
     account: publicAccount(user),
     product,
   }, env);
+}
+
+async function bridgeState(request, env) {
+  const url = new URL(request.url);
+  const productId = clean(url.searchParams.get("product_id") || url.searchParams.get("productId") || "panda-chat", 80) || "panda-chat";
+  const product = requireOfficialProduct(productId, env);
+  const originError = rejectProductOrigin(product, sourceOrigin(env), env);
+  if (originError) return originError;
+  const session = await currentSession(request, env);
+  if (!session) {
+    return json(await bridgeStatePayload(env, null, product, { noSession: true }), env);
+  }
+  return json(await bridgeStatePayload(env, session.user, product), env);
 }
 
 async function claimConnectIntent(request, env, token) {
@@ -645,12 +707,14 @@ async function claimConnectIntent(request, env, token) {
   const user = (await store.select("bridge_users", { id: intent.user_id }))[0] || null;
   const existingConnector = await optionalConnector(request, env);
   const reuseDevice = existingConnector?.device?.user_id === intent.user_id ? existingConnector : null;
+  const installId = connectorInstallId(request) || clean(body.install_id, 200);
+  if (!installId) return json({ error: "install_id_required" }, env, 400);
   const input = {
     device_name: clean(body.device_name, 120) || intent.device_name || "Panda Bridge Desktop",
     app_version: clean(body.app_version, 80) || null,
     capabilities: object(body.capabilities),
     local_state: object(body.local_state),
-    install_id: connectorInstallId(request) || clean(body.install_id, 200),
+    install_id: installId,
   };
   const { device, token: deviceToken, tokenExpiresAt } = reuseDevice
     ? await updateDeviceForIntent(env, reuseDevice.device, reuseDevice.raw_token, input)
@@ -675,6 +739,7 @@ async function claimConnectIntent(request, env, token) {
     token_type: "Bearer",
     token_expires_at: tokenExpiresAt,
     install_identity_bound: Boolean(device.install_id_hash),
+    devices: await publicAccountDevices(env, intent.user_id, device.id),
   }, env, 201);
 }
 
@@ -692,7 +757,7 @@ async function connectorHeartbeat(request, env) {
     updated_at: now(),
   };
   const device = await storage(env).update("bridge_devices", connector.device.id, patch);
-  return json({ ok: true, device: publicDevice(device, env) }, env);
+  return json({ ok: true, device: publicDevice(device, env), devices: await publicAccountDevices(env, device.user_id, device.id) }, env);
 }
 
 async function rotateConnectorToken(request, env) {
@@ -935,6 +1000,16 @@ async function delegatedProductStatus(request, env, productId) {
   }, env);
 }
 
+async function delegatedBridgeState(request, env, productId) {
+  const product = requireOfficialProduct(productId, env);
+  const delegation = await requireProductDelegation(request, env, product, "");
+  const user = (await storage(env).select("bridge_users", { id: delegation.bridgeUserId }))[0] || {
+    id: delegation.bridgeUserId,
+    display_name: "Panda Account",
+  };
+  return json(await bridgeStatePayload(env, user, product), env);
+}
+
 async function createDelegatedConnectIntent(request, env, productId) {
   const product = requireOfficialProduct(productId, env);
   const rawBody = await readJsonText(request, env);
@@ -947,8 +1022,14 @@ async function createDelegatedConnectIntent(request, env, productId) {
     product,
     delegation.sourceOrigin,
   );
+  const alreadyAuthorized = await alreadyAuthorizedConnectPayload(env, user, product, policy);
+  if (alreadyAuthorized) return json(alreadyAuthorized, env);
+  const authorizedOffline = await authorizedOfflineConnectPayload(env, user, product, policy);
+  if (authorizedOffline) return json(authorizedOffline, env);
   const token = randomToken("pbi_");
+  const tokenRecovery = await recoverableIntentTokenPatch(env, token);
   const row = await storage(env).insert("bridge_connect_intents", {
+    ...tokenRecovery,
     user_id: user.id,
     device_id: null,
     product_id: product.id,
@@ -967,7 +1048,7 @@ async function createDelegatedConnectIntent(request, env, productId) {
   });
   return json({
     token,
-    deep_link: `${desktopProtocol(env)}://connect?intent=${encodeURIComponent(token)}&api=${encodeURIComponent(publicApiBase(env))}`,
+    deep_link: connectIntentDeepLink(env, token),
     connect_intent: publicConnectIntent(row, user, env),
     account: publicAccount(user),
     product,
@@ -991,7 +1072,7 @@ async function getDelegatedConnectIntent(request, env, productId, token) {
     : null;
   const authorization = device ? await activeAuthorization(env, intent.user_id, device.id, product.id) : null;
   return json({
-    deep_link: `${desktopProtocol(env)}://connect?intent=${encodeURIComponent(token)}&api=${encodeURIComponent(publicApiBase(env))}`,
+    deep_link: connectIntentDeepLink(env, token),
     connect_intent: publicConnectIntent(intent, user, env),
     account: publicAccount(user),
     device: publicDevice(device, env),
@@ -1060,6 +1141,7 @@ async function createAuthorizedProductJob(env, product, userId, source_origin, b
   const validation = validateBridgeJob({ ...body, productId: product.id });
   if (!validation.ok) return json({ error: "invalid_job", errors: validation.errors }, env, 400);
   const normalized = validation.job;
+  if (!Object.hasOwn(SUPPORTED_JOB_KIND_REGISTRY, normalized.kind)) return json({ error: "unsupported_job_kind" }, env, 400);
   if (!product.capabilities.includes(normalized.kind)) return json({ error: "scope_insufficient" }, env, 403);
   if (options.delegatedDeviceId && normalized.device_id !== options.delegatedDeviceId) {
     return json({ error: "delegated_device_mismatch" }, env, 403);
@@ -1545,6 +1627,12 @@ async function installIdentityHash(installId) {
   return sha256Hex(`install:${clean(installId, 200)}`);
 }
 
+async function reusableDeviceForInstall(env, userId, installId) {
+  const hash = await installIdentityHash(installId);
+  const rows = await storage(env).select("bridge_devices", { user_id: userId, install_id_hash: hash }, { order: "updated_at", desc: true });
+  return rows.find((device) => device.status !== "revoked") || null;
+}
+
 async function ownedDevice(env, userId, deviceId) {
   return (await storage(env).select("bridge_devices", { id: deviceId, user_id: userId }))[0] || null;
 }
@@ -1778,6 +1866,21 @@ async function cleanupExpiredRows(env) {
   for (const table of tables) {
     deleted[table] = await store.deleteExpired(table, "expires_at");
   }
+  deleted.bridge_jobs = await cleanupExpiredJobs(env);
+  return deleted;
+}
+
+async function cleanupExpiredJobs(env) {
+  const store = storage(env);
+  if (typeof store.deleteWhere !== "function") return 0;
+  const cutoff = new Date(Date.now() - bridgeJobRetentionDays(env) * 24 * 60 * 60 * 1000).toISOString();
+  const jobs = (await store.select("bridge_jobs", {}, { order: "completed_at" }))
+    .filter((job) => isTerminalJobStatus(job.status) && Date.parse(job.completed_at || "") < Date.parse(cutoff));
+  let deleted = 0;
+  for (const job of jobs) {
+    await store.deleteWhere("bridge_job_events", { job_id: job.id });
+    deleted += await store.deleteWhere("bridge_jobs", { id: job.id });
+  }
   return deleted;
 }
 
@@ -1898,6 +2001,7 @@ function diagnosticsPayload(env) {
     })),
     jobs: {
       supported_kinds: [...SUPPORTED_JOB_KINDS],
+      registry: structuredClone(SUPPORTED_JOB_KIND_REGISTRY),
       event_types: [...EVENT_TYPES],
       queue_limits: {
         device_max_running: limits.deviceMaxRunning,
@@ -1906,12 +2010,19 @@ function diagnosticsPayload(env) {
         product_max_active: limits.productMaxActive,
       },
       assignment_grace_ms: boundedInteger(env.BRIDGE_JOB_ASSIGNMENT_GRACE_MS, JOB_ASSIGNMENT_GRACE_MS, 1000, 1000 * 60 * 10),
+      retention_days: bridgeJobRetentionDays(env),
+    },
+    install: bridgeInstallPayload(env),
+    connect_intents: {
+      token_recovery_configured: Boolean(clean(env.BRIDGE_CONNECT_INTENT_TOKEN_SECRET, 4096)),
+      token_recovery_degraded: !clean(env.BRIDGE_CONNECT_INTENT_TOKEN_SECRET, 4096),
     },
     connector: {
       device_token_prefix: DEVICE_TOKEN_PREFIX,
       device_token_ttl_ms: DEVICE_TOKEN_TTL_MS,
       device_token_rotation_grace_ms: deviceTokenRotationGraceMs(env),
       device_online_grace_ms: boundedInteger(env.BRIDGE_DEVICE_ONLINE_GRACE_MS, DEVICE_ONLINE_GRACE_MS, 1000, 1000 * 60 * 60),
+      heartbeat_interval_ms: DEVICE_HEARTBEAT_INTERVAL_MS,
       connect_intent_ttl_ms: connectIntentTtlMs(env),
       session_link_ttl_ms: sessionLinkTtlMs(env),
     },
@@ -1947,21 +2058,247 @@ async function connectIntentByToken(env, token) {
   return (await storage(env).select("bridge_connect_intents", { token_hash: tokenHash }))[0] || null;
 }
 
+async function recoverableIntentTokenPatch(env, token) {
+  const secret = clean(env.BRIDGE_CONNECT_INTENT_TOKEN_SECRET, 4096);
+  if (!secret) return {};
+  return { token_ciphertext: await encryptString(secret, token) };
+}
+
+async function recoverIntentToken(env, intent) {
+  const secret = clean(env.BRIDGE_CONNECT_INTENT_TOKEN_SECRET, 4096);
+  const ciphertext = clean(intent?.token_ciphertext, 4096);
+  if (!secret || !ciphertext) return "";
+  try {
+    return await decryptString(secret, ciphertext);
+  } catch {
+    return "";
+  }
+}
+
+async function bridgeStatePayload(env, user, product, options = {}) {
+  const install = bridgeInstallPayload(env);
+  if (options.noSession || !user) {
+    return {
+      state: "no_session",
+      bridge_state: "no_session",
+      product,
+      install,
+      devices: [],
+      authorization: null,
+      intent: null,
+      actions: [{ kind: "login" }],
+    };
+  }
+
+  const devices = await accountDevices(env, user.id);
+  const authorizations = await storage(env).select("bridge_authorizations", {
+    user_id: user.id,
+    product_id: product.id,
+    status: "active",
+  }, { order: "updated_at", desc: true });
+  const activeByDevice = new Map(authorizations.map((authorization) => [authorization.device_id, authorization]));
+  const authorizedDevices = devices.filter((device) => activeByDevice.has(device.id));
+  const selectedAuthorizedOnline = authorizedDevices.find((device) => isDeviceOnline(device, env)) || null;
+  const selectedAuthorized = selectedAuthorizedOnline || authorizedDevices[0] || null;
+  const selectedDevice = selectedAuthorized || devices.find((device) => isDeviceOnline(device, env)) || devices[0] || null;
+  const authorization = selectedAuthorized ? activeByDevice.get(selectedAuthorized.id) || null : null;
+  const pendingIntent = await pendingConnectIntent(env, user.id, product.id);
+
+  let state = "ready";
+  if (!devices.length) state = "no_device";
+  else if (pendingIntent) state = "authorization_pending";
+  else if (authorization && !selectedAuthorizedOnline) state = "authorized_offline";
+  else if (!authorization) state = "not_authorized";
+
+  return {
+    state,
+    bridge_state: state,
+    product,
+    install,
+    devices: publicBridgeStateDevices(dedupeDevicesByInstall(devices), selectedDevice, env),
+    authorization: publicBridgeStateAuthorization(authorization),
+    intent: state === "authorization_pending" ? await publicPendingIntent(env, pendingIntent) : null,
+    actions: bridgeStateActions(state, install, state === "authorization_pending" ? await publicPendingIntent(env, pendingIntent) : null),
+  };
+}
+
+function bridgeInstallPayload(env) {
+  const base = clean(env.R2_PUBLIC_BASE_URL, 300).replace(/\/$/, "");
+  return {
+    ...BRIDGE_DESKTOP_INSTALL,
+    download_url: base ? `${base}${BRIDGE_DESKTOP_INSTALL.download_path}` : BRIDGE_DESKTOP_INSTALL.download_url,
+  };
+}
+
+async function pendingConnectIntent(env, userId, productId) {
+  const rows = await storage(env).select("bridge_connect_intents", { user_id: userId, product_id: productId }, { order: "expires_at", desc: true });
+  return rows.find((intent) => !intent.consumed_at && Date.parse(intent.expires_at || "") > Date.now()) || null;
+}
+
+async function publicPendingIntent(env, intent) {
+  if (!intent) return null;
+  const token = await recoverIntentToken(env, intent);
+  return {
+    token: token || null,
+    expires_at: intent.expires_at,
+    deep_link: token ? connectIntentDeepLink(env, token) : null,
+  };
+}
+
+function bridgeStateActions(state, install, intent) {
+  if (state === "no_session") return [{ kind: "login" }];
+  if (state === "no_device") return [{ kind: "download", url: install.download_url }];
+  if (state === "authorization_pending") return [{ kind: "confirm_on_desktop", deep_link: intent?.deep_link || null }];
+  if (state === "authorized_offline") return [{ kind: "open_desktop", url: install.open_url }];
+  if (state === "not_authorized") return [{ kind: "authorize" }];
+  return [];
+}
+
+function publicBridgeStateAuthorization(authorization) {
+  return authorization ? {
+    status: authorization.status,
+    policy: object(authorization.policy),
+    authorized_at: authorization.created_at || authorization.updated_at || null,
+    origin: authorization.source_origin || null,
+  } : null;
+}
+
+function dedupeDevicesByInstall(devices) {
+  const seen = new Set();
+  const result = [];
+  for (const device of devices) {
+    const key = device.install_id_hash || device.id;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(device);
+  }
+  return result;
+}
+
+function publicBridgeStateDevices(devices, currentDevice, env) {
+  return devices.map((device) => ({
+    id: device.id,
+    name: device.device_name,
+    online: isDeviceOnline(device, env),
+    last_seen_at: device.last_seen_at || null,
+    current: Boolean(currentDevice && currentDevice.id === device.id),
+  }));
+}
+
+async function accountDevices(env, userId) {
+  return (await storage(env).select("bridge_devices", { user_id: userId }, { order: "last_seen_at", desc: true }))
+    .filter((device) => device.status !== "revoked");
+}
+
+async function publicAccountDevices(env, userId, currentDeviceId = "") {
+  const devices = dedupeDevicesByInstall(await accountDevices(env, userId));
+  return devices.map((device) => ({
+    id: device.id,
+    name: device.device_name,
+    online: isDeviceOnline(device, env),
+    last_seen_at: device.last_seen_at || null,
+    current: Boolean(currentDeviceId && device.id === currentDeviceId),
+  }));
+}
+
+async function alreadyAuthorizedConnectPayload(env, user, product, requestedPolicy) {
+  const devices = await accountDevices(env, user.id);
+  const authorizations = await storage(env).select("bridge_authorizations", {
+    user_id: user.id,
+    product_id: product.id,
+    status: "active",
+  }, { order: "updated_at", desc: true });
+  for (const authorization of authorizations) {
+    const device = devices.find((item) => item.id === authorization.device_id);
+    if (!device || !isDeviceOnline(device, env)) continue;
+    if (!authorizationPolicyCoversRequest(authorization.policy, requestedPolicy)) continue;
+    return {
+      already_authorized: true,
+      state: "ready",
+      authorization,
+      device: publicDevice(device, env),
+      product,
+      account: publicAccount(user),
+    };
+  }
+  return null;
+}
+
+async function authorizedOfflineConnectPayload(env, user, product, requestedPolicy) {
+  const devices = await accountDevices(env, user.id);
+  const authorizations = await storage(env).select("bridge_authorizations", {
+    user_id: user.id,
+    product_id: product.id,
+    status: "active",
+  }, { order: "updated_at", desc: true });
+  for (const authorization of authorizations) {
+    const device = devices.find((item) => item.id === authorization.device_id);
+    if (!device || isDeviceOnline(device, env)) continue;
+    if (!authorizationPolicyCoversRequest(authorization.policy, requestedPolicy)) continue;
+    return {
+      already_authorized: true,
+      state: "authorized_offline",
+      authorization,
+      device: publicDevice(device, env),
+      product,
+      account: publicAccount(user),
+      actions: [{ kind: "open_desktop", url: bridgeInstallPayload(env).open_url }],
+    };
+  }
+  return null;
+}
+
+function authorizationPolicyCoversRequest(grantPolicy, requestedPolicy) {
+  const requested = object(requestedPolicy);
+  const capabilities = Array.isArray(requested.capabilities) ? requested.capabilities : [];
+  const roots = Array.isArray(requested.workspace_roots) && requested.workspace_roots.length
+    ? requested.workspace_roots
+    : [{ id: "default" }];
+  const sandbox = clean(requested.sandbox_floor, 80) || "workspace-write";
+  const approval = clean(requested.approval_policy_floor, 80) || "on-request";
+  const developerInstructions = requested.allow_developer_instructions === true ? "requires_developer_instructions" : "";
+  for (const capability of capabilities) {
+    for (const root of roots) {
+      const workspaceRef = root?.allow_all === true || root?.allowAll === true || root?.id === "all" || root?.id === "*"
+        ? "*"
+        : clean(root?.id, 80) || "default";
+      const job = {
+        kind: capability,
+        workspace_ref: workspaceRef,
+        policy: { sandbox, approvalPolicy: approval, developerInstructions },
+      };
+      if (authorizationScopeDenial(grantPolicy, job)) return false;
+      if (workspaceRef === "*" && !authorizationScopeAllowsWorkspace(object(grantPolicy), "*")) return false;
+    }
+  }
+  return true;
+}
+
+function connectIntentDeepLink(env, token) {
+  return `${desktopProtocol(env)}://connect?intent=${encodeURIComponent(token)}&api=${encodeURIComponent(publicApiBase(env))}`;
+}
+
 async function createDeviceWithToken(env, userId, input) {
   const store = storage(env);
-  const installPatch = await installIdentityPatch({}, clean(input.install_id, 200));
-  const device = await store.insert("bridge_devices", {
-    ...installPatch,
-    user_id: userId,
-    device_name: clean(input.device_name, 120) || "Panda Bridge Desktop",
+  const installId = clean(input.install_id, 200);
+  const existing = installId ? await reusableDeviceForInstall(env, userId, installId) : null;
+  const patch = {
+    device_name: clean(input.device_name, 120) || existing?.device_name || "Panda Bridge Desktop",
     status: "online",
-    app_version: clean(input.app_version, 80) || null,
+    app_version: clean(input.app_version, 80) || existing?.app_version || null,
     capabilities: object(input.capabilities),
     local_state: object(input.local_state),
     last_seen_at: now(),
-    created_at: now(),
     updated_at: now(),
-  });
+  };
+  const device = existing
+    ? await store.update("bridge_devices", existing.id, patch)
+    : await store.insert("bridge_devices", {
+        ...await installIdentityPatch({}, installId),
+        user_id: userId,
+        ...patch,
+        created_at: now(),
+      });
   const { token, tokenExpiresAt } = await createDeviceToken(env, device.id);
   const replacement = await replaceOtherBridgeDevices(env, userId, device.id, "device.claim.replace");
   return { device, token, tokenExpiresAt, replacement };
@@ -1980,18 +2317,22 @@ async function updateDeviceForIntent(env, device, token, input) {
     updated_at: now(),
   });
   const replacement = await replaceOtherBridgeDevices(env, device.user_id, device.id, "device.intent.replace");
-  return { device: next, token, tokenExpiresAt: null, replacement };
+  const refreshed = await createDeviceToken(env, device.id);
+  return { device: next, token: refreshed.token || token, tokenExpiresAt: refreshed.tokenExpiresAt, replacement };
 }
 
 async function replaceOtherBridgeDevices(env, userId, activeDeviceId, reason) {
   const store = storage(env);
   const replacedAt = now();
   const devices = await store.select("bridge_devices", { user_id: userId });
+  const activeDevice = devices.find((item) => item.id === activeDeviceId) || null;
+  const installHash = activeDevice?.install_id_hash || "";
+  if (!installHash) return { devicesRevoked: 0, tokensRevoked: 0, authorizationsRevoked: 0, cancelledJobs: 0 };
   let devicesRevoked = 0;
   let tokensRevoked = 0;
   let authorizationsRevoked = 0;
   let cancelledJobs = 0;
-  for (const device of devices.filter((item) => item.id !== activeDeviceId && item.status !== "revoked")) {
+  for (const device of devices.filter((item) => item.id !== activeDeviceId && item.status !== "revoked" && item.install_id_hash === installHash)) {
     await store.update("bridge_devices", device.id, {
       status: "revoked",
       updated_at: replacedAt,
@@ -2072,6 +2413,10 @@ function sessionLinkTtlMs(env) {
 
 function connectIntentTtlMs(env) {
   return boundedInteger(env.BRIDGE_CONNECT_INTENT_TTL_MS, CONNECT_INTENT_TTL_MS, 1, CONNECT_INTENT_TTL_MS);
+}
+
+function bridgeJobRetentionDays(env) {
+  return boundedInteger(env.BRIDGE_JOB_RETENTION_DAYS, BRIDGE_JOB_RETENTION_DAYS, 1, 365);
 }
 
 function authorizationImportProofTtlMs(env) {
@@ -2297,6 +2642,9 @@ function durableObjectStore(env) {
     async deleteExpired(table, column = "expires_at") {
       return (await durableStoreOperation(env, { op: "deleteExpired", table, column })).count || 0;
     },
+    async deleteWhere(table, filters = {}) {
+      return (await durableStoreOperation(env, { op: "deleteWhere", table, filters })).count || 0;
+    },
   };
 }
 
@@ -2360,6 +2708,12 @@ function supabaseStore(env) {
     async deleteExpired(table, column = "expires_at") {
       const url = new URL(`/rest/v1/${table}`, env.SUPABASE_URL);
       url.searchParams.set(column, `lt.${new Date().toISOString()}`);
+      await supabaseFetch(env, url, { method: "DELETE" });
+      return null;
+    },
+    async deleteWhere(table, filters = {}) {
+      const url = new URL(`/rest/v1/${table}`, env.SUPABASE_URL);
+      for (const [key, value] of Object.entries(filters)) url.searchParams.set(key, `eq.${value}`);
       await supabaseFetch(env, url, { method: "DELETE" });
       return null;
     },
@@ -2430,6 +2784,13 @@ function makeMemoryStore() {
         const expiresAt = Date.parse(row[column] || "");
         return !Number.isFinite(expiresAt) || expiresAt > Date.now();
       });
+      const count = rows.length - keep.length;
+      tables.set(name, keep);
+      return count;
+    },
+    async deleteWhere(name, filters = {}) {
+      const rows = table(name);
+      const keep = rows.filter((row) => !Object.entries(filters).every(([key, value]) => row[key] === value));
       const count = rows.length - keep.length;
       tables.set(name, keep);
       return count;
@@ -2968,6 +3329,42 @@ async function hmacSha256Hex(secret, value) {
   );
   const signature = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(value));
   return [...new Uint8Array(signature)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function encryptString(secret, value) {
+  const iv = new Uint8Array(12);
+  crypto.getRandomValues(iv);
+  const key = await aesKey(secret);
+  const ciphertext = new Uint8Array(await crypto.subtle.encrypt(
+    { name: "AES-GCM", iv },
+    key,
+    new TextEncoder().encode(value),
+  ));
+  const packed = new Uint8Array(iv.length + ciphertext.length);
+  packed.set(iv, 0);
+  packed.set(ciphertext, iv.length);
+  return base64Url(packed);
+}
+
+async function decryptString(secret, packedValue) {
+  const packed = base64UrlDecode(packedValue);
+  if (packed.length <= 12) return "";
+  const iv = packed.slice(0, 12);
+  const ciphertext = packed.slice(12);
+  const key = await aesKey(secret);
+  const plaintext = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ciphertext);
+  return new TextDecoder().decode(plaintext);
+}
+
+async function aesKey(secret) {
+  const raw = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(secret));
+  return crypto.subtle.importKey("raw", raw, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
+}
+
+function base64UrlDecode(value) {
+  const normalized = String(value || "").replace(/-/g, "+").replace(/_/g, "/");
+  const padded = normalized + "=".repeat((4 - normalized.length % 4) % 4);
+  return Uint8Array.from(atob(padded), (char) => char.charCodeAt(0));
 }
 
 async function hashPassword(password) {

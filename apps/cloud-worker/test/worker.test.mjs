@@ -3,6 +3,7 @@ import { createHash, createHmac, randomUUID } from "node:crypto";
 import worker from "../src/index.js";
 
 const assetRequests = [];
+const tokenInstallIds = new Map();
 const env = {
   BRIDGE_LOCAL_MEMORY: "1",
   BRIDGE_WEB_ORIGIN: "http://local.test",
@@ -32,6 +33,9 @@ async function apiRaw(method, path, body, token = "", extraHeaders = {}) {
   if (body) headers.set("content-type", "application/json");
   if (jar.cookie) headers.set("cookie", jar.cookie);
   if (token) headers.set("authorization", `Bearer ${token}`);
+  if (token && tokenInstallIds.has(token) && !Object.hasOwn(extraHeaders, "x-panda-bridge-install-id")) {
+    headers.set("x-panda-bridge-install-id", tokenInstallIds.get(token));
+  }
   for (const [key, value] of Object.entries(extraHeaders)) headers.set(key, value);
   if (!["GET", "HEAD", "OPTIONS"].includes(method) && !headers.has("origin")) {
     headers.set("origin", env.BRIDGE_WEB_ORIGIN);
@@ -44,6 +48,10 @@ async function apiRaw(method, path, body, token = "", extraHeaders = {}) {
   const setCookie = response.headers.get("set-cookie");
   if (setCookie) jar.cookie = setCookie.split(";")[0];
   const payload = JSON.parse(await response.text());
+  if (payload?.device_token) {
+    const installId = body?.install_id || extraHeaders["x-panda-bridge-install-id"] || tokenInstallIds.get(token);
+    if (installId) tokenInstallIds.set(payload.device_token, installId);
+  }
   return { response, payload, setCookie };
 }
 
@@ -51,6 +59,9 @@ async function apiRawText(method, path, bodyText, token = "", extraHeaders = {})
   const headers = new Headers({ accept: "application/json" });
   if (token) headers.set("authorization", `Bearer ${token}`);
   if (jar.cookie) headers.set("cookie", jar.cookie);
+  if (token && tokenInstallIds.has(token) && !Object.hasOwn(extraHeaders, "x-panda-bridge-install-id")) {
+    headers.set("x-panda-bridge-install-id", tokenInstallIds.get(token));
+  }
   for (const [key, value] of Object.entries(extraHeaders)) headers.set(key, value);
   if (!["GET", "HEAD", "OPTIONS"].includes(method) && !headers.has("origin")) {
     headers.set("origin", env.BRIDGE_WEB_ORIGIN);
@@ -68,6 +79,9 @@ async function apiMissingOrigin(method, path, body = null, token = "", extraHead
   const headers = new Headers({ accept: "application/json" });
   if (body) headers.set("content-type", "application/json");
   if (token) headers.set("authorization", `Bearer ${token}`);
+  if (token && tokenInstallIds.has(token) && !Object.hasOwn(extraHeaders, "x-panda-bridge-install-id")) {
+    headers.set("x-panda-bridge-install-id", tokenInstallIds.get(token));
+  }
   for (const [key, value] of Object.entries(extraHeaders)) headers.set(key, value);
   const response = await worker.fetch(new Request(`http://local.test${path}`, {
     method,
@@ -75,6 +89,10 @@ async function apiMissingOrigin(method, path, body = null, token = "", extraHead
     body: body ? JSON.stringify(body) : undefined,
   }), env);
   const payload = JSON.parse(await response.text());
+  if (payload?.device_token) {
+    const installId = body?.install_id || extraHeaders["x-panda-bridge-install-id"] || tokenInstallIds.get(token);
+    if (installId) tokenInstallIds.set(payload.device_token, installId);
+  }
   return { response, payload };
 }
 
@@ -85,14 +103,23 @@ async function api(method, path, body, token = "", extraHeaders = {}) {
 }
 
 async function nativeClaimIntentRaw(token, body, bearer = "", extraHeaders = {}) {
-  return apiMissingOrigin("POST", `/v1/connect-intents/${encodeURIComponent(token)}/claim`, body, bearer, {
+  const result = await apiMissingOrigin("POST", `/v1/connect-intents/${encodeURIComponent(token)}/claim`, body, bearer, {
     "x-panda-bridge-local-client": "desktop",
     ...extraHeaders,
   });
+  if (result.payload?.device_token) {
+    const installId = body?.install_id || extraHeaders["x-panda-bridge-install-id"];
+    if (installId) tokenInstallIds.set(result.payload.device_token, installId);
+  }
+  return result;
 }
 
 async function nativeClaimIntent(token, body, bearer = "", extraHeaders = {}) {
-  const { response, payload } = await nativeClaimIntentRaw(token, body, bearer, extraHeaders);
+  const installId = body?.install_id || `install-${String(body?.device_name || "device").toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
+  const { response, payload } = await nativeClaimIntentRaw(token, { install_id: installId, ...body }, bearer, {
+    "x-panda-bridge-install-id": installId,
+    ...extraHeaders,
+  });
   assert.ok(response.ok, `POST /v1/connect-intents/:token/claim: ${JSON.stringify(payload)}`);
   return payload;
 }
@@ -188,6 +215,11 @@ assert.ok(diagnostics.jobs.supported_kinds.includes("saas.custom.run"));
 assert.ok(diagnostics.jobs.event_types.includes("queued"));
 assert.equal(diagnostics.jobs.queue_limits.device_max_running, 1);
 assert.equal(diagnostics.connector.device_token_prefix, "pbd_");
+assert.equal(diagnostics.connector.device_online_grace_ms, 90000);
+assert.equal(diagnostics.connector.heartbeat_interval_ms, 30000);
+assert.equal(diagnostics.connect_intents.token_recovery_configured, false);
+assert.equal(diagnostics.connect_intents.token_recovery_degraded, true);
+assert.equal(diagnostics.install.download_url, "https://assets.bridge.otherline.cc/downloads/panda-bridge-macos.dmg");
 assert.equal(diagnostics.realtime.route_template, "/v1/realtime/devices/{device_id}");
 const diagnosticsText = JSON.stringify(diagnostics);
 assert.doesNotMatch(diagnosticsText, /device_token"\s*:/);
@@ -196,6 +228,10 @@ assert.doesNotMatch(diagnosticsText, /session_cookie/i);
 const unauthenticatedQueueSummary = await apiRaw("GET", "/v1/queue/summary");
 assert.equal(unauthenticatedQueueSummary.response.status, 401);
 assert.equal(unauthenticatedQueueSummary.payload.error, "unauthorized");
+const noSessionState = await apiRaw("GET", "/v1/bridge/state?product_id=panda-chat");
+assert.equal(noSessionState.response.status, 200);
+assert.equal(noSessionState.payload.state, "no_session", "BS-001 no_session");
+assert.equal(noSessionState.payload.actions[0].kind, "login", "BS-001 no_session login action");
 
 const invalidContentType = await apiRawText("POST", "/v1/sessions/guest", JSON.stringify({ display_name: "Plain Text" }), "", {
   "content-type": "text/plain",
@@ -238,10 +274,16 @@ const products = await api("GET", "/v1/products");
 assert.ok(products.items.some((item) => item.id === "panda-chat" && item.capabilities.includes("codex.chat")));
 assert.ok(products.items.some((item) => item.id === "panda-dev" && item.capabilities.includes("codex.rpc")));
 assert.ok(products.items.some((item) => item.id === "otherline" && item.capabilities.includes("saas.custom.run")));
+const noDeviceState = await api("GET", "/v1/bridge/state?product_id=panda-chat");
+assert.equal(noDeviceState.state, "no_device", "BS-002 no_device");
+assert.equal(noDeviceState.actions[0].kind, "download", "BS-002 no_device download action");
+const downloadAsset = await worker.fetch(new Request(noDeviceState.install.download_url, { method: "HEAD" }), env);
+assert.equal(downloadAsset.status, 200, "BS-007 download_url available");
 const pairing = await api("POST", "/v1/devices/pairing-codes", { device_name: "Local Test Device" });
 const claim = await api("POST", "/v1/connectors/claim", {
   code: pairing.code,
   device_name: "Local Test Device",
+  install_id: "install-local-test-device",
   capabilities: { codex: ["codex.chat", "codex.run"] },
 });
 const deniedBrowserAuth = await apiRaw("POST", "/v1/products/panda-chat/authorization/request", { device_id: claim.device.id });
@@ -257,17 +299,20 @@ assert.equal(nativeClaimWithoutHeader.response.status, 403);
 assert.equal(nativeClaimWithoutHeader.payload.error, "invalid_origin");
 const nativeClaimWithHeader = await apiMissingOrigin("POST", `/v1/connect-intents/${encodeURIComponent(nativeIntent.token)}/claim`, {
   device_name: "Native No-Origin Device",
+  install_id: "install-local-test-device",
   capabilities: { codex: ["codex.chat"] },
-}, claim.device_token, { "x-panda-bridge-local-client": "desktop" });
+}, claim.device_token, { "x-panda-bridge-local-client": "desktop", "x-panda-bridge-install-id": "install-local-test-device" });
 assert.equal(nativeClaimWithHeader.response.status, 201);
 assert.equal(nativeClaimWithHeader.payload.device.id, claim.device.id);
 
 const localIntent = await api("POST", "/v1/connect-intents", { product_id: "panda-chat", device_name: "Local Test Device" });
-const localIntentClaim = await nativeClaimIntent(localIntent.token, {
-  device_name: "Local Test Device",
-  capabilities: { codex: ["codex.chat", "codex.run"] },
-}, claim.device_token);
+assert.equal(localIntent.already_authorized, true, "IC-001 session already_authorized returns ready");
+assert.equal(localIntent.state, "ready");
+const localIntentClaim = nativeClaimWithHeader.payload;
 assert.equal(localIntentClaim.device.id, claim.device.id);
+const readyState = await api("GET", "/v1/bridge/state?product_id=panda-chat");
+assert.equal(readyState.state, "ready", "BS-006 ready");
+assert.equal(readyState.actions.length, 0, "BS-006 ready has no primary CTA");
 const created = await api("POST", "/v1/products/panda-chat/jobs", {
   kind: "codex.chat",
   device_id: localIntentClaim.device.id,
@@ -332,6 +377,11 @@ const queueSummaryText = JSON.stringify(queueSummary);
 assert.doesNotMatch(queueSummaryText, /device_token"\s*:/);
 assert.doesNotMatch(queueSummaryText, /pb_session/i);
 
+const revokeBeforeIntentTest = await api("DELETE", `/v1/products/panda-chat/authorization?device_id=${encodeURIComponent(localIntentClaim.device.id)}`);
+assert.equal(revokeBeforeIntentTest.authorization.status, "revoked");
+const notAuthorizedState = await api("GET", "/v1/bridge/state?product_id=panda-chat");
+assert.equal(notAuthorizedState.state, "not_authorized", "BS-005 not_authorized");
+assert.equal(notAuthorizedState.actions[0].kind, "authorize", "BS-005 not_authorized authorize action");
 const intent = await api("POST", "/v1/connect-intents", { product_id: "panda-chat", device_name: "Intent Test Device" }, "", { origin: "http://chat.local.test" });
 assert.ok(intent.token);
 assert.equal(intent.product.name, "Panda Chat");
@@ -344,6 +394,11 @@ assert.equal(inspected.connect_intent.product_id, "panda-chat");
 assert.equal(inspected.connect_intent.source_origin, "http://chat.local.test");
 assert.equal(inspected.connect_intent.policy.workspace_roots[0].id, "all");
 assert.equal(inspected.account.display_name, "Tester");
+const pendingState = await api("GET", "/v1/bridge/state?product_id=panda-chat");
+assert.equal(pendingState.state, "authorization_pending", "BS-003 authorization_pending");
+assert.equal(pendingState.intent.expires_at, intent.connect_intent.expires_at, "BS-003 pending exposes expires_at");
+assert.equal(pendingState.intent.token, null, "BS-003 pending degrades without token recovery secret");
+assert.equal(pendingState.actions[0].kind, "confirm_on_desktop", "BS-003 pending confirm action");
 const crossProductIntent = await apiRaw("POST", "/v1/connect-intents", { product_id: "panda-dev", device_name: "Wrong Origin" }, "", { origin: "http://chat.local.test" });
 assert.equal(crossProductIntent.response.status, 403);
 assert.equal(crossProductIntent.payload.error, "product_origin_mismatch");
@@ -362,6 +417,12 @@ assert.equal(maliciousDisplayIntent.connect_intent.policy.display.workspace, "Al
 assert.equal(maliciousDisplayIntent.connect_intent.policy.display.sandbox, "danger-full-access");
 assert.equal(maliciousDisplayIntent.connect_intent.policy.display.approval, "never");
 assert.equal(maliciousDisplayIntent.connect_intent.policy.display.developer_instructions, "allowed");
+const maliciousDisplayClaim = await nativeClaimIntent(maliciousDisplayIntent.token, {
+  device_name: "Malicious Display",
+  install_id: "install-malicious-display",
+  capabilities: { codex: ["codex.chat"] },
+});
+await api("DELETE", `/v1/products/panda-chat/authorization?device_id=${encodeURIComponent(maliciousDisplayClaim.device.id)}`, null, "", { origin: "http://chat.local.test" });
 const invalidCapabilitiesIntent = await apiRaw("POST", "/v1/connect-intents", {
   product_id: "panda-chat",
   policy: { capabilities: ["codex.typo"] },
@@ -382,8 +443,9 @@ const intentClaim = await nativeClaimIntent(intent.token, {
 assert.equal(intentClaim.device.device_name, "Intent Test Device");
 assert.notEqual(intentClaim.device.id, localIntentClaim.device.id);
 const oldExecutorHeartbeat = await apiRaw("POST", "/v1/connectors/heartbeat", {}, localIntentClaim.device_token);
-assert.equal(oldExecutorHeartbeat.response.status, 401);
-assert.equal(oldExecutorHeartbeat.payload.error, "unauthorized");
+assert.equal(oldExecutorHeartbeat.response.status, 200);
+assert.ok(oldExecutorHeartbeat.payload.devices.some((item) => item.id === localIntentClaim.device.id));
+assert.ok(oldExecutorHeartbeat.payload.devices.some((item) => item.id === intentClaim.device.id));
 assert.equal(intentClaim.account.display_name, "Tester");
 assert.equal(intentClaim.product.id, "panda-chat");
 assert.equal(intentClaim.authorization.source_origin, "http://chat.local.test");
@@ -394,6 +456,16 @@ assert.equal(intentClaim.authorization.policy.workspace_roots[0].allow_all, true
 assert.equal(intentClaim.authorization.policy.allow_approval_never, true);
 assert.match(intentClaim.device_token, /^pbd_/);
 assert.ok(intentClaim.token_expires_at);
+await new Promise((resolve) => setTimeout(resolve, 5));
+env.BRIDGE_DEVICE_ONLINE_GRACE_MS = "0";
+const authorizedOfflineState = await api("GET", "/v1/bridge/state?product_id=panda-chat");
+assert.equal(authorizedOfflineState.state, "authorized_offline", "BS-004 authorized_offline");
+assert.equal(authorizedOfflineState.actions[0].kind, "open_desktop", "BS-004 authorized_offline open_desktop");
+const authorizedOfflineIntent = await api("POST", "/v1/connect-intents", { product_id: "panda-chat", device_name: "Offline Authorized Device" }, "", { origin: "http://chat.local.test" });
+assert.equal(authorizedOfflineIntent.state, "authorized_offline", "IC-002 authorized_offline returns open_desktop");
+assert.equal(authorizedOfflineIntent.actions[0].kind, "open_desktop", "IC-002 authorized_offline does not authorize");
+assert.equal("token" in authorizedOfflineIntent, false, "IC-002 authorized_offline does not create intent");
+delete env.BRIDGE_DEVICE_ONLINE_GRACE_MS;
 const consumedIntentInspect = await apiRaw("GET", `/v1/connect-intents/${encodeURIComponent(intent.token)}`);
 assert.equal(consumedIntentInspect.response.status, 400);
 assert.equal(consumedIntentInspect.payload.error, "invalid_connect_intent");
@@ -413,6 +485,16 @@ const expiredIntentClaim = await nativeClaimIntentRaw(expiringIntent.token, {
 assert.equal(expiredIntentClaim.response.status, 400);
 assert.equal(expiredIntentClaim.payload.error, "invalid_connect_intent");
 delete env.BRIDGE_CONNECT_INTENT_TTL_MS;
+
+env.BRIDGE_CONNECT_INTENT_TTL_MS = "1";
+const expiringDevIntent = await api("POST", "/v1/connect-intents", { product_id: "panda-dev", device_name: "Expiring Dev Intent" }, "", { origin: "http://dev.local.test" });
+assert.ok(expiringDevIntent.token, "IC-006 expiring intent created");
+await new Promise((resolve) => setTimeout(resolve, 5));
+const expiredDevState = await api("GET", "/v1/bridge/state?product_id=panda-dev", null, "", { origin: "http://dev.local.test" });
+assert.equal(expiredDevState.state, "not_authorized", "IC-006 expired intent returns not_authorized");
+delete env.BRIDGE_CONNECT_INTENT_TTL_MS;
+const reissuedDevIntent = await api("POST", "/v1/connect-intents", { product_id: "panda-dev", device_name: "Reissued Dev Intent" }, "", { origin: "http://dev.local.test" });
+assert.ok(reissuedDevIntent.token, "IC-006 not_authorized can reissue intent");
 
 env.BRIDGE_DEVICE_TOKEN_ROTATION_GRACE_MS = "0";
 const rotatedToken = await api("POST", "/v1/connectors/token/rotate", {
@@ -549,7 +631,7 @@ const narrowSpecClaim = await nativeClaimIntent(narrowSpecIntent.token, {
 assert.deepEqual(narrowSpecClaim.authorization.policy.capabilities, ["codex.chat"]);
 const narrowSpecDenied = await apiRaw("POST", "/v1/products/panda-spec/jobs", {
   kind: "codex.run",
-  device_id: intentClaim.device.id,
+  device_id: narrowSpecClaim.device.id,
   product_id: "panda-spec",
   workspace_ref: "default",
   input: { prompt: "must be denied by auth scope" },
@@ -558,6 +640,7 @@ const narrowSpecDenied = await apiRaw("POST", "/v1/products/panda-spec/jobs", {
 assert.equal(narrowSpecDenied.response.status, 403);
 assert.equal(narrowSpecDenied.payload.error, "authorization_scope_denied");
 assert.equal(narrowSpecDenied.payload.denied, "capability");
+await api("DELETE", `/v1/products/panda-spec/authorization?device_id=${encodeURIComponent(narrowSpecClaim.device.id)}`, null, "", { origin: "http://spec.local.test" });
 const emptyCapabilitiesIntent = await api("POST", "/v1/connect-intents", {
   product_id: "panda-spec",
   device_name: "Empty Capabilities Device",
@@ -576,7 +659,7 @@ const emptyCapabilitiesClaim = await nativeClaimIntent(emptyCapabilitiesIntent.t
 assert.deepEqual(emptyCapabilitiesClaim.authorization.policy.capabilities, []);
 const emptyCapabilitiesDenied = await apiRaw("POST", "/v1/products/panda-spec/jobs", {
   kind: "codex.chat",
-  device_id: intentClaim.device.id,
+  device_id: emptyCapabilitiesClaim.device.id,
   product_id: "panda-spec",
   workspace_ref: "default",
   input: { prompt: "empty caps deny all" },
@@ -688,12 +771,14 @@ assert.equal(delegatedIntent.product.id, "otherline");
 assert.equal(delegatedIntent.connect_intent.source_origin, "https://otherline.cc");
 const delegatedIntentClaim = await nativeClaimIntent(delegatedIntent.token, {
   device_name: "Delegated Intent Device",
+  install_id: "install-delegated-user-device",
   capabilities: { codex: ["codex.chat"] },
 }, otherlineClaim.device_token);
 assert.notEqual(delegatedIntentClaim.device.id, otherlineClaim.device.id);
 assert.equal(delegatedIntentClaim.authorization.product_id, "otherline");
 assert.equal(delegatedIntentClaim.authorization.policy.version, "AUTH-SCOPE-v1");
 assert.equal(delegatedIntentClaim.authorization.policy.source_origin, "https://otherline.cc");
+await delegatedApi("DELETE", `/v1/products/otherline/delegated/authorization?device_id=${encodeURIComponent(delegatedIntentClaim.device.id)}`, null, otherlineClaim.account.id, delegatedIntentClaim.device.id);
 const delegatedScopedIntent = await delegatedApi("POST", "/v1/products/otherline/delegated/connect-intents", {
   account: { display_name: "Delegated Scoped Otherline User" },
   device_name: "Delegated Scoped Device",
@@ -711,6 +796,7 @@ assert.deepEqual(delegatedScopedIntent.connect_intent.policy.capabilities, ["cod
 assert.equal(delegatedScopedIntent.connect_intent.policy.source_origin, "https://app.test.example");
 const delegatedScopedClaim = await nativeClaimIntent(delegatedScopedIntent.token, {
   device_name: "Delegated Scoped Device",
+  install_id: "install-delegated-user-device",
   capabilities: { codex: ["codex.chat"] },
 }, delegatedIntentClaim.device_token);
 assert.equal(delegatedScopedClaim.device.id, delegatedIntentClaim.device.id);
@@ -932,6 +1018,14 @@ assert.equal(crossQueueSummary.counts.total, 0);
 assert.equal(crossQueueSummary.devices.some((item) => item.device.id === intentClaim.device.id), false);
 jar.cookie = ownerConcurrencyCookie;
 
+await apiRaw("DELETE", `/v1/products/panda-chat/authorization?device_id=${encodeURIComponent(intentClaim.device.id)}`);
+const missingInstallIntent = await api("POST", "/v1/connect-intents", { product_id: "panda-chat", device_name: "Missing Install Device" });
+const missingInstallClaim = await nativeClaimIntentRaw(missingInstallIntent.token, {
+  device_name: "Missing Install Device",
+  capabilities: { codex: ["codex.chat"] },
+}, "", { "x-panda-bridge-install-id": "" });
+assert.equal(missingInstallClaim.response.status, 400, "IC-009 install_id missing claim rejected");
+assert.equal(missingInstallClaim.payload.error, "install_id_required", "IC-009 install_id_required");
 const installBoundIntent = await api("POST", "/v1/connect-intents", { product_id: "panda-chat", device_name: "Install Bound Device" });
 const installBoundClaim = await nativeClaimIntentRaw(installBoundIntent.token, {
   device_name: "Install Bound Device",
@@ -941,8 +1035,21 @@ const installBoundClaim = await nativeClaimIntentRaw(installBoundIntent.token, {
 assert.equal(installBoundClaim.response.status, 201);
 assert.equal(installBoundClaim.payload.device.device_name, "Install Bound Device");
 const activeBridgeDeviceId = installBoundClaim.payload.device.id;
-const installBoundToken = installBoundClaim.payload.device_token;
-const missingInstallHeartbeat = await apiRaw("POST", "/v1/connectors/heartbeat", {}, installBoundToken);
+let installBoundToken = installBoundClaim.payload.device_token;
+await api("DELETE", `/v1/products/panda-chat/authorization?device_id=${encodeURIComponent(activeBridgeDeviceId)}`);
+const sameInstallIntent = await api("POST", "/v1/connect-intents", { product_id: "panda-chat", device_name: "Install Bound Device Reuse" });
+const sameInstallClaim = await nativeClaimIntentRaw(sameInstallIntent.token, {
+  device_name: "Install Bound Device Reuse",
+  install_id: "install-one",
+  capabilities: { codex: ["codex.chat"] },
+}, installBoundToken, { "x-panda-bridge-install-id": "install-one" });
+assert.equal(sameInstallClaim.response.status, 201);
+assert.equal(sameInstallClaim.payload.device.id, activeBridgeDeviceId, "IC-003 same install_id reuses device");
+assert.notEqual(sameInstallClaim.payload.device_token, installBoundToken, "IC-003 same install_id refreshes token");
+installBoundToken = sameInstallClaim.payload.device_token;
+assert.ok(sameInstallClaim.payload.devices.some((item) => item.id === localIntentClaim.device.id), "IC-004 multiple Macs are not revoked");
+assert.ok(sameInstallClaim.payload.devices.some((item) => item.id === activeBridgeDeviceId), "IC-005 claim carries active devices");
+const missingInstallHeartbeat = await apiRaw("POST", "/v1/connectors/heartbeat", {}, installBoundToken, { "x-panda-bridge-install-id": "" });
 assert.equal(missingInstallHeartbeat.response.status, 401);
 assert.equal(missingInstallHeartbeat.payload.error, "unauthorized");
 const wrongInstallHeartbeat = await apiRaw("POST", "/v1/connectors/heartbeat", {}, installBoundToken, { "x-panda-bridge-install-id": "install-two" });
@@ -950,6 +1057,7 @@ assert.equal(wrongInstallHeartbeat.response.status, 401);
 assert.equal(wrongInstallHeartbeat.payload.error, "unauthorized");
 const correctInstallHeartbeat = await apiRaw("POST", "/v1/connectors/heartbeat", {}, installBoundToken, { "x-panda-bridge-install-id": "install-one" });
 assert.equal(correctInstallHeartbeat.response.status, 200);
+assert.ok(correctInstallHeartbeat.payload.devices.some((item) => item.id === activeBridgeDeviceId), "IC-005 heartbeat carries active devices");
 const installBoundJob = await api("POST", "/v1/products/panda-chat/jobs", {
   kind: "codex.chat",
   device_id: installBoundClaim.payload.device.id,
@@ -1018,6 +1126,7 @@ const passwordPairing = await api("POST", "/v1/devices/pairing-codes", { device_
 const passwordClaim = await api("POST", "/v1/connectors/claim", {
   code: passwordPairing.code,
   device_name: "Password Device",
+  install_id: "install-password-device",
   capabilities: { codex: ["codex.chat"] },
 });
 jar.cookie = "";

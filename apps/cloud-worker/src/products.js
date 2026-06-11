@@ -1,4 +1,11 @@
-export const BRIDGE_RUNTIME_CAPABILITIES = Object.freeze(["codex.chat", "codex.run", "codex.rpc", "saas.custom.run"]);
+export const BRIDGE_RUNTIME_CAPABILITY_REGISTRY = Object.freeze({
+  "codex.chat": Object.freeze({ domain: "codex", description: "Codex chat completion" }),
+  "codex.run": Object.freeze({ domain: "codex", description: "Codex local run" }),
+  "codex.rpc": Object.freeze({ domain: "codex", description: "Codex RPC call" }),
+  "saas.custom.run": Object.freeze({ domain: "saas", description: "Product-defined runtime request" }),
+});
+
+export const BRIDGE_RUNTIME_CAPABILITIES = Object.freeze(Object.keys(BRIDGE_RUNTIME_CAPABILITY_REGISTRY));
 
 export const PRODUCT_REGISTRY = {
   "panda-chat": {
