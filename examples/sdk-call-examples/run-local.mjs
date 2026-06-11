@@ -27,13 +27,15 @@ const expectedHelpers = [
   "devices.list",
   "devices.createPairingCode",
   "devices.revoke",
-  "connect.createIntent",
+  "authorization.createIntent",
+  "authorization.list",
+  "authorization.authorize",
+  "authorization.pause",
+  "authorization.resume",
+  "authorization.remove",
   "connect.intent",
   "connect.claim",
   "products.list",
-  "products.requestAuthorization",
-  "products.authorization",
-  "products.revokeAuthorization",
   "codex.chat",
   "codex.run",
   "codex.rpc",
@@ -86,7 +88,8 @@ try {
   const delegated = serverContext("server");
   const delegatedUserId = `sdk-examples-delegated-${runId}`;
   const delegatedState = await delegated.call("server.state", (client) => client.state({ userId: delegatedUserId }));
-  assert.equal(delegatedState.bridge_state, "no_device");
+  assert.equal(delegatedState.ready, false);
+  assert.deepEqual(delegatedState.accounts, []);
   const delegatedIntent = await delegated.call("server.createConnectIntent", (client) => client.createConnectIntent({
     userId: delegatedUserId,
     account: { display_name: "SDK Examples Delegated User" },
@@ -95,6 +98,7 @@ try {
   }));
   assert.match(delegatedIntent.token, /^pbi_/);
   await exerciseEnsureReadyExample();
+  await exerciseAuthorizationTransitionExample();
 
   const ownerEmail = `sdk-examples-owner-${runId}@example.local`;
   const ownerSession = await owner.call("auth.password", (client) => client.auth.password(ownerEmail, `Owner-${runId}-Password!`, "SDK Examples Owner"));
@@ -117,7 +121,7 @@ try {
   const joinedSession = await joined.call("auth.join", (client) => client.auth.join(share.token));
   assert.equal(joinedSession.user.id, ownerSession.user.id);
 
-  const intent = await owner.call("connect.createIntent", (client) => client.connect.createIntent({ deviceName: "SDK Examples Fixture Device" }));
+  const intent = await owner.call("authorization.createIntent", (client) => client.authorization.createIntent({ deviceName: "SDK Examples Fixture Device" }));
   const intentPreview = await owner.call("connect.intent", (client) => client.connect.intent(intent.token));
   assert.equal(intentPreview.connect_intent.product_id, "panda-chat");
   await expectSdkError(
@@ -147,12 +151,12 @@ try {
   const pairingCode = await owner.call("devices.createPairingCode", (client) => client.devices.createPairingCode("SDK Examples Pairing Code"));
   assert.ok(pairingCode.pairing_code?.code || pairingCode.code);
 
-  const initialAuthorization = await owner.call("products.authorization", (client) => client.products.authorization(deviceId));
+  const initialAuthorization = await owner.call("authorization.list", (client) => client.authorization.list({ deviceId }));
   assert.equal(initialAuthorization.authorization.status, "active");
-  const confirmedAuthorization = await owner.call("products.requestAuthorization", (client) => client.products.requestAuthorization(deviceId, { source: "sdk-examples" }));
+  const confirmedAuthorization = await owner.call("authorization.authorize", (client) => client.authorization.authorize({ deviceId, policy: { source: "sdk-examples" } }));
   assert.equal(confirmedAuthorization.authorization.status, "active");
 
-  await owner.call("products.revokeAuthorization", (client) => client.products.revokeAuthorization(deviceId));
+  await owner.call("authorization.remove", (client) => client.authorization.remove({ deviceId }));
   const revokedPreflight = await owner.call("preflight", (client) => client.preflight({ deviceId }));
   assert.equal(revokedPreflight.ready, false);
   assert.equal(revokedPreflight.issues.some((item) => item.code === "product_not_authorized"), true);
@@ -162,7 +166,7 @@ try {
     "product_not_authorized",
   );
   const revokedDeviceId = deviceId;
-  const restoreIntent = await owner.call("connect.createIntent", (client) => client.connect.createIntent({ deviceName: "SDK Examples Restored Fixture Device" }));
+  const restoreIntent = await owner.call("authorization.createIntent", (client) => client.authorization.createIntent({ deviceName: "SDK Examples Restored Fixture Device" }));
   const restoreClaim = await nativeClaimIntent(restoreIntent.token, {
     deviceName: "SDK Examples Restored Fixture Device",
     appVersion: "sdk-examples-v0.1",
@@ -171,7 +175,7 @@ try {
   });
   deviceId = restoreClaim.device.id;
   deviceToken = restoreClaim.device_token;
-  const restoredAuthorization = await owner.call("products.authorization", (client) => client.products.authorization(deviceId));
+  const restoredAuthorization = await owner.call("authorization.list", (client) => client.authorization.list({ deviceId }));
   assert.equal(restoredAuthorization.authorization.status, "active");
   const readyPreflight = await owner.call("preflight", (client) => client.preflight({ deviceId }));
   assert.equal(readyPreflight.ready, true);
@@ -239,7 +243,7 @@ try {
   const otherQueue = await other.call("queue.summary", (client) => client.queue.summary());
   assert.equal(otherQueue.counts.total, 0);
   await expectSdkError(() => other.call("jobs.get", (client) => client.jobs.get(chatJob.job.id)), 404, "job_not_found");
-  const otherProductAuth = await other.call("products.authorization", (client) => client.products.authorization(deviceId));
+  const otherProductAuth = await other.call("authorization.list", (client) => client.authorization.list({ deviceId }));
   assert.equal(otherProductAuth.authorization, null);
 
   await joined.call("auth.logout", (client) => client.auth.logout());
@@ -431,9 +435,8 @@ function serverContext(label) {
 
 async function exerciseEnsureReadyExample() {
   const responses = [
-    bridgeStateFixture("not_authorized"),
-    { token: "pbi_sdk_examples", deep_link: "panda-bridge://connect?intent=pbi_sdk_examples", connect_intent: { expires_at: "2099-01-01T00:00:00Z" } },
-    bridgeStateFixture("ready"),
+    bridgeStateFixture("active", false),
+    bridgeStateFixture("active", true),
   ];
   const calls = [];
   const client = createBridgeClient({
@@ -444,38 +447,69 @@ async function exerciseEnsureReadyExample() {
       const parsed = new URL(url);
       calls.push({ method: init.method || "GET", path: `${parsed.pathname}${parsed.search}` });
       return new Response(JSON.stringify(response), {
-        status: parsed.pathname === "/v1/connect-intents" ? 201 : 200,
+        status: 200,
         headers: { "content-type": "application/json" },
       });
     },
   });
-  let opened = "";
   const result = await client.ensureReady({
     intervalMs: 1,
     timeoutMs: 1000,
-    openDeepLink: (deepLink) => {
-      opened = deepLink;
-    },
+    wait: true,
   });
   assert.equal(result.ready, true);
-  assert.equal(opened, "panda-bridge://connect?intent=pbi_sdk_examples");
   assert.deepEqual(calls.map((call) => call.path), [
     "/v1/bridge/state?product_id=panda-chat",
-    "/v1/connect-intents",
     "/v1/bridge/state?product_id=panda-chat",
   ]);
   coverage.push({
     client: "mock",
     helper: "ensureReady",
-    method: "MIXED",
-    path: "/v1/bridge/state + /v1/connect-intents",
+    method: "GET",
+    path: "/v1/bridge/state",
     status: 200,
   });
 }
 
-function bridgeStateFixture(bridge_state) {
+async function exerciseAuthorizationTransitionExample() {
+  const calls = [];
+  const client = createBridgeClient({
+    apiBase: "https://api.example.test",
+    productId: "panda-chat",
+    fetch: async (url, init) => {
+      const parsed = new URL(url);
+      const body = init.body ? JSON.parse(init.body) : {};
+      calls.push({ method: init.method || "GET", path: `${parsed.pathname}${parsed.search}`, body });
+      return new Response(JSON.stringify({
+        authorization: { id: "auth_1", status: body.status || "active" },
+        device: { id: "dev_1", status: "online" },
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    },
+  });
+  const paused = await client.authorization.pause({ accountId: "acct_1" });
+  assert.equal(paused.authorization.status, "paused");
+  const resumed = await client.authorization.resume({ accountId: "acct_1" });
+  assert.equal(resumed.authorization.status, "active");
+  assert.deepEqual(calls.map((call) => [call.method, call.path, call.body.status]), [
+    ["PATCH", "/v1/products/panda-chat/authorization?account_id=acct_1", "paused"],
+    ["PATCH", "/v1/products/panda-chat/authorization?account_id=acct_1", "active"],
+  ]);
+  for (const helper of ["authorization.pause", "authorization.resume"]) {
+    coverage.push({
+      client: "mock",
+      helper,
+      method: "PATCH",
+      path: "/v1/products/<product>/authorization?account_id=<account>",
+      status: 200,
+    });
+  }
+}
+
+function bridgeStateFixture(status, connected) {
   return {
-    bridge_state,
     product_id: "panda-chat",
     install: {
       download_url: "https://assets.bridge.otherline.cc/downloads/panda-bridge-macos.dmg",
@@ -484,12 +518,19 @@ function bridgeStateFixture(bridge_state) {
       platform: "macos",
       open_url: "panda-bridge://open",
     },
-    devices: bridge_state === "ready"
-      ? [{ id: "dev_1", name: "SDK Examples Fixture Device", online: true, last_seen_at: "2099-01-01T00:00:00Z", current: true }]
-      : [],
-    authorization: bridge_state === "ready" ? { status: "active", policy: bridgePolicy() } : null,
-    intent: null,
-    actions: bridge_state === "not_authorized" ? [{ kind: "authorize" }] : [],
+    accounts: [{
+      account: { id: "acct_1", email: "sdk-examples@example.local" },
+      authorization: { status },
+      connected,
+      current_device: {
+        id: "dev_1",
+        name: "SDK Examples Fixture Device",
+        online: connected,
+        status: connected ? "online" : "offline",
+        last_seen_at: "2099-01-01T00:00:00Z",
+        current: true,
+      },
+    }],
   };
 }
 
