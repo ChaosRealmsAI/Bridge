@@ -84,7 +84,11 @@ async function handleWorker(incoming, outgoing, requestUrl) {
       headers.set(key, value);
     }
   }
-  if (!headers.get("origin") && !["GET", "HEAD", "OPTIONS"].includes(incoming.method || "GET")) {
+  if (
+    !headers.get("origin") &&
+    !headers.get("x-panda-bridge-local-client") &&
+    !["GET", "HEAD", "OPTIONS"].includes(incoming.method || "GET")
+  ) {
     headers.set("origin", requestUrl.origin);
   }
 
@@ -138,6 +142,16 @@ function localWorkerEnv(origin) {
       `https://${domain}`,
       `https://www.${domain}`,
     ].join(","),
+    BRIDGE_PRODUCT_ALLOWED_ORIGINS: JSON.stringify({
+      "panda-chat": [
+        origin,
+        "http://127.0.0.1",
+        "http://localhost",
+        `http://${domain}`,
+        `https://${domain}`,
+        `https://www.${domain}`,
+      ],
+    }),
     BRIDGE_PUBLIC_API_BASE: origin,
     BRIDGE_DESKTOP_PROTOCOL: "panda-bridge",
     SESSION_COOKIE_NAME: "pb_session",
