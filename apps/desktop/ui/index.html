@@ -172,28 +172,28 @@
         emptyTitle:"让你的应用用上这台电脑",emptyDesc:"在 Panda Chat 等应用里点「连接本机 Agent」，授权账号后就会出现在这里。",login:"登录",
         reqLine:"{product} 想让这个账号用上你这台电脑的 AI。",reqLine2:"允许后即可使用。",deny:"拒绝",allow:"允许",
         language:"语言",appearance:"外观",thAuto:"跟随系统",thLight:"浅色",thDark:"深色",
-        tAuth:"已授权 · {name}",tFail:"授权失败",tOut:"已退出该账号",tWeb:"已打开网页，去登录并授权" },
+        devOnline:"在线",devOffline:"离线",devPending:"等待同步",justNow:"刚刚",minsAgo:"{n} 分钟前",hoursAgo:"{n} 小时前",daysAgo:"{n} 天前",tAuth:"已授权 · {name}",tFail:"授权失败",tOut:"已退出该账号",tWeb:"已打开网页，去登录并授权" },
       "zh-TW":{ ready:"本機 AI 已就緒",readySub:"這台電腦可被你的帳號使用",codexBad:"未偵測到 Codex",codexBadSub:"請在本機執行 codex login",noLogin:"未登入",noLoginSub:"登入後即可使用",
         apps:"應用",pending:"待授權",noApps:"還沒有應用",settings:"設定",open:"開啟",accounts:"已授權帳號",addAccount:"授權新帳號",
         acctOk:"已授權 · 可用這台電腦",signOut:"退出",noAccts:"還沒有帳號授權 {name}<br>點右上「{add}」從網頁 / 手機發起連接",
         emptyTitle:"讓你的應用用上這台電腦",emptyDesc:"在 Panda Chat 等應用裡點「連接本機 Agent」，授權帳號後就會出現在這裡。",login:"登入",
         reqLine:"{product} 想讓這個帳號用上你這台電腦的 AI。",reqLine2:"允許後即可使用。",deny:"拒絕",allow:"允許",
         language:"語言",appearance:"外觀",thAuto:"跟隨系統",thLight:"淺色",thDark:"深色",
-        tAuth:"已授權 · {name}",tFail:"授權失敗",tOut:"已退出該帳號",tWeb:"已開啟網頁，去登入並授權" },
+        devOnline:"在線",devOffline:"離線",devPending:"等待同步",justNow:"剛剛",minsAgo:"{n} 分鐘前",hoursAgo:"{n} 小時前",daysAgo:"{n} 天前",tAuth:"已授權 · {name}",tFail:"授權失敗",tOut:"已退出該帳號",tWeb:"已開啟網頁，去登入並授權" },
       "en":{ ready:"Local AI is ready",readySub:"This Mac can be used by your accounts",codexBad:"Codex not found",codexBadSub:"Run codex login on this Mac",noLogin:"Not signed in",noLoginSub:"Sign in to get started",
         apps:"Apps",pending:"Pending",noApps:"No apps yet",settings:"Settings",open:"Open",accounts:"Authorized accounts",addAccount:"Authorize account",
         acctOk:"Authorized · can use this Mac",signOut:"Sign out",noAccts:"No account has authorized {name} yet<br>Tap “{add}” to connect from web / phone",
         emptyTitle:"Let your apps use this Mac",emptyDesc:"In Panda Chat and other apps, tap “Connect local Agent”. Authorized accounts show up here.",login:"Sign in",
         reqLine:"{product} wants this account to use the AI on this Mac.",reqLine2:"Allow to start using it.",deny:"Deny",allow:"Allow",
         language:"Language",appearance:"Appearance",thAuto:"System",thLight:"Light",thDark:"Dark",
-        tAuth:"Authorized · {name}",tFail:"Authorization failed",tOut:"Account signed out",tWeb:"Opened web — sign in and authorize" },
+        devOnline:"Online",devOffline:"Offline",devPending:"Waiting to sync",justNow:"just now",minsAgo:"{n} min ago",hoursAgo:"{n} h ago",daysAgo:"{n} d ago",tAuth:"Authorized · {name}",tFail:"Authorization failed",tOut:"Account signed out",tWeb:"Opened web — sign in and authorize" },
       "ja":{ ready:"ローカル AI 準備完了",readySub:"この Mac をアカウントで利用できます",codexBad:"Codex が見つかりません",codexBadSub:"この Mac で codex login を実行",noLogin:"未ログイン",noLoginSub:"ログインして開始",
         apps:"アプリ",pending:"承認待ち",noApps:"アプリがありません",settings:"設定",open:"開く",accounts:"承認済みアカウント",addAccount:"アカウントを承認",
         acctOk:"承認済み · この Mac を利用可",signOut:"解除",noAccts:"{name} を承認したアカウントはまだありません<br>右上の「{add}」からウェブ / スマホで接続",
         emptyTitle:"アプリにこの Mac を使わせる",emptyDesc:"Panda Chat などで「ローカル Agent に接続」をタップ。承認したアカウントがここに表示されます。",login:"ログイン",
         reqLine:"{product} がこのアカウントでこの Mac の AI を使おうとしています。",reqLine2:"許可するとすぐ使えます。",deny:"拒否",allow:"許可",
         language:"言語",appearance:"外観",thAuto:"システムに合わせる",thLight:"ライト",thDark:"ダーク",
-        tAuth:"承認済み · {name}",tFail:"承認に失敗",tOut:"アカウントを解除しました",tWeb:"ウェブを開きました — ログインして承認" },
+        devOnline:"オンライン",devOffline:"オフライン",devPending:"同期待ち",justNow:"たった今",minsAgo:"{n} 分前",hoursAgo:"{n} 時間前",daysAgo:"{n} 日前",tAuth:"承認済み · {name}",tFail:"承認に失敗",tOut:"アカウントを解除しました",tWeb:"ウェブを開きました — ログインして承認" },
     };
     let langMode="auto"; try{ langMode=localStorage.getItem("panda_lang")||"auto"; }catch(e){}
     function detectSystemLang(){
@@ -258,17 +258,17 @@
         capabilities:Array.isArray(p.capabilities)?p.capabilities:[],
         policy:p.policy&&typeof p.policy==="object"?p.policy:{},
         authorized_at:p.authorized_at||"",
-        accounts: dedupeAccounts(Array.isArray(p.accounts) ? p.accounts : (s.account_display ? [{ id:s.account_id||null, email:s.account_display, device_id:s.device_id||null, device_name:s.device_name||null }] : []), p) }));
+        accounts: dedupeAccounts(Array.isArray(p.accounts) ? p.accounts : (s.account_display ? [{ id:s.account_id||null, email:s.account_display, device_id:s.device_id||null, device_name:s.device_name||null }] : []), p, s) }));
     }
 
-    function dedupeAccounts(accounts,p){
+    function dedupeAccounts(accounts,p,s){ s=s||{};
       const map=new Map();
       for(const raw of accounts){
         const a=raw&&typeof raw==="object"?raw:{ email:String(raw||"") };
         const id=a.id||a.account_id||null;
         const email=a.email||a.display_name||"Panda Account";
         const key=id||email;
-        const devices=Array.isArray(a.devices)&&a.devices.length?a.devices:[a.device_id?{ id:a.device_id, name:a.device_name||a.name||a.device_id, online:a.online, last_seen_at:a.last_seen_at, authorized_at:a.authorized_at||p.authorized_at||"" }:null].filter(Boolean);
+        const devices=Array.isArray(a.devices)&&a.devices.length?a.devices:[a.device_id?{ id:a.device_id, name:a.device_name||a.name||(a.device_id===s.device_id?s.device_name:null)||a.device_id, online:a.online, last_seen_at:a.last_seen_at, authorized_at:a.authorized_at||p.authorized_at||"" }:null].filter(Boolean);
         if(!map.has(key)) map.set(key,{ id, email, display_name:a.display_name||email, origin:a.origin||p.origin||null, authorized_at:a.authorized_at||p.authorized_at||"", devices:[] });
         const item=map.get(key);
         for(const d of devices){
@@ -276,7 +276,7 @@
           if(!did || item.devices.some(x=>x.id===did)) continue;
           item.devices.push({ id:did, name:d.name||d.device_name||did, online:typeof d.online==="boolean"?d.online:null, last_seen_at:d.last_seen_at||null, authorized_at:d.authorized_at||item.authorized_at||"" });
         }
-        if(!item.devices.length && a.device_id) item.devices.push({ id:a.device_id, name:a.device_id, online:null, last_seen_at:null, authorized_at:item.authorized_at });
+        if(!item.devices.length && a.device_id) item.devices.push({ id:a.device_id, name:(a.device_id===s.device_id?s.device_name:null)||a.device_id, online:null, last_seen_at:null, authorized_at:item.authorized_at });
       }
       return Array.from(map.values());
     }
@@ -345,7 +345,7 @@
       if(!list.length) return `<div class="devrow"><span class="devname">Unknown device</span><span class="devstate"><span class="state-dot pending"></span>pending</span></div>`;
       return list.map(d=>{
         const st=d.online===true?"online":(d.online===false?"off":"pending");
-        const label=st==="online"?"在线":(st==="off"?"离线":"等待同步");
+        const label=st==="online"?t("devOnline"):(st==="off"?t("devOffline"):t("devPending"));
         const time=relativeTime(d.last_seen_at||d.authorized_at);
         return `<div class="devrow"><span class="devname">${esc(d.name||shortId(d.id)||"Device")} <span class="subline">${esc(shortId(d.id))}</span></span><span class="devstate"><span class="state-dot ${st}"></span>${label}${time?` · ${esc(time)}`:""}</span></div>`;
       }).join("");
@@ -390,10 +390,10 @@
       if(!value) return "";
       const d=new Date(value); if(Number.isNaN(d.getTime())) return formatTime(value);
       const sec=Math.round((Date.now()-d.getTime())/1000);
-      if(sec<60) return "刚刚";
-      const min=Math.round(sec/60); if(min<60) return `${min} 分钟前`;
-      const hr=Math.round(min/60); if(hr<24) return `${hr} 小时前`;
-      const day=Math.round(hr/24); if(day<7) return `${day} 天前`;
+      if(sec<60) return t("justNow");
+      const min=Math.round(sec/60); if(min<60) return t("minsAgo",{n:min});
+      const hr=Math.round(min/60); if(hr<24) return t("hoursAgo",{n:hr});
+      const day=Math.round(hr/24); if(day<7) return t("daysAgo",{n:day});
       return formatTime(value);
     }
     function dangerText(value){ const s=String(value||""); return /danger-full-access|approval never|approval_policy_floor.*never|\bnever\b|full-access/i.test(s); }
