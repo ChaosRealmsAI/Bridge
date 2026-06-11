@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import {
+  BridgeError,
+  BridgeErrorCodes,
   bridgeDelegatedAccountStatusModel,
   bridgeDelegatedConnectIntentStatusModel,
   bridgeDesktopInstallDefaults,
@@ -295,6 +297,97 @@ assert.equal(targetMismatchResult.ready, false);
 assert.equal(targetMismatchResult.issues.some((item) => item.code === "device_not_found"), true);
 assert.equal(targetMismatchPreflight.calls.some((call) => call.path.includes("/authorization")), false);
 
+const bridgeStates = ["no_session", "no_device", "authorization_pending", "authorized_offline", "not_authorized", "ready"];
+for (const bridge_state of bridgeStates) {
+  const stateClient = mockClient([{ body: bridgeStateFixture(bridge_state) }]);
+  const state = await stateClient.client.state();
+  assert.equal(state.bridge_state, bridge_state);
+  assert.equal(stateClient.calls[0].path, "/v1/bridge/state?product_id=panda-chat");
+}
+
+const install = client.install();
+assert.equal(install.version, "0.1.0");
+assert.equal(install.openUrl, "panda-bridge://open");
+assert.equal(install.sha256.length, 64);
+
+const readyEnsure = mockClient([{ body: bridgeStateFixture("ready") }]);
+const readyResult = await readyEnsure.client.ensureReady({ intervalMs: 1, timeoutMs: 10 });
+assert.equal(readyResult.ready, true);
+assert.equal(readyEnsure.calls.length, 1);
+
+const offlineEnsure = mockClient([{ body: bridgeStateFixture("authorized_offline") }]);
+const offlineResult = await offlineEnsure.client.ensureReady({ intervalMs: 1, timeoutMs: 10 });
+assert.equal(offlineResult.ready, false);
+assert.equal(offlineResult.action.kind, "open_desktop");
+assert.equal(offlineEnsure.calls.some((call) => call.path === "/v1/connect-intents"), false);
+
+let openedDeepLink = "";
+const authorizeEnsure = mockClient([
+  { body: bridgeStateFixture("not_authorized") },
+  { status: 201, body: { token: "pbi_test", deep_link: "panda-bridge://connect?intent=pbi_test", connect_intent: { expires_at: "2099-01-01T00:00:00Z" } } },
+  { body: bridgeStateFixture("ready") },
+]);
+const authorizeResult = await authorizeEnsure.client.ensureReady({
+  intervalMs: 1,
+  timeoutMs: 200,
+  openDeepLink: (deepLink) => {
+    openedDeepLink = deepLink;
+  },
+});
+assert.equal(authorizeResult.ready, true);
+assert.equal(openedDeepLink, "panda-bridge://connect?intent=pbi_test");
+assert.deepEqual(authorizeEnsure.calls.map((call) => call.path), [
+  "/v1/bridge/state?product_id=panda-chat",
+  "/v1/connect-intents",
+  "/v1/bridge/state?product_id=panda-chat",
+]);
+
+const alreadyAuthorizedEnsure = mockClient([
+  { body: bridgeStateFixture("not_authorized") },
+  { body: { already_authorized: true, state: "ready", authorization: { status: "active" }, device: { id: "dev_1", status: "online" } } },
+]);
+const alreadyAuthorizedResult = await alreadyAuthorizedEnsure.client.ensureReady({ intervalMs: 1, timeoutMs: 20 });
+assert.equal(alreadyAuthorizedResult.ready, true);
+assert.equal(alreadyAuthorizedResult.state.bridge_state, "ready");
+assert.equal(alreadyAuthorizedEnsure.calls.length, 2);
+
+const originalWebSocket = globalThis.WebSocket;
+class FakeWebSocket {
+  static instances = [];
+  constructor(url) {
+    this.url = url;
+    this.readyState = 1;
+    this.listeners = {};
+    FakeWebSocket.instances.push(this);
+  }
+  addEventListener(type, listener) {
+    this.listeners[type] = listener;
+  }
+  close() {
+    this.readyState = 3;
+  }
+  emit(type, payload) {
+    this.listeners[type]?.({ data: JSON.stringify(payload) });
+  }
+}
+globalThis.WebSocket = FakeWebSocket;
+try {
+  const watched = mockClient([
+    { body: bridgeStateFixture("authorization_pending") },
+    { body: bridgeStateFixture("ready") },
+  ]);
+  const generator = watched.client.watchState({ intervalMs: 5, timeoutMs: 100 });
+  const first = await generator.next();
+  assert.equal(first.value.bridge_state, "authorization_pending");
+  assert.equal(FakeWebSocket.instances[0].url, "wss://api.example.test/v1/realtime/devices/dev_1?role=web");
+  FakeWebSocket.instances[0].emit("message", { type: "bridge.state" });
+  const second = await generator.next();
+  assert.equal(second.value.bridge_state, "ready");
+  await generator.return();
+} finally {
+  globalThis.WebSocket = originalWebSocket;
+}
+
 const errorClient = createBridgeClient({
   apiBase: "https://api.example.test",
   productId: "panda-chat",
@@ -310,6 +403,9 @@ const errorClient = createBridgeClient({
 await assert.rejects(
   () => errorClient.diagnostics(),
   (error) => {
+    assert.equal(error instanceof BridgeError, true);
+    assert.equal(BridgeErrorCodes.request_body_too_large, "request_body_too_large");
+    assert.equal(error.code, "request_body_too_large");
     assert.equal(error.message, "request_body_too_large");
     assert.equal(error.status, 413);
     assert.deepEqual(error.payload, { error: "request_body_too_large", limit_bytes: 64 });
@@ -318,6 +414,39 @@ await assert.rejects(
 );
 
 console.log("[sdk.test] pass");
+
+function bridgeStateFixture(bridge_state) {
+  return {
+    bridge_state,
+    product_id: "panda-chat",
+    install: {
+      download_url: "https://assets.bridge.otherline.cc/downloads/panda-bridge-macos.dmg",
+      version: "0.1.0",
+      sha256: "e65e04f08373ffe2363616dc1426516b74f12123f52c71d7225af4bac7225962",
+      platform: "macos",
+      open_url: "panda-bridge://open",
+    },
+    devices: bridge_state === "no_session" || bridge_state === "no_device"
+      ? []
+      : [{ id: "dev_1", name: "Mac", online: bridge_state !== "authorized_offline", last_seen_at: "2099-01-01T00:00:00Z", current: true }],
+    authorization: bridge_state === "ready" || bridge_state === "authorized_offline"
+      ? { status: "active", policy: { version: "AUTH-SCOPE-v1" }, authorized_at: "2099-01-01T00:00:00Z", origin: "https://chat.example.test" }
+      : null,
+    intent: bridge_state === "authorization_pending"
+      ? { token: "pbi_pending", expires_at: "2099-01-01T00:00:00Z", deep_link: "panda-bridge://connect?intent=pbi_pending" }
+      : null,
+    actions: bridgeStateActions(bridge_state),
+  };
+}
+
+function bridgeStateActions(bridge_state) {
+  if (bridge_state === "no_session") return [{ kind: "login" }];
+  if (bridge_state === "no_device") return [{ kind: "download", url: "https://assets.bridge.otherline.cc/downloads/panda-bridge-macos.dmg" }];
+  if (bridge_state === "authorization_pending") return [{ kind: "confirm_on_desktop", deep_link: "panda-bridge://connect?intent=pbi_pending" }];
+  if (bridge_state === "authorized_offline") return [{ kind: "open_desktop", url: "panda-bridge://open" }];
+  if (bridge_state === "not_authorized") return [{ kind: "authorize" }];
+  return [];
+}
 
 function mockClient(responses) {
   const calls = [];
