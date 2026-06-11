@@ -1,3 +1,51 @@
+export const BRIDGE_SDK_VERSION = "0.1.0";
+
+export const BridgeErrorCodes = Object.freeze({
+  already_authorized: "already_authorized",
+  authorization_import_proof_required: "authorization_import_proof_required",
+  authorization_scope_denied: "authorization_scope_denied",
+  bridge_cloud_unavailable: "bridge_cloud_unavailable",
+  connect_intent_not_found: "connect_intent_not_found",
+  delegated_authorization_proof_mismatch: "delegated_authorization_proof_mismatch",
+  delegated_device_mismatch: "delegated_device_mismatch",
+  desktop_claim_required: "desktop_claim_required",
+  device_not_found: "device_not_found",
+  device_offline: "device_offline",
+  device_queue_full: "device_queue_full",
+  idempotency_key_conflict: "idempotency_key_conflict",
+  install_id_required: "install_id_required",
+  invalid_authorization_import_proof: "invalid_authorization_import_proof",
+  invalid_authorization_policy: "invalid_authorization_policy",
+  invalid_connect_intent: "invalid_connect_intent",
+  invalid_content_type: "invalid_content_type",
+  invalid_json: "invalid_json",
+  invalid_origin: "invalid_origin",
+  job_not_found: "job_not_found",
+  local_policy_denied: "local_policy_denied",
+  product_delegation_body_hash_invalid: "product_delegation_body_hash_invalid",
+  product_delegation_not_configured: "product_delegation_not_configured",
+  product_delegation_replay: "product_delegation_replay",
+  product_delegation_signature_invalid: "product_delegation_signature_invalid",
+  product_delegation_timestamp_invalid: "product_delegation_timestamp_invalid",
+  product_delegation_unauthorized: "product_delegation_unauthorized",
+  product_not_authorized: "product_not_authorized",
+  product_origin_mismatch: "product_origin_mismatch",
+  product_queue_full: "product_queue_full",
+  request_body_too_large: "request_body_too_large",
+  scope_insufficient: "scope_insufficient",
+  unauthorized: "unauthorized",
+});
+
+export class BridgeError extends Error {
+  constructor(message, options = {}) {
+    super(message || "bridge_error");
+    this.name = "BridgeError";
+    this.code = stringValue(options.code, 160) || "bridge_error";
+    this.status = Number.isFinite(Number(options.status)) ? Number(options.status) : 0;
+    this.payload = options.payload ?? null;
+  }
+}
+
 export const bridgeDesktopInstallDefaults = Object.freeze({
   macos: Object.freeze({
     platform: "macos",
@@ -29,6 +77,7 @@ export function bridgeDesktopInstallTarget(options = {}) {
     platform: target.platform,
     appName: target.appName,
     fileName: target.fileName,
+    version: BRIDGE_SDK_VERSION,
     openUrl: overrideOpenUrl || target.openUrl,
     downloadUrl,
     downloadPath: target.downloadPath,
@@ -204,16 +253,17 @@ export function createBridgeClient(options = {}) {
     const text = await response.text();
     const payload = text ? JSON.parse(text) : {};
     if (!response.ok) {
-      const error = new Error(payload.message || payload.error || `Bridge API ${response.status}`);
-      error.status = response.status;
-      error.payload = payload;
-      throw error;
+      throw bridgeErrorFromResponse(response.status, payload);
     }
     return payload;
   };
 
   return {
     productId,
+    state: () => request("GET", `/v1/bridge/state?product_id=${encodeURIComponent(productId)}`),
+    watchState: (input = {}) => watchBridgeState(request, apiBase, input),
+    ensureReady: (input = {}) => ensureBridgeReady(request, productId, input),
+    install: (input = {}) => bridgeInstallModel(input),
     diagnostics: () => request("GET", "/v1/diagnostics"),
     preflight: (input = {}) => preflight(request, productId, input),
     queue: {
@@ -305,6 +355,229 @@ export function bridgeFullAccessPolicy(overrides = {}) {
   };
   policy.display = authorizationPolicyDisplay(policy);
   return policy;
+}
+
+function bridgeInstallModel(options = {}) {
+  const target = bridgeDesktopInstallTarget(options);
+  return {
+    downloadUrl: target.downloadUrl,
+    version: target.version || BRIDGE_SDK_VERSION,
+    sha256: target.sha256,
+    openUrl: target.openUrl,
+    platform: target.platform,
+  };
+}
+
+async function ensureBridgeReady(request, productId, input = {}) {
+  const timeoutMs = Number(input.timeoutMs || input.timeout_ms || 120000);
+  const intervalMs = Number(input.intervalMs || input.interval_ms || 3000);
+  const started = Date.now();
+  let current = await request("GET", `/v1/bridge/state?product_id=${encodeURIComponent(productId)}`);
+  if (current.bridge_state === "ready") return { state: current, ready: true, action: null };
+  if (current.bridge_state === "authorized_offline") {
+    return { state: current, ready: false, action: firstAction(current, "open_desktop") };
+  }
+  if (current.bridge_state === "no_session" || current.bridge_state === "no_device") {
+    return { state: current, ready: false, action: firstAction(current) };
+  }
+
+  let intent = objectValue(current.intent);
+  if (current.bridge_state === "not_authorized") {
+    const created = await request("POST", "/v1/connect-intents", {
+      product_id: input.productId || input.product_id || productId,
+      device_name: input.deviceName || input.device_name || "Panda Bridge Desktop",
+      policy: normalizeAuthorizationPolicyRequest(input.permissions || input.permission || input.policy || bridgeFullAccessPolicy()),
+    });
+    if (created.already_authorized === true) {
+      return {
+        state: normalizeAlreadyAuthorizedState(created, productId),
+        ready: true,
+        action: null,
+        response: created,
+      };
+    }
+    intent = normalizeIntentPayload(created);
+    current = {
+      ...current,
+      bridge_state: "authorization_pending",
+      intent,
+      actions: [{ kind: "confirm_on_desktop", deep_link: intent.deep_link || null }],
+    };
+  }
+
+  const deepLink = stringValue(intent.deep_link || intent.deepLink, 800);
+  if (deepLink && typeof input.openDeepLink === "function") {
+    await input.openDeepLink(deepLink, { state: current, intent });
+  }
+
+  for await (const state of watchBridgeState(request, "", { intervalMs, timeoutMs, initialState: current, productId })) {
+    if (state.bridge_state === "ready") return { state, ready: true, action: null };
+    if (state.bridge_state === "authorized_offline") return { state, ready: false, action: firstAction(state, "open_desktop") };
+    if (state.bridge_state === "no_session" || state.bridge_state === "no_device" || state.bridge_state === "not_authorized") {
+      return { state, ready: false, action: firstAction(state) };
+    }
+    if (Date.now() - started >= timeoutMs) break;
+  }
+  throw new BridgeError("bridge_ready_timeout", {
+    code: "bridge_ready_timeout",
+    status: 0,
+    payload: { bridge_state: current.bridge_state, timeout_ms: timeoutMs },
+  });
+}
+
+async function* watchBridgeState(request, apiBase, input = {}) {
+  const intervalMs = Number(input.intervalMs || input.interval_ms || 3000);
+  const timeoutMs = input.timeoutMs || input.timeout_ms;
+  const started = Date.now();
+  let current = input.initialState || await request("GET", bridgeStatePath(input.productId || input.product_id));
+
+  let ws = null;
+  let wake = null;
+  let realtimeTriggered = false;
+  let realtimeClosed = false;
+  const wakeWaiter = () => {
+    if (wake) {
+      wake();
+      wake = null;
+    }
+  };
+  const closeRealtime = () => {
+    if (ws && ws.readyState < 2) ws.close();
+    ws = null;
+  };
+
+  const attachRealtime = (deviceId) => {
+    if (!apiBase || input.realtime === false || !deviceId || typeof WebSocket === "undefined") return;
+    try {
+      ws = new WebSocket(realtimeDeviceUrl(apiBase, deviceId, "web"));
+      ws.addEventListener("message", (message) => {
+        let payload = null;
+        try {
+          payload = JSON.parse(String(message.data || ""));
+        } catch {
+          return;
+        }
+        if (payload.type === "bridge.state") {
+          realtimeTriggered = true;
+          wakeWaiter();
+        }
+      });
+      ws.addEventListener("error", () => {
+        realtimeClosed = true;
+        wakeWaiter();
+      });
+      ws.addEventListener("close", () => {
+        realtimeClosed = true;
+        wakeWaiter();
+      });
+    } catch {
+      closeRealtime();
+    }
+  };
+  attachRealtime(realtimeStateDeviceId(current));
+  yield current;
+
+  try {
+    while (!timeoutMs || Date.now() - started < Number(timeoutMs)) {
+      await visibleDelay(intervalMs, () => realtimeTriggered || realtimeClosed);
+      realtimeTriggered = false;
+      current = await request("GET", bridgeStatePath(input.productId || input.product_id));
+      yield current;
+      if (!ws && apiBase && input.realtime !== false) {
+        const nextDeviceId = realtimeStateDeviceId(current);
+        attachRealtime(nextDeviceId);
+      }
+    }
+  } finally {
+    closeRealtime();
+  }
+}
+
+function bridgeStatePath(productId = "") {
+  const product = stringValue(productId, 120);
+  return product ? `/v1/bridge/state?product_id=${encodeURIComponent(product)}` : "/v1/bridge/state";
+}
+
+function realtimeStateDeviceId(state = {}) {
+  const devices = arrayValue(state.devices).map(objectValue);
+  const selected = devices.find((device) => device.current === true && device.online === true)
+    || devices.find((device) => device.online === true)
+    || devices.find((device) => device.current === true);
+  return selected ? stringValue(selected.id, 200) : "";
+}
+
+async function visibleDelay(intervalMs, shouldWake = () => false) {
+  const started = Date.now();
+  while (Date.now() - started < intervalMs) {
+    if (shouldWake()) return;
+    if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+      await waitForDocumentVisible();
+      return;
+    }
+    await sleep(Math.min(100, intervalMs));
+  }
+}
+
+function waitForDocumentVisible() {
+  if (typeof document === "undefined" || document.visibilityState !== "hidden") return Promise.resolve();
+  return new Promise((resolve) => {
+    const onVisible = () => {
+      if (document.visibilityState !== "hidden") {
+        document.removeEventListener("visibilitychange", onVisible);
+        resolve();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisible);
+  });
+}
+
+function firstAction(state, kind = "") {
+  const actions = arrayValue(state.actions);
+  return kind ? actions.find((action) => action?.kind === kind) || actions[0] || null : actions[0] || null;
+}
+
+function normalizeIntentPayload(payload = {}) {
+  const intent = objectValue(payload.intent || payload.connect_intent || payload.connectIntent);
+  return {
+    token: stringValue(payload.token || intent.token, 300) || null,
+    expires_at: stringValue(intent.expires_at || intent.expiresAt || payload.expires_at || payload.expiresAt, 100) || null,
+    deep_link: stringValue(payload.deep_link || payload.deepLink || intent.deep_link || intent.deepLink, 800) || null,
+  };
+}
+
+function normalizeAlreadyAuthorizedState(payload = {}, productId = "") {
+  const device = firstObject(payload.device) || null;
+  const authorization = firstObject(payload.authorization) || null;
+  return {
+    bridge_state: "ready",
+    product_id: productId,
+    install: bridgeInstallModel(),
+    devices: device ? [normalizeStateDevice(device, true)] : [],
+    authorization,
+    intent: null,
+    actions: [],
+  };
+}
+
+function normalizeStateDevice(device = {}, current = false) {
+  const value = objectValue(device);
+  return {
+    id: stringValue(value.id, 200) || null,
+    name: stringValue(value.name || value.device_name || value.deviceName, 200) || null,
+    online: value.online === true || stringValue(value.status, 40) === "online",
+    last_seen_at: stringValue(value.last_seen_at || value.lastSeenAt, 100) || null,
+    current: value.current === true || current,
+  };
+}
+
+function bridgeErrorFromResponse(status, payload = {}) {
+  const data = objectValue(payload);
+  const code = stringValue(data.error || data.code || data.message, 160) || `bridge_http_${status}`;
+  return new BridgeError(stringValue(data.message, 300) || code || `Bridge API ${status}`, {
+    code,
+    status,
+    payload: data,
+  });
 }
 
 async function preflight(request, productId, input = {}) {

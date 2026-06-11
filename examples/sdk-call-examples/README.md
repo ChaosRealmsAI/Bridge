@@ -26,6 +26,8 @@ Covered SDK groups:
 - `products.list()`, `products.requestAuthorization()`, `products.authorization()`, `products.revokeAuthorization()`
 - `codex.chat()`, `codex.run()`, `codex.rpc()`
 - `jobs.create()`, `jobs.get()`, `jobs.events()`, `jobs.wait()`, `jobs.stream()`, `jobs.cancel()`
+- `ensureReady()` with a mocked BRIDGE-STATE-v1 flow
+- `createBridgeServerClient().state()` and `.createConnectIntent()`
 
 The product side uses the SDK. The local fixture executor uses public connector
 API endpoints only to claim and complete jobs; it does not inspect internal

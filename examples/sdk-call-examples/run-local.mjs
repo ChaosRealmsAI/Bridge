@@ -1,17 +1,18 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
-import { createServer } from "node:http";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import worker from "../../apps/cloud-worker/src/index.js";
 import { createBridgeClient } from "../../packages/sdk/src/index.js";
+import { createBridgeServerClient } from "../../packages/sdk/src/server.js";
 
 const VERSION = "v6-sdk-call-examples-account-stability";
 const evidenceDir = resolve(process.env.PANDA_BRIDGE_SDK_EXAMPLES_EVIDENCE_DIR || `spec/verification/evidence/${VERSION}`);
 const temp = mkdtempSync(resolve(tmpdir(), "panda-bridge-sdk-examples-"));
 const startedAt = new Date();
 const runId = `${Date.now()}`;
+const apiBase = "http://sdk-examples.local";
 const expectedHelpers = [
   "diagnostics",
   "preflight",
@@ -41,46 +42,26 @@ const expectedHelpers = [
   "jobs.wait",
   "jobs.stream",
   "jobs.cancel",
+  "ensureReady",
+  "server.state",
+  "server.createConnectIntent",
 ];
 
 mkdirSync(evidenceDir, { recursive: true });
 
 const env = {
   BRIDGE_LOCAL_MEMORY: "1",
-  BRIDGE_WEB_ORIGIN: "http://127.0.0.1:0",
+  BRIDGE_WEB_ORIGIN: apiBase,
+  BRIDGE_PUBLIC_API_BASE: apiBase,
   SESSION_COOKIE_NAME: "pb_session",
+  BRIDGE_OTHERLINE_DELEGATION_SECRET: "sdk-examples-otherline-secret",
+  BRIDGE_PRODUCT_ALLOWED_ORIGINS: JSON.stringify({
+    "panda-chat": [apiBase],
+    "panda-dev": [apiBase],
+    "panda-spec": [apiBase],
+  }),
 };
 
-const server = createServer(async (incoming, outgoing) => {
-  try {
-    const body = await readIncoming(incoming);
-    const url = `http://127.0.0.1:${server.address().port}${incoming.url}`;
-    const request = new Request(url, {
-      method: incoming.method,
-      headers: incomingHeaders(incoming.headers),
-      body: shouldSendBody(incoming.method, body) ? body : undefined,
-    });
-    const port = server.address().port;
-    const response = await worker.fetch(request, {
-      ...env,
-      BRIDGE_WEB_ORIGIN: `http://127.0.0.1:${port}`,
-      BRIDGE_PUBLIC_API_BASE: `http://127.0.0.1:${port}`,
-      BRIDGE_PRODUCT_ALLOWED_ORIGINS: JSON.stringify({
-        "panda-chat": [`http://127.0.0.1:${port}`],
-        "panda-dev": [`http://127.0.0.1:${port}`],
-        "panda-spec": [`http://127.0.0.1:${port}`],
-      }),
-    });
-    outgoing.writeHead(response.status, Object.fromEntries(response.headers.entries()));
-    outgoing.end(response.body ? Buffer.from(await response.arrayBuffer()) : undefined);
-  } catch (error) {
-    outgoing.writeHead(500, { "content-type": "application/json; charset=utf-8" });
-    outgoing.end(JSON.stringify({ error: "sdk_examples_proxy_error", message: error.message || String(error) }));
-  }
-});
-
-await new Promise((resolveListen) => server.listen(0, "127.0.0.1", resolveListen));
-const apiBase = `http://127.0.0.1:${server.address().port}`;
 const coverage = [];
 const connectorCalls = [];
 
@@ -100,6 +81,19 @@ try {
 
   const products = await owner.call("products.list", (client) => client.products.list());
   assert.ok((products.items || []).some((item) => item.id === "panda-chat"));
+
+  const delegated = serverContext("server");
+  const delegatedUserId = `sdk-examples-delegated-${runId}`;
+  const delegatedState = await delegated.call("server.state", (client) => client.state({ userId: delegatedUserId }));
+  assert.equal(delegatedState.bridge_state, "no_device");
+  const delegatedIntent = await delegated.call("server.createConnectIntent", (client) => client.createConnectIntent({
+    userId: delegatedUserId,
+    account: { display_name: "SDK Examples Delegated User" },
+    deviceName: "SDK Examples Delegated Device",
+    policy: bridgePolicy(),
+  }));
+  assert.match(delegatedIntent.token, /^pbi_/);
+  await exerciseEnsureReadyExample();
 
   const ownerEmail = `sdk-examples-owner-${runId}@example.local`;
   const ownerSession = await owner.call("auth.password", (client) => client.auth.password(ownerEmail, `Owner-${runId}-Password!`, "SDK Examples Owner"));
@@ -201,13 +195,14 @@ try {
   const runFinal = await owner.call("jobs.get", (client) => client.jobs.get(runJob.job.id));
   assert.equal(runFinal.job.status, "succeeded");
 
-  const rpcDenied = await expectSdkError(
+  const rpcOutcome = await optionalJob(
     () => owner.call("codex.rpc", (client) => client.codex.rpc({ deviceId, calls: [{ method: "initialize", params: {} }], requestKey: `v6-rpc-${runId}` })),
-    403,
-    "scope_insufficient",
+    () => completeConnectorJobs(deviceToken, "rpc"),
+    "codex.rpc",
+    owner,
   );
 
-  const customDenied = await expectSdkError(
+  const customOutcome = await optionalJob(
     () => owner.call("jobs.create", (client) => client.jobs.create({
       kind: "saas.custom.run",
       deviceId,
@@ -215,8 +210,9 @@ try {
       requestKey: `v6-custom-${runId}`,
       policy: { timeout_ms: 60000 },
     })),
-    403,
-    "scope_insufficient",
+    () => completeConnectorJobs(deviceToken, "custom"),
+    "saas.custom.run",
+    owner,
   );
 
   const cancelJob = await owner.call("jobs.create", (client) => client.jobs.create({
@@ -229,7 +225,8 @@ try {
   assert.equal(cancelled.job.status, "cancelled");
 
   const queueSummary = await owner.call("queue.summary", (client) => client.queue.summary());
-  assert.equal(queueSummary.counts.succeeded, 2);
+  const expectedSucceeded = 2 + (rpcOutcome.created ? 1 : 0) + (customOutcome.created ? 1 : 0);
+  assert.equal(queueSummary.counts.succeeded, expectedSucceeded);
   assert.equal(queueSummary.counts.cancelled, 1);
 
   const otherEmail = `sdk-examples-other-${runId}@example.local`;
@@ -292,8 +289,8 @@ try {
   const jobs = [
     jobSummary("codex.chat", chatJob.job, chatFinal, chatEvents.items, streamEvents),
     jobSummary("codex.run", runJob.job, runFinal.job, (await owner.call("jobs.events", (client) => client.jobs.events(runJob.job.id))).items, []),
-    deniedJobSummary("codex.rpc", "codex.rpc", rpcDenied),
-    deniedJobSummary("jobs.create", "saas.custom.run", customDenied),
+    rpcOutcome.summary,
+    customOutcome.summary,
     jobSummary("jobs.cancel", cancelJob.job, cancelled.job, (await owner.call("jobs.events", (client) => client.jobs.events(cancelJob.job.id))).items, []),
   ];
 
@@ -342,7 +339,7 @@ try {
     evidence_dir: `spec/verification/evidence/${VERSION}`,
   }, null, 2));
 } finally {
-  await new Promise((resolveClose) => server.close(resolveClose));
+  // No external server is started; the fixture calls the Worker fetch handler in-process.
 }
 
 function sdkContext(label) {
@@ -352,7 +349,7 @@ function sdkContext(label) {
     const headers = new Headers(init.headers || {});
     headers.set("origin", apiBase);
     if (cookie) headers.set("cookie", cookie);
-    const response = await fetch(url, { ...init, headers });
+    const response = await workerFetch(url, { ...init, headers });
     const setCookie = response.headers.get("set-cookie");
     if (setCookie) cookie = setCookie.split(";")[0];
     const parsed = new URL(url);
@@ -387,6 +384,127 @@ function sdkContext(label) {
   };
 }
 
+async function workerFetch(url, init = {}) {
+  const method = init.method || "GET";
+  const headers = new Headers(init.headers || {});
+  const request = new Request(url, {
+    method,
+    headers,
+    body: init.body != null && method !== "GET" && method !== "HEAD" ? init.body : undefined,
+  });
+  return await worker.fetch(request, env);
+}
+
+function serverContext(label) {
+  let activeHelper = "untracked";
+  const fetchSigned = async (url, init = {}) => {
+    const response = await workerFetch(url, init);
+    const parsed = new URL(url);
+    coverage.push({
+      client: label,
+      helper: activeHelper,
+      method: init.method || "GET",
+      path: redactPath(`${parsed.pathname}${parsed.search}`),
+      status: response.status,
+    });
+    return response;
+  };
+  const client = createBridgeServerClient({
+    apiBase,
+    productId: "otherline",
+    secret: env.BRIDGE_OTHERLINE_DELEGATION_SECRET,
+    fetch: fetchSigned,
+  });
+  return {
+    client,
+    async call(helper, operation) {
+      activeHelper = helper;
+      try {
+        return await operation(client);
+      } finally {
+        activeHelper = "untracked";
+      }
+    },
+  };
+}
+
+async function exerciseEnsureReadyExample() {
+  const responses = [
+    bridgeStateFixture("not_authorized"),
+    { token: "pbi_sdk_examples", deep_link: "panda-bridge://connect?intent=pbi_sdk_examples", connect_intent: { expires_at: "2099-01-01T00:00:00Z" } },
+    bridgeStateFixture("ready"),
+  ];
+  const calls = [];
+  const client = createBridgeClient({
+    apiBase: "https://api.example.test",
+    productId: "panda-chat",
+    fetch: async (url, init) => {
+      const response = responses.shift() || bridgeStateFixture("ready");
+      const parsed = new URL(url);
+      calls.push({ method: init.method || "GET", path: `${parsed.pathname}${parsed.search}` });
+      return new Response(JSON.stringify(response), {
+        status: parsed.pathname === "/v1/connect-intents" ? 201 : 200,
+        headers: { "content-type": "application/json" },
+      });
+    },
+  });
+  let opened = "";
+  const result = await client.ensureReady({
+    intervalMs: 1,
+    timeoutMs: 1000,
+    openDeepLink: (deepLink) => {
+      opened = deepLink;
+    },
+  });
+  assert.equal(result.ready, true);
+  assert.equal(opened, "panda-bridge://connect?intent=pbi_sdk_examples");
+  assert.deepEqual(calls.map((call) => call.path), [
+    "/v1/bridge/state?product_id=panda-chat",
+    "/v1/connect-intents",
+    "/v1/bridge/state?product_id=panda-chat",
+  ]);
+  coverage.push({
+    client: "mock",
+    helper: "ensureReady",
+    method: "MIXED",
+    path: "/v1/bridge/state + /v1/connect-intents",
+    status: 200,
+  });
+}
+
+function bridgeStateFixture(bridge_state) {
+  return {
+    bridge_state,
+    product_id: "panda-chat",
+    install: {
+      download_url: "https://assets.bridge.otherline.cc/downloads/panda-bridge-macos.dmg",
+      version: "0.1.0",
+      sha256: "e65e04f08373ffe2363616dc1426516b74f12123f52c71d7225af4bac7225962",
+      platform: "macos",
+      open_url: "panda-bridge://open",
+    },
+    devices: bridge_state === "ready"
+      ? [{ id: "dev_1", name: "SDK Examples Fixture Device", online: true, last_seen_at: "2099-01-01T00:00:00Z", current: true }]
+      : [],
+    authorization: bridge_state === "ready" ? { status: "active", policy: bridgePolicy() } : null,
+    intent: null,
+    actions: bridge_state === "not_authorized" ? [{ kind: "authorize" }] : [],
+  };
+}
+
+function bridgePolicy() {
+  return {
+    version: "AUTH-SCOPE-v1",
+    preset: "sdk-examples",
+    capabilities: ["codex.chat"],
+    workspace_roots: [{ id: "default", path_display: "SDK Examples workspace" }],
+    sandbox_floor: "workspace-write",
+    approval_policy_floor: "on-request",
+    allow_approval_never: false,
+    allow_developer_instructions: false,
+  };
+}
+
 async function completeConnectorJobs(deviceToken, label) {
   const payload = await connectorRequest(deviceToken, "GET", "/v1/connectors/jobs");
   assert.ok(payload.items.length > 0, `expected at least one connector job for ${label}`);
@@ -409,7 +527,7 @@ async function completeConnectorJobs(deviceToken, label) {
 }
 
 async function connectorRequest(deviceToken, method, path, body = null) {
-  const response = await fetch(`${apiBase}${path}`, {
+  const response = await workerFetch(`${apiBase}${path}`, {
     method,
     headers: {
       accept: "application/json",
@@ -435,7 +553,7 @@ async function nativeClaimIntent(token, input = {}) {
     policy: input.policy || {},
   };
   const path = `/v1/connect-intents/${encodeURIComponent(token)}/claim`;
-  const response = await fetch(`${apiBase}${path}`, {
+  const response = await workerFetch(`${apiBase}${path}`, {
     method: "POST",
     headers: {
       accept: "application/json",
@@ -479,6 +597,26 @@ function jobSummary(helper, createdJob, finalJob, events, streamEvents) {
     event_count: (events || []).length,
     stream_event_count: (streamEvents || []).length,
   };
+}
+
+async function optionalJob(createOperation, completeOperation, kind, owner) {
+  try {
+    const created = await createOperation();
+    await completeOperation();
+    const final = await owner.call("jobs.get", (client) => client.jobs.get(created.job.id));
+    const events = await owner.call("jobs.events", (client) => client.jobs.events(created.job.id));
+    return {
+      created,
+      summary: jobSummary(kind, created.job, final.job, events.items, []),
+    };
+  } catch (error) {
+    assert.equal(error.status, 403);
+    assert.equal(error.payload?.error, "scope_insufficient");
+    return {
+      error,
+      summary: deniedJobSummary(kind, kind, error),
+    };
+  }
 }
 
 function deniedJobSummary(helper, kind, error) {
@@ -525,26 +663,4 @@ function redactPath(path) {
 
 function redactLocalPath(path) {
   return String(path).replace(/^\/Users\/[^/]+/, "/Users/<user>");
-}
-
-function readIncoming(incoming) {
-  return new Promise((resolveRead, reject) => {
-    const chunks = [];
-    incoming.on("data", (chunk) => chunks.push(chunk));
-    incoming.on("end", () => resolveRead(Buffer.concat(chunks)));
-    incoming.on("error", reject);
-  });
-}
-
-function incomingHeaders(raw) {
-  const headers = new Headers();
-  for (const [key, value] of Object.entries(raw || {})) {
-    if (Array.isArray(value)) headers.set(key, value.join(", "));
-    else if (value != null) headers.set(key, String(value));
-  }
-  return headers;
-}
-
-function shouldSendBody(method, body) {
-  return body.length > 0 && method !== "GET" && method !== "HEAD";
 }
