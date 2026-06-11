@@ -49,18 +49,26 @@ try {
   await page.locator("[data-login-form] button[type='submit']").click();
   await page.waitForFunction((email) => document.querySelector("[data-session-status]")?.textContent?.includes(email), testEmail);
 
-  await page.getByRole("button", { name: "连接本机" }).click();
-  await page.waitForFunction(() => document.querySelector("[data-install-command]")?.textContent?.includes("--intent"));
-  const command = await page.locator("[data-install-command]").textContent();
-  const intent = command.match(/--intent '([^']+)'/)?.[1];
-  assert.ok(intent, `connect intent not found in command: ${command}`);
+  const intent = await page.evaluate(async () => {
+    const response = await fetch("/v1/connect-intents", {
+      method: "POST",
+      credentials: "include",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ product_id: "panda-chat", device_name: "Pandart Real Codex Connector" }),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(JSON.stringify(payload));
+    return payload.token;
+  });
+  assert.ok(intent, "connect intent not created");
 
   const connect = await runDesktop(["headless-connect", "--api", appUrl, "--intent", intent, "--device-name", deviceName], 120000);
   writeFileSync(resolve(evidenceDir, "headless-connect.json"), childPayload(connect));
   assert.equal(connect.status, 0, childMessage(connect));
 
   await page.getByRole("button", { name: "刷新" }).click();
-  await selectDeviceByName(page, deviceName);
+  await page.waitForFunction((needle) => document.querySelector("[data-device-status]")?.textContent?.includes(needle), deviceName, { timeout: 60000 });
+  await page.waitForSelector("[data-bridge-state='ready']", { timeout: 60000 });
 
   await page.locator("[data-input]").fill(prompt);
   await page.getByRole("button", { name: "发送" }).click();
@@ -122,24 +130,6 @@ async function getJson(url) {
   const payload = text ? JSON.parse(text) : {};
   assert.ok(response.ok, `${url}: ${JSON.stringify(payload)}`);
   return payload;
-}
-
-async function selectDeviceByName(page, name) {
-  await page.waitForFunction((needle) => {
-    const select = document.querySelector("[data-device-select]");
-    return [...(select?.options || [])].some((option) => option.textContent?.includes(needle));
-  }, name, { timeout: 60000 });
-  const value = await page.locator("[data-device-select]").evaluate((select, needle) => {
-    const option = [...select.options].find((item) => item.textContent?.includes(needle));
-    return option?.value || "";
-  }, name);
-  assert.ok(value, `device option not found for ${name}`);
-  await page.locator("[data-device-select]").selectOption(value);
-  await page.waitForFunction((needle) => {
-    const select = document.querySelector("[data-device-select]");
-    const selected = select?.options?.[select.selectedIndex]?.textContent || "";
-    return selected.includes(needle);
-  }, name, { timeout: 10000 });
 }
 
 function runDesktop(args, timeoutMs) {
