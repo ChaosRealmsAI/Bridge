@@ -230,8 +230,12 @@ assert.equal(unauthenticatedQueueSummary.response.status, 401);
 assert.equal(unauthenticatedQueueSummary.payload.error, "unauthorized");
 const noSessionState = await apiRaw("GET", "/v1/bridge/state?product_id=panda-chat");
 assert.equal(noSessionState.response.status, 200);
-assert.equal(noSessionState.payload.state, "no_session", "BS-001 no_session");
-assert.equal(noSessionState.payload.actions[0].kind, "login", "BS-001 no_session login action");
+assert.equal(noSessionState.payload.authenticated, false, "AUTH-001 no session is unauthenticated");
+assert.deepEqual(noSessionState.payload.accounts, [], "AUTH-001 no session has no account rows");
+assert.equal(noSessionState.payload.authorization, null, "AUTH-001 no authorization without a session");
+assert.equal(noSessionState.payload.connected, false, "CONN-001 no session is not connected");
+assert.equal("state" in noSessionState.payload, false, "CONN-001 bridge state no longer exposes six-state state");
+assert.equal("bridge_state" in noSessionState.payload, false, "CONN-001 bridge state no longer exposes bridge_state");
 
 const invalidContentType = await apiRawText("POST", "/v1/sessions/guest", JSON.stringify({ display_name: "Plain Text" }), "", {
   "content-type": "text/plain",
@@ -275,10 +279,14 @@ assert.ok(products.items.some((item) => item.id === "panda-chat" && item.capabil
 assert.ok(products.items.some((item) => item.id === "panda-dev" && item.capabilities.includes("codex.rpc")));
 assert.ok(products.items.some((item) => item.id === "otherline" && item.capabilities.includes("saas.custom.run")));
 const noDeviceState = await api("GET", "/v1/bridge/state?product_id=panda-chat");
-assert.equal(noDeviceState.state, "no_device", "BS-002 no_device");
-assert.equal(noDeviceState.actions[0].kind, "download", "BS-002 no_device download action");
+assert.equal(noDeviceState.authenticated, true, "AUTH-001 authenticated state");
+assert.equal(noDeviceState.accounts.length, 1, "AUTH-001 account-level state row");
+assert.equal(noDeviceState.accounts[0].authorization.status, "revoked", "AUTH-001 no authorization before desktop claim");
+assert.equal(noDeviceState.connected, false, "CONN-001 no desktop device is not connected");
+assert.equal(noDeviceState.current_device, null, "CONN-001 no desktop device selected");
+assert.equal("actions" in noDeviceState, false, "CONN-001 bridge state no longer exposes six-state actions");
 const downloadAsset = await worker.fetch(new Request(noDeviceState.install.download_url, { method: "HEAD" }), env);
-assert.equal(downloadAsset.status, 200, "BS-007 download_url available");
+assert.equal(downloadAsset.status, 200, "CONN-002 download_url available");
 const pairing = await api("POST", "/v1/devices/pairing-codes", { device_name: "Local Test Device" });
 const claim = await api("POST", "/v1/connectors/claim", {
   code: pairing.code,
@@ -305,14 +313,24 @@ const nativeClaimWithHeader = await apiMissingOrigin("POST", `/v1/connect-intent
 assert.equal(nativeClaimWithHeader.response.status, 201);
 assert.equal(nativeClaimWithHeader.payload.device.id, claim.device.id);
 
-const localIntent = await api("POST", "/v1/connect-intents", { product_id: "panda-chat", device_name: "Local Test Device" });
-assert.equal(localIntent.already_authorized, true, "IC-001 session already_authorized returns ready");
-assert.equal(localIntent.state, "ready");
+const localIntent = await api("POST", "/v1/connect-intents", {
+  product_id: "panda-chat",
+  device_name: "Local Test Device",
+  install_id: "install-local-test-device",
+});
+assert.equal(localIntent.already_authorized, true, "CONN-003 same install_id already_authorized");
+assert.equal("state" in localIntent, false, "CONN-003 already_authorized no longer exposes six-state state");
+assert.equal("ready" in localIntent, false, "CONN-003 already_authorized uses connected bool");
+assert.equal(localIntent.connected, true, "CONN-003 already_authorized device is connected");
 const localIntentClaim = nativeClaimWithHeader.payload;
 assert.equal(localIntentClaim.device.id, claim.device.id);
 const readyState = await api("GET", "/v1/bridge/state?product_id=panda-chat");
-assert.equal(readyState.state, "ready", "BS-006 ready");
-assert.equal(readyState.actions.length, 0, "BS-006 ready has no primary CTA");
+assert.equal(readyState.accounts[0].authorization.status, "active", "AUTH-002 active authorization in account state");
+assert.equal(readyState.connected, true, "CONN-003 active online authorization is connected");
+assert.equal(readyState.current_device.id, localIntentClaim.device.id, "CONN-003 current_device is selected");
+assert.equal("policy" in readyState.authorization, false, "AUTH-002 state authorization hides policy");
+assert.equal("capabilities" in readyState.product, false, "AUTH-002 state product hides capabilities");
+assert.equal("state" in readyState, false, "CONN-003 ready is represented by connected bool");
 const created = await api("POST", "/v1/products/panda-chat/jobs", {
   kind: "codex.chat",
   device_id: localIntentClaim.device.id,
@@ -380,25 +398,27 @@ assert.doesNotMatch(queueSummaryText, /pb_session/i);
 const revokeBeforeIntentTest = await api("DELETE", `/v1/products/panda-chat/authorization?device_id=${encodeURIComponent(localIntentClaim.device.id)}`);
 assert.equal(revokeBeforeIntentTest.authorization.status, "revoked");
 const notAuthorizedState = await api("GET", "/v1/bridge/state?product_id=panda-chat");
-assert.equal(notAuthorizedState.state, "not_authorized", "BS-005 not_authorized");
-assert.equal(notAuthorizedState.actions[0].kind, "authorize", "BS-005 not_authorized authorize action");
+assert.equal(notAuthorizedState.authorization.status, "revoked", "AUTH-004 revoked authorization remains explicit");
+assert.equal(notAuthorizedState.connected, false, "CONN-004 revoked authorization is not connected");
+assert.equal("actions" in notAuthorizedState, false, "CONN-004 revoked state has no six-state action");
 const intent = await api("POST", "/v1/connect-intents", { product_id: "panda-chat", device_name: "Intent Test Device" }, "", { origin: "http://chat.local.test" });
 assert.ok(intent.token);
 assert.equal(intent.product.name, "Panda Chat");
 assert.equal(intent.connect_intent.source_origin, "http://chat.local.test");
-assert.equal(intent.connect_intent.policy.workspace_roots[0].allow_all, true);
-assert.equal(intent.connect_intent.policy.sandbox_floor, "danger-full-access");
-assert.equal(intent.connect_intent.policy.approval_policy_floor, "never");
+assert.equal("policy" in intent.connect_intent, false, "AUTH-003 connect intent preview hides policy");
+assert.equal("capabilities" in intent.product, false, "AUTH-003 connect intent product hides capabilities");
 const inspected = await api("GET", `/v1/connect-intents/${encodeURIComponent(intent.token)}`);
 assert.equal(inspected.connect_intent.product_id, "panda-chat");
 assert.equal(inspected.connect_intent.source_origin, "http://chat.local.test");
-assert.equal(inspected.connect_intent.policy.workspace_roots[0].id, "all");
+assert.equal("policy" in inspected.connect_intent, false, "AUTH-003 inspected intent hides policy");
 assert.equal(inspected.account.display_name, "Tester");
 const pendingState = await api("GET", "/v1/bridge/state?product_id=panda-chat");
-assert.equal(pendingState.state, "authorization_pending", "BS-003 authorization_pending");
-assert.equal(pendingState.intent.expires_at, intent.connect_intent.expires_at, "BS-003 pending exposes expires_at");
-assert.equal(pendingState.intent.token, null, "BS-003 pending degrades without token recovery secret");
-assert.equal(pendingState.actions[0].kind, "confirm_on_desktop", "BS-003 pending confirm action");
+assert.equal(pendingState.authorization.status, "revoked", "AUTH-004 pending intent does not reauthorize yet");
+assert.equal(pendingState.connected, false, "CONN-004 pending intent is not connected");
+assert.equal("pending_intent" in pendingState, false, "AUTH-003 state hides pending intent display details");
+assert.equal("intent" in pendingState, false, "AUTH-003 state hides intent display details");
+assert.equal("state" in pendingState, false, "AUTH-003 pending has no six-state string");
+assert.equal("actions" in pendingState, false, "AUTH-003 pending has no six-state action");
 const crossProductIntent = await apiRaw("POST", "/v1/connect-intents", { product_id: "panda-dev", device_name: "Wrong Origin" }, "", { origin: "http://chat.local.test" });
 assert.equal(crossProductIntent.response.status, 403);
 assert.equal(crossProductIntent.payload.error, "product_origin_mismatch");
@@ -413,10 +433,7 @@ const maliciousDisplayIntent = await api("POST", "/v1/connect-intents", {
     display: { workspace: "Tiny project", sandbox: "read-only", approval: "on-request", developer_instructions: "denied" },
   },
 }, "", { origin: "http://chat.local.test" });
-assert.equal(maliciousDisplayIntent.connect_intent.policy.display.workspace, "All local files");
-assert.equal(maliciousDisplayIntent.connect_intent.policy.display.sandbox, "danger-full-access");
-assert.equal(maliciousDisplayIntent.connect_intent.policy.display.approval, "never");
-assert.equal(maliciousDisplayIntent.connect_intent.policy.display.developer_instructions, "allowed");
+assert.equal("policy" in maliciousDisplayIntent.connect_intent, false, "AUTH-003 malicious display policy is not exposed");
 const maliciousDisplayClaim = await nativeClaimIntent(maliciousDisplayIntent.token, {
   device_name: "Malicious Display",
   install_id: "install-malicious-display",
@@ -459,12 +476,13 @@ assert.ok(intentClaim.token_expires_at);
 await new Promise((resolve) => setTimeout(resolve, 5));
 env.BRIDGE_DEVICE_ONLINE_GRACE_MS = "0";
 const authorizedOfflineState = await api("GET", "/v1/bridge/state?product_id=panda-chat");
-assert.equal(authorizedOfflineState.state, "authorized_offline", "BS-004 authorized_offline");
-assert.equal(authorizedOfflineState.actions[0].kind, "open_desktop", "BS-004 authorized_offline open_desktop");
+assert.equal(authorizedOfflineState.authorization.status, "active", "AUTH-002 active authorization survives offline presence");
+assert.equal(authorizedOfflineState.connected, false, "CONN-004 offline presence is reconnecting");
 const authorizedOfflineIntent = await api("POST", "/v1/connect-intents", { product_id: "panda-chat", device_name: "Offline Authorized Device" }, "", { origin: "http://chat.local.test" });
-assert.equal(authorizedOfflineIntent.state, "authorized_offline", "IC-002 authorized_offline returns open_desktop");
-assert.equal(authorizedOfflineIntent.actions[0].kind, "open_desktop", "IC-002 authorized_offline does not authorize");
-assert.equal("token" in authorizedOfflineIntent, false, "IC-002 authorized_offline does not create intent");
+assert.equal(authorizedOfflineIntent.already_authorized, true, "CONN-004 reconnecting active authorization does not create intent");
+assert.equal("ready" in authorizedOfflineIntent, false, "CONN-004 already_authorized uses connected bool");
+assert.equal(authorizedOfflineIntent.connected, false, "CONN-004 offline authorized device is reconnecting");
+assert.equal("token" in authorizedOfflineIntent, false, "CONN-004 reconnecting authorization does not create intent");
 delete env.BRIDGE_DEVICE_ONLINE_GRACE_MS;
 const consumedIntentInspect = await apiRaw("GET", `/v1/connect-intents/${encodeURIComponent(intent.token)}`);
 assert.equal(consumedIntentInspect.response.status, 400);
@@ -488,13 +506,15 @@ delete env.BRIDGE_CONNECT_INTENT_TTL_MS;
 
 env.BRIDGE_CONNECT_INTENT_TTL_MS = "1";
 const expiringDevIntent = await api("POST", "/v1/connect-intents", { product_id: "panda-dev", device_name: "Expiring Dev Intent" }, "", { origin: "http://dev.local.test" });
-assert.ok(expiringDevIntent.token, "IC-006 expiring intent created");
+assert.ok(expiringDevIntent.token, "AUTH-003 expiring intent created");
 await new Promise((resolve) => setTimeout(resolve, 5));
 const expiredDevState = await api("GET", "/v1/bridge/state?product_id=panda-dev", null, "", { origin: "http://dev.local.test" });
-assert.equal(expiredDevState.state, "not_authorized", "IC-006 expired intent returns not_authorized");
+assert.equal(expiredDevState.authorization.status, "revoked", "AUTH-003 expired intent leaves product unauthorized");
+assert.equal("pending_intent" in expiredDevState, false, "AUTH-003 expired intent is omitted from state");
+assert.equal(expiredDevState.connected, false, "CONN-004 unauthorized product is not connected");
 delete env.BRIDGE_CONNECT_INTENT_TTL_MS;
 const reissuedDevIntent = await api("POST", "/v1/connect-intents", { product_id: "panda-dev", device_name: "Reissued Dev Intent" }, "", { origin: "http://dev.local.test" });
-assert.ok(reissuedDevIntent.token, "IC-006 not_authorized can reissue intent");
+assert.ok(reissuedDevIntent.token, "AUTH-003 unauthorized account can reissue intent");
 
 env.BRIDGE_DEVICE_TOKEN_ROTATION_GRACE_MS = "0";
 const rotatedToken = await api("POST", "/v1/connectors/token/rotate", {
@@ -576,7 +596,8 @@ assert.equal(lateRunningAck.payload.job.status, "cancelled");
 assert.equal(lateRunningAck.payload.job.result.reply, undefined);
 await api("POST", "/v1/connectors/heartbeat", {}, intentClaim.device_token);
 const authAfterConnectorRevoke = await api("GET", `/v1/products/panda-chat/authorization?device_id=${encodeURIComponent(intentClaim.device.id)}`);
-assert.equal(authAfterConnectorRevoke.authorization, null);
+assert.equal(authAfterConnectorRevoke.authorization.status, "revoked", "AUTH-004 revoked authorization is observable");
+assert.equal("policy" in authAfterConnectorRevoke.authorization, false, "AUTH-004 authorization GET hides policy");
 const jobAfterConnectorRevoke = await apiRaw("POST", "/v1/products/panda-chat/jobs", {
   kind: "codex.chat",
   device_id: intentClaim.device.id,
@@ -600,6 +621,34 @@ assert.equal(reconnectClaim.authorization.status, "active");
 intentClaim.device_token = reconnectClaim.device_token;
 const authAfterExplicitReconnect = await api("GET", `/v1/products/panda-chat/authorization?device_id=${encodeURIComponent(intentClaim.device.id)}`);
 assert.equal(authAfterExplicitReconnect.authorization.status, "active");
+assert.equal("policy" in authAfterExplicitReconnect.authorization, false, "AUTH-002 authorization GET hides policy");
+
+const pausedChat = await api("PATCH", `/v1/products/panda-chat/authorization?device_id=${encodeURIComponent(intentClaim.device.id)}`, {
+  status: "paused",
+}, "", { origin: "http://chat.local.test" });
+assert.equal(pausedChat.authorization.status, "paused", "AUTH-005 PATCH pauses authorization");
+assert.equal("policy" in pausedChat.authorization, false, "AUTH-005 paused response hides policy");
+const pausedState = await api("GET", "/v1/bridge/state?product_id=panda-chat", null, "", { origin: "http://chat.local.test" });
+assert.equal(pausedState.authorization.status, "paused", "AUTH-005 state exposes paused authorization");
+assert.equal(pausedState.connected, false, "CONN-005 paused authorization disables connection");
+const pausedJob = await apiRaw("POST", "/v1/products/panda-chat/jobs", {
+  kind: "codex.chat",
+  device_id: intentClaim.device.id,
+  product_id: "panda-chat",
+  workspace_ref: "default",
+  input: { prompt: "chat while paused" },
+  request_key: "chat-while-paused",
+  policy: { token_budget: 1000, timeout_ms: 60000 },
+}, "", { origin: "http://chat.local.test" });
+assert.equal(pausedJob.response.status, 403, "AUTH-005 paused rejects job creation");
+assert.equal(pausedJob.payload.error, "authorization_paused", "AUTH-005 paused rejection code");
+const resumedChat = await api("PATCH", `/v1/products/panda-chat/authorization?device_id=${encodeURIComponent(intentClaim.device.id)}`, {
+  status: "active",
+}, "", { origin: "http://chat.local.test" });
+assert.equal(resumedChat.authorization.status, "active", "AUTH-006 PATCH resumes authorization");
+const resumedState = await api("GET", "/v1/bridge/state?product_id=panda-chat", null, "", { origin: "http://chat.local.test" });
+assert.equal(resumedState.authorization.status, "active", "AUTH-006 resumed state is active");
+assert.equal(resumedState.connected, true, "CONN-006 resumed authorization reconnects automatically");
 
 const chatRpc = await apiRaw("POST", "/v1/products/panda-chat/jobs", {
   kind: "codex.rpc",
@@ -713,6 +762,7 @@ assert.equal(delegatedMalformedJson.response.status, 400);
 assert.equal(delegatedMalformedJson.payload.error, "invalid_json");
 const delegatedAuthorization = await delegatedApi("GET", `/v1/products/otherline/delegated/authorization?device_id=${encodeURIComponent(otherlineClaim.device.id)}`, null, otherlineClaim.account.id, otherlineClaim.device.id);
 assert.equal(delegatedAuthorization.authorization.product_id, "otherline");
+assert.equal("policy" in delegatedAuthorization.authorization, false, "AUTH-002 delegated authorization hides policy");
 assert.equal(delegatedAuthorization.device.status, "online");
 
 const replayNonce = randomUUID();
@@ -792,8 +842,7 @@ const delegatedScopedIntent = await delegatedApi("POST", "/v1/products/otherline
     allow_developer_instructions: false,
   },
 }, otherlineClaim.account.id, "pending");
-assert.deepEqual(delegatedScopedIntent.connect_intent.policy.capabilities, ["codex.chat"]);
-assert.equal(delegatedScopedIntent.connect_intent.policy.source_origin, "https://app.test.example");
+assert.equal("policy" in delegatedScopedIntent.connect_intent, false, "AUTH-003 delegated connect intent preview hides policy");
 const delegatedScopedClaim = await nativeClaimIntent(delegatedScopedIntent.token, {
   device_name: "Delegated Scoped Device",
   install_id: "install-delegated-user-device",
@@ -1024,8 +1073,8 @@ const missingInstallClaim = await nativeClaimIntentRaw(missingInstallIntent.toke
   device_name: "Missing Install Device",
   capabilities: { codex: ["codex.chat"] },
 }, "", { "x-panda-bridge-install-id": "" });
-assert.equal(missingInstallClaim.response.status, 400, "IC-009 install_id missing claim rejected");
-assert.equal(missingInstallClaim.payload.error, "install_id_required", "IC-009 install_id_required");
+assert.equal(missingInstallClaim.response.status, 400, "SEC-004 install_id missing claim rejected");
+assert.equal(missingInstallClaim.payload.error, "install_id_required", "SEC-004 install_id_required");
 const installBoundIntent = await api("POST", "/v1/connect-intents", { product_id: "panda-chat", device_name: "Install Bound Device" });
 const installBoundClaim = await nativeClaimIntentRaw(installBoundIntent.token, {
   device_name: "Install Bound Device",
@@ -1044,11 +1093,11 @@ const sameInstallClaim = await nativeClaimIntentRaw(sameInstallIntent.token, {
   capabilities: { codex: ["codex.chat"] },
 }, installBoundToken, { "x-panda-bridge-install-id": "install-one" });
 assert.equal(sameInstallClaim.response.status, 201);
-assert.equal(sameInstallClaim.payload.device.id, activeBridgeDeviceId, "IC-003 same install_id reuses device");
-assert.notEqual(sameInstallClaim.payload.device_token, installBoundToken, "IC-003 same install_id refreshes token");
+assert.equal(sameInstallClaim.payload.device.id, activeBridgeDeviceId, "SEC-005 same install_id reuses device");
+assert.notEqual(sameInstallClaim.payload.device_token, installBoundToken, "SEC-005 same install_id refreshes token");
 installBoundToken = sameInstallClaim.payload.device_token;
-assert.ok(sameInstallClaim.payload.devices.some((item) => item.id === localIntentClaim.device.id), "IC-004 multiple Macs are not revoked");
-assert.ok(sameInstallClaim.payload.devices.some((item) => item.id === activeBridgeDeviceId), "IC-005 claim carries active devices");
+assert.ok(sameInstallClaim.payload.devices.some((item) => item.id === localIntentClaim.device.id), "CONN-007 multiple Macs are not revoked");
+assert.ok(sameInstallClaim.payload.devices.some((item) => item.id === activeBridgeDeviceId), "CONN-007 claim carries active devices");
 const missingInstallHeartbeat = await apiRaw("POST", "/v1/connectors/heartbeat", {}, installBoundToken, { "x-panda-bridge-install-id": "" });
 assert.equal(missingInstallHeartbeat.response.status, 401);
 assert.equal(missingInstallHeartbeat.payload.error, "unauthorized");
@@ -1057,7 +1106,7 @@ assert.equal(wrongInstallHeartbeat.response.status, 401);
 assert.equal(wrongInstallHeartbeat.payload.error, "unauthorized");
 const correctInstallHeartbeat = await apiRaw("POST", "/v1/connectors/heartbeat", {}, installBoundToken, { "x-panda-bridge-install-id": "install-one" });
 assert.equal(correctInstallHeartbeat.response.status, 200);
-assert.ok(correctInstallHeartbeat.payload.devices.some((item) => item.id === activeBridgeDeviceId), "IC-005 heartbeat carries active devices");
+assert.ok(correctInstallHeartbeat.payload.devices.some((item) => item.id === activeBridgeDeviceId), "CONN-007 heartbeat carries active devices");
 const installBoundJob = await api("POST", "/v1/products/panda-chat/jobs", {
   kind: "codex.chat",
   device_id: installBoundClaim.payload.device.id,

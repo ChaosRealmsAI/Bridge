@@ -74,6 +74,7 @@ export default {
       if (path === "/v1/connectors/heartbeat" && request.method === "POST") return await connectorHeartbeat(request, env);
       if (path === "/v1/connectors/token/rotate" && request.method === "POST") return await rotateConnectorToken(request, env);
       const connectorAuthMatch = path.match(/^\/v1\/connectors\/products\/([^/]+)\/authorization$/);
+      if (connectorAuthMatch && request.method === "PATCH") return await updateConnectorAuthorization(request, env, decodeURIComponent(connectorAuthMatch[1]));
       if (connectorAuthMatch && request.method === "DELETE") return await revokeConnectorAuthorization(request, env, decodeURIComponent(connectorAuthMatch[1]));
       if (path === "/v1/connectors/jobs" && request.method === "GET") return await connectorJobs(request, env);
       const realtimeDeviceMatch = path.match(/^\/v1\/realtime\/devices\/([^/]+)$/);
@@ -92,11 +93,13 @@ export default {
       if (authRequestMatch && request.method === "POST") return await requestAuthorization(request, env, decodeURIComponent(authRequestMatch[1]));
       const authImportProofMatch = path.match(/^\/v1\/products\/([^/]+)\/authorization\/import-proof$/);
       if (authImportProofMatch && request.method === "POST") return await createAuthorizationImportProof(request, env, decodeURIComponent(authImportProofMatch[1]));
+      if (authMatch && request.method === "PATCH") return await updateAuthorization(request, env, decodeURIComponent(authMatch[1]));
       if (authMatch && request.method === "DELETE") return await revokeAuthorization(request, env, decodeURIComponent(authMatch[1]));
       const productJobMatch = path.match(/^\/v1\/products\/([^/]+)\/jobs$/);
       if (productJobMatch && request.method === "POST") return await createProductJob(request, env, decodeURIComponent(productJobMatch[1]), ctx);
       const delegatedAuthorizationMatch = path.match(/^\/v1\/products\/([^/]+)\/delegated\/authorization$/);
       if (delegatedAuthorizationMatch && request.method === "GET") return await delegatedProductAuthorization(request, env, decodeURIComponent(delegatedAuthorizationMatch[1]));
+      if (delegatedAuthorizationMatch && request.method === "PATCH") return await updateDelegatedProductAuthorization(request, env, decodeURIComponent(delegatedAuthorizationMatch[1]));
       if (delegatedAuthorizationMatch && request.method === "DELETE") return await revokeDelegatedProductAuthorization(request, env, decodeURIComponent(delegatedAuthorizationMatch[1]));
       const delegatedStatusMatch = path.match(/^\/v1\/products\/([^/]+)\/delegated\/status$/);
       if (delegatedStatusMatch && request.method === "GET") return await delegatedProductStatus(request, env, decodeURIComponent(delegatedStatusMatch[1]));
@@ -277,7 +280,8 @@ export class BridgeDeviceRoom {
     }
     this.broadcastWeb({
       type: "bridge.state",
-      state: "authorized_offline",
+      connected: false,
+      connection: { status: "reconnecting" },
       device_id: meta.deviceId,
       user_id: meta.userId || null,
       sent_at: at,
@@ -635,9 +639,10 @@ async function createConnectIntent(request, env) {
     product,
     source_origin,
   );
-  const alreadyAuthorized = await alreadyAuthorizedConnectPayload(env, session.user, product, policy);
+  const installId = clean(body.install_id || body.installId, 200);
+  const alreadyAuthorized = await alreadyAuthorizedConnectPayload(env, session.user, product, policy, installId);
   if (alreadyAuthorized) return json(alreadyAuthorized, env);
-  const authorizedOffline = await authorizedOfflineConnectPayload(env, session.user, product, policy);
+  const authorizedOffline = await authorizedOfflineConnectPayload(env, session.user, product, policy, installId);
   if (authorizedOffline) return json(authorizedOffline, env);
   const token = randomToken("pbi_");
   const tokenRecovery = await recoverableIntentTokenPatch(env, token);
@@ -660,7 +665,7 @@ async function createConnectIntent(request, env) {
     deep_link: connectIntentDeepLink(env, token),
     connect_intent: publicConnectIntent(row, session.user, env),
     account: publicAccount(session.user),
-    product,
+    product: publicStateProduct(product),
     ttl_seconds: Math.trunc(connectIntentTtlMs(env) / 1000),
   }, env, 201);
 }
@@ -676,7 +681,7 @@ async function getConnectIntent(request, env, token) {
     deep_link: connectIntentDeepLink(env, token),
     connect_intent: publicConnectIntent(intent, user, env),
     account: publicAccount(user),
-    product,
+    product: publicStateProduct(product),
   }, env);
 }
 
@@ -732,7 +737,7 @@ async function claimConnectIntent(request, env, token) {
   await audit(env, intent.user_id, device.id, product.id, "connect_intent.claim", intent.id, { app_version: body.app_version || null, source_origin });
   return json({
     device: publicDevice(device, env),
-    authorization,
+    authorization: publicAuthorization(authorization, { includePolicy: true }),
     account: publicAccount(user),
     product,
     device_token: deviceToken,
@@ -812,10 +817,12 @@ async function connectorJobs(request, env) {
   const rows = await store.select("bridge_jobs", { device_id: connector.device.id, status: "queued" }, { order: "created_at" });
   const authorizedRows = [];
   for (const row of rows) {
-    if (await activeAuthorization(env, row.user_id, row.device_id, row.product_id)) {
+    const authorization = await authorizationForProduct(env, row.user_id, row.device_id, row.product_id);
+    const denial = authorizationJobDenial(authorization);
+    if (!denial) {
       authorizedRows.push(row);
     } else {
-      await cancelAuthorizationRevokedJob(env, row);
+      await cancelAuthorizationInactiveJob(env, row, denial);
     }
   }
   const available = await availableDeviceSlots(env, connector.device.id);
@@ -849,8 +856,8 @@ async function productAuthorization(request, env, productId) {
   const session = await requireSession(request, env);
   const url = new URL(request.url);
   const deviceId = url.searchParams.get("device_id") || "";
-  const authorization = await activeAuthorization(env, session.user.id, deviceId, product.id);
-  return json({ authorization, product }, env);
+  const authorization = await authorizationForProduct(env, session.user.id, deviceId, product.id);
+  return json({ authorization: publicAuthorization(authorization), product: publicStateProduct(product) }, env);
 }
 
 async function requestAuthorization(request, env, productId) {
@@ -861,10 +868,12 @@ async function requestAuthorization(request, env, productId) {
   const body = await readJson(request, env);
   const device = await ownedDevice(env, session.user.id, String(body.device_id || ""));
   if (!device) return json({ error: "device_not_found" }, env, 404);
-  const authorization = await activeAuthorization(env, session.user.id, device.id, product.id);
-  if (authorization) return json({ authorization, product }, env);
+  const authorization = await authorizationForProduct(env, session.user.id, device.id, product.id);
+  if (authorization?.status === "active" || authorization?.status === "paused") {
+    return json({ authorization: publicAuthorization(authorization), product: publicStateProduct(product) }, env);
+  }
   await audit(env, session.user.id, device.id, product.id, "authorization.desktop_required", device.id, { source_origin: sourceOrigin(env) });
-  return json({ error: "desktop_authorization_required", authorization: null, product }, env, 403);
+  return json({ error: "desktop_authorization_required", authorization: publicAuthorization(authorization), product: publicStateProduct(product) }, env, 403);
 }
 
 async function createAuthorizationImportProof(request, env, productId) {
@@ -875,8 +884,9 @@ async function createAuthorizationImportProof(request, env, productId) {
   const body = await readJson(request, env);
   const device = await ownedDevice(env, session.user.id, String(body.device_id || ""));
   if (!device || device.status === "revoked") return json({ error: "device_not_found" }, env, 404);
-  const authorization = await activeAuthorization(env, session.user.id, device.id, product.id);
-  if (!authorization) return json({ error: "product_not_authorized" }, env, 403);
+  const authorization = await authorizationForProduct(env, session.user.id, device.id, product.id);
+  const denial = authorizationJobDenial(authorization);
+  if (denial) return json({ error: denial.error }, env, 403);
   const token = randomToken("pbip_");
   const expiresAt = new Date(Date.now() + authorizationImportProofTtlMs(env)).toISOString();
   await storage(env).insert("bridge_authorization_import_proofs", {
@@ -893,10 +903,35 @@ async function createAuthorizationImportProof(request, env, productId) {
   await audit(env, session.user.id, device.id, product.id, "authorization.import_proof.create", authorization.id, { source_origin: sourceOrigin(env) });
   return json({
     proof: { token, expires_at: expiresAt },
-    authorization,
+    authorization: publicAuthorization(authorization),
     device: publicDevice(device, env),
-    product,
+    product: publicStateProduct(product),
   }, env, 201);
+}
+
+async function updateAuthorization(request, env, productId) {
+  const product = requireOfficialProduct(productId, env);
+  const originError = rejectProductOrigin(product, sourceOrigin(env), env);
+  if (originError) return originError;
+  const session = await requireSession(request, env);
+  const url = new URL(request.url);
+  const device = await ownedDevice(env, session.user.id, url.searchParams.get("device_id") || "");
+  if (!device || device.status === "revoked") return json({ error: "device_not_found" }, env, 404);
+  const body = await readJson(request, env);
+  const result = await updateAuthorizationStatus(env, {
+    userId: session.user.id,
+    deviceId: device.id,
+    product,
+    status: clean(body.status, 40),
+    sourceOrigin: sourceOrigin(env),
+    auditActionPrefix: "authorization",
+  });
+  if (result.error) return json({ error: result.error }, env, result.status || 400);
+  return json({
+    authorization: publicAuthorization(result.authorization),
+    product: publicStateProduct(product),
+    cancelled_jobs: result.cancelledJobs,
+  }, env);
 }
 
 async function revokeAuthorization(request, env, productId) {
@@ -912,11 +947,31 @@ async function revokeAuthorization(request, env, productId) {
     device_id: device.id,
     product_id: product.id,
   }))[0];
-  if (!authorization) return json({ authorization: null, product }, env);
+  if (!authorization) return json({ authorization: null, product: publicStateProduct(product) }, env);
   const revoked = await storage(env).update("bridge_authorizations", authorization.id, { status: "revoked", updated_at: now() });
   const cancelled_jobs = await cancelQueuedJobsForAuthorization(env, session.user.id, device.id, product.id);
   await audit(env, session.user.id, device.id, product.id, "authorization.revoke", authorization.id, { source_origin: sourceOrigin(env) });
-  return json({ authorization: revoked, product, cancelled_jobs }, env);
+  return json({ authorization: publicAuthorization(revoked), product: publicStateProduct(product), cancelled_jobs }, env);
+}
+
+async function updateConnectorAuthorization(request, env, productId) {
+  const product = requireOfficialProduct(productId, env);
+  const connector = await requireConnector(request, env);
+  const body = await readJson(request, env);
+  const result = await updateAuthorizationStatus(env, {
+    userId: connector.device.user_id,
+    deviceId: connector.device.id,
+    product,
+    status: clean(body.status, 40),
+    sourceOrigin: sourceOrigin(env),
+    auditActionPrefix: "authorization.connector",
+  });
+  if (result.error) return json({ error: result.error }, env, result.status || 400);
+  return json({
+    authorization: publicAuthorization(result.authorization),
+    product: publicStateProduct(product),
+    cancelled_jobs: result.cancelledJobs,
+  }, env);
 }
 
 async function revokeConnectorAuthorization(request, env, productId) {
@@ -927,13 +982,13 @@ async function revokeConnectorAuthorization(request, env, productId) {
     device_id: connector.device.id,
     product_id: product.id,
   }))[0];
-  if (!authorization) return json({ authorization: null, product, cancelled_jobs: 0 }, env);
+  if (!authorization) return json({ authorization: null, product: publicStateProduct(product), cancelled_jobs: 0 }, env);
   const revoked = await storage(env).update("bridge_authorizations", authorization.id, { status: "revoked", updated_at: now() });
   const cancelled_jobs = await cancelQueuedJobsForAuthorization(env, connector.device.user_id, connector.device.id, product.id);
   await audit(env, connector.device.user_id, connector.device.id, product.id, "authorization.revoke.connector", authorization.id, {
     source_origin: sourceOrigin(env),
   });
-  return json({ authorization: revoked, product, cancelled_jobs }, env);
+  return json({ authorization: publicAuthorization(revoked), product: publicStateProduct(product), cancelled_jobs }, env);
 }
 
 async function createProductJob(request, env, productId, ctx = {}) {
@@ -968,8 +1023,8 @@ async function delegatedProductAuthorization(request, env, productId) {
   if (deviceId !== delegation.deviceId) return json({ error: "delegated_device_mismatch" }, env, 403);
   const device = await ownedDevice(env, delegation.bridgeUserId, deviceId);
   if (!device || device.status === "revoked") return json({ error: "device_not_found" }, env, 404);
-  const authorization = await activeAuthorization(env, delegation.bridgeUserId, device.id, product.id);
-  return json({ authorization, device: publicDevice(device, env), product }, env);
+  const authorization = await authorizationForProduct(env, delegation.bridgeUserId, device.id, product.id);
+  return json({ authorization: publicAuthorization(authorization), device: publicDevice(device, env), product: publicStateProduct(product) }, env);
 }
 
 async function delegatedProductStatus(request, env, productId) {
@@ -978,24 +1033,20 @@ async function delegatedProductStatus(request, env, productId) {
   const devices = (await storage(env).select("bridge_devices", {
     user_id: delegation.bridgeUserId,
   }, { order: "last_seen_at", desc: true })).filter((device) => device.status !== "revoked");
-  const authorizations = await storage(env).select("bridge_authorizations", {
-    user_id: delegation.bridgeUserId,
-    product_id: product.id,
-    status: "active",
-  }, { order: "updated_at", desc: true });
-  const activeByDevice = new Map(authorizations.map((authorization) => [authorization.device_id, authorization]));
+  const authorizations = await authorizationRowsForProduct(env, delegation.bridgeUserId, product.id);
+  const activeByDevice = new Map(authorizations.filter((authorization) => authorization.status === "active").map((authorization) => [authorization.device_id, authorization]));
   const authorizedDevices = devices.filter((device) => activeByDevice.has(device.id));
   const selectedDevice = authorizedDevices.find((device) => isDeviceOnline(device, env))
     || authorizedDevices[0]
     || null;
   const selectedAuthorization = selectedDevice ? activeByDevice.get(selectedDevice.id) || null : null;
   return json({
-    product,
+    product: publicStateProduct(product),
     devices: devices.map((device) => publicDevice(device, env)),
     authorized_devices: authorizedDevices.map((device) => publicDevice(device, env)),
-    authorizations,
+    authorizations: authorizations.map((authorization) => publicAuthorization(authorization)),
     selected_device: publicDevice(selectedDevice, env),
-    authorization: selectedAuthorization,
+    authorization: publicAuthorization(selectedAuthorization),
     ready: Boolean(selectedDevice && selectedAuthorization && isDeviceOnline(selectedDevice, env)),
   }, env);
 }
@@ -1022,9 +1073,10 @@ async function createDelegatedConnectIntent(request, env, productId) {
     product,
     delegation.sourceOrigin,
   );
-  const alreadyAuthorized = await alreadyAuthorizedConnectPayload(env, user, product, policy);
+  const installId = clean(body.install_id || body.installId, 200);
+  const alreadyAuthorized = await alreadyAuthorizedConnectPayload(env, user, product, policy, installId);
   if (alreadyAuthorized) return json(alreadyAuthorized, env);
-  const authorizedOffline = await authorizedOfflineConnectPayload(env, user, product, policy);
+  const authorizedOffline = await authorizedOfflineConnectPayload(env, user, product, policy, installId);
   if (authorizedOffline) return json(authorizedOffline, env);
   const token = randomToken("pbi_");
   const tokenRecovery = await recoverableIntentTokenPatch(env, token);
@@ -1051,7 +1103,7 @@ async function createDelegatedConnectIntent(request, env, productId) {
     deep_link: connectIntentDeepLink(env, token),
     connect_intent: publicConnectIntent(row, user, env),
     account: publicAccount(user),
-    product,
+    product: publicStateProduct(product),
     ttl_seconds: Math.trunc(connectIntentTtlMs(env) / 1000),
   }, env, 201);
 }
@@ -1070,14 +1122,14 @@ async function getDelegatedConnectIntent(request, env, productId, token) {
   const device = intent.device_id
     ? (await storage(env).select("bridge_devices", { id: intent.device_id, user_id: intent.user_id }))[0] || null
     : null;
-  const authorization = device ? await activeAuthorization(env, intent.user_id, device.id, product.id) : null;
+  const authorization = device ? await authorizationForProduct(env, intent.user_id, device.id, product.id) : null;
   return json({
     deep_link: connectIntentDeepLink(env, token),
     connect_intent: publicConnectIntent(intent, user, env),
     account: publicAccount(user),
     device: publicDevice(device, env),
-    authorization,
-    product,
+    authorization: publicAuthorization(authorization),
+    product: publicStateProduct(product),
   }, env);
 }
 
@@ -1107,10 +1159,37 @@ async function claimDelegatedProductAuthorization(request, env, productId) {
   if (!authorization || authorization.id !== proof.authorization_id) return json({ error: "product_not_authorized" }, env, 403);
   await audit(env, delegation.bridgeUserId, device.id, product.id, "authorization.claim.delegated", authorization.id, { source_origin: delegation.sourceOrigin });
   return json({
-    authorization,
+    authorization: publicAuthorization(authorization),
     device: publicDevice(device, env),
-    product,
+    product: publicStateProduct(product),
     proof: { consumed_at: consumedProof.consumed_at },
+  }, env);
+}
+
+async function updateDelegatedProductAuthorization(request, env, productId) {
+  const product = requireOfficialProduct(productId, env);
+  const rawBody = await readJsonText(request, env);
+  const delegation = await requireProductDelegation(request, env, product, rawBody);
+  const body = rawBody ? parseJsonText(rawBody) : {};
+  const url = new URL(request.url);
+  const deviceId = clean(url.searchParams.get("device_id") || delegation.deviceId, 120);
+  if (deviceId !== delegation.deviceId) return json({ error: "delegated_device_mismatch" }, env, 403);
+  const device = await ownedDevice(env, delegation.bridgeUserId, deviceId);
+  if (!device || device.status === "revoked") return json({ error: "device_not_found" }, env, 404);
+  const result = await updateAuthorizationStatus(env, {
+    userId: delegation.bridgeUserId,
+    deviceId: device.id,
+    product,
+    status: clean(body.status, 40),
+    sourceOrigin: delegation.sourceOrigin,
+    auditActionPrefix: "authorization.delegated",
+  });
+  if (result.error) return json({ error: result.error }, env, result.status || 400);
+  return json({
+    authorization: publicAuthorization(result.authorization),
+    device: publicDevice(device, env),
+    product: publicStateProduct(product),
+    cancelled_jobs: result.cancelledJobs,
   }, env);
 }
 
@@ -1128,13 +1207,13 @@ async function revokeDelegatedProductAuthorization(request, env, productId) {
     device_id: device.id,
     product_id: product.id,
   }))[0];
-  if (!authorization) return json({ authorization: null, device: publicDevice(device, env), product, cancelled_jobs: 0 }, env);
+  if (!authorization) return json({ authorization: null, device: publicDevice(device, env), product: publicStateProduct(product), cancelled_jobs: 0 }, env);
   const revoked = await storage(env).update("bridge_authorizations", authorization.id, { status: "revoked", updated_at: now() });
   const cancelled_jobs = await cancelQueuedJobsForAuthorization(env, delegation.bridgeUserId, device.id, product.id);
   await audit(env, delegation.bridgeUserId, device.id, product.id, "authorization.revoke.delegated", authorization.id, {
     source_origin: delegation.sourceOrigin,
   });
-  return json({ authorization: revoked, device: publicDevice(device, env), product, cancelled_jobs }, env);
+  return json({ authorization: publicAuthorization(revoked), device: publicDevice(device, env), product: publicStateProduct(product), cancelled_jobs }, env);
 }
 
 async function createAuthorizedProductJob(env, product, userId, source_origin, body, ctx = {}, options = {}) {
@@ -1149,8 +1228,9 @@ async function createAuthorizedProductJob(env, product, userId, source_origin, b
   const device = await ownedDevice(env, userId, normalized.device_id);
   if (!device || device.status === "revoked") return json({ error: "device_not_found" }, env, 404);
   if (!isDeviceOnline(device, env)) return json({ error: "device_offline" }, env, 409);
-  const authorization = await activeAuthorization(env, userId, device.id, product.id);
-  if (!authorization) return json({ error: "product_not_authorized" }, env, 403);
+  const authorization = await authorizationForProduct(env, userId, device.id, product.id);
+  const denial = authorizationJobDenial(authorization);
+  if (denial) return json({ error: denial.error }, env, 403);
   const authorizationScopeError = authorizationScopeDenial(authorization.policy, normalized);
   if (authorizationScopeError) {
     return json({ error: "authorization_scope_denied", ...authorizationScopeError }, env, 403);
@@ -1332,12 +1412,14 @@ async function acceptConnectorJob(request, env, jobId) {
   if (!job) return json({ error: "job_not_found" }, env, 404);
   const body = await readJson(request, env);
   if (job.status !== "queued") return json({ job: publicJob(job), accepted: false }, env);
-  if (!await activeAuthorization(env, job.user_id, job.device_id, job.product_id)) {
-    const cancelled = await cancelAuthorizationRevokedJob(env, job);
+  const authorization = await authorizationForProduct(env, job.user_id, job.device_id, job.product_id);
+  const denial = authorizationJobDenial(authorization);
+  if (denial) {
+    const cancelled = await cancelAuthorizationInactiveJob(env, job, denial);
     return json({
       job: publicJob(cancelled),
       accepted: false,
-      reason: "product_not_authorized",
+      reason: denial.error,
     }, env);
   }
   if (!job.pushed_at && await availableDeviceSlots(env, connector.device.id) <= 0) {
@@ -1370,9 +1452,11 @@ async function ackConnectorJob(request, env, jobId) {
   const connector = await requireConnector(request, env);
   const job = await jobForDevice(env, connector.device.id, jobId);
   if (!job) return json({ error: "job_not_found" }, env, 404);
-  if (!await activeAuthorization(env, job.user_id, job.device_id, job.product_id)) {
-    const cancelled = await cancelAuthorizationRevokedJob(env, job);
-    return json({ error: "product_not_authorized", job: publicJob(cancelled) }, env, 403);
+  const authorization = await authorizationForProduct(env, job.user_id, job.device_id, job.product_id);
+  const denial = authorizationJobDenial(authorization);
+  if (denial) {
+    const cancelled = await cancelAuthorizationInactiveJob(env, job, denial);
+    return json({ error: denial.error, job: publicJob(cancelled) }, env, 403);
   }
   if (isTerminalJobStatus(job.status)) {
     return json({ job: publicJob(job), ignored: true }, env);
@@ -1646,6 +1730,81 @@ async function activeAuthorization(env, userId, deviceId, productId) {
   }))[0] || null;
 }
 
+async function authorizationForProduct(env, userId, deviceId, productId) {
+  const filters = {
+    user_id: userId,
+    product_id: productId,
+  };
+  if (deviceId) filters.device_id = deviceId;
+  const rows = await storage(env).select("bridge_authorizations", filters, { order: "updated_at", desc: true });
+  return selectAuthorizationRow(rows) || null;
+}
+
+async function authorizationRowsForProduct(env, userId, productId) {
+  const rows = await storage(env).select("bridge_authorizations", {
+    user_id: userId,
+    product_id: productId,
+  }, { order: "updated_at", desc: true });
+  return rows.sort(compareAuthorizationRows);
+}
+
+function selectAuthorizationRow(rows) {
+  return [...rows].sort(compareAuthorizationRows)[0] || null;
+}
+
+function compareAuthorizationRows(left, right) {
+  const leftRank = authorizationStatusRank(left?.status);
+  const rightRank = authorizationStatusRank(right?.status);
+  if (leftRank !== rightRank) return leftRank - rightRank;
+  const leftTime = Date.parse(left?.updated_at || left?.created_at || "") || 0;
+  const rightTime = Date.parse(right?.updated_at || right?.created_at || "") || 0;
+  if (leftTime !== rightTime) return rightTime - leftTime;
+  return String(left?.id || "").localeCompare(String(right?.id || ""));
+}
+
+function authorizationStatusRank(status) {
+  if (status === "active") return 0;
+  if (status === "paused") return 1;
+  if (status === "revoked") return 2;
+  return 3;
+}
+
+function authorizationJobDenial(authorization) {
+  if (authorization?.status === "active") return null;
+  if (authorization?.status === "paused") {
+    return { error: "authorization_paused", reason: "authorization_paused" };
+  }
+  return { error: "product_not_authorized", reason: "authorization_revoked" };
+}
+
+async function updateAuthorizationStatus(env, { userId, deviceId, product, status, sourceOrigin = "", auditActionPrefix = "authorization" }) {
+  if (!["active", "paused"].includes(status)) {
+    return { error: "invalid_authorization_status", status: 400 };
+  }
+  const authorization = await authorizationForProduct(env, userId, deviceId, product.id);
+  if (!authorization) return { error: "product_not_authorized", status: 403 };
+  if (authorization.status === "revoked") return { error: "authorization_revoked", status: 409 };
+  if (authorization.status === status) return { authorization, cancelledJobs: 0 };
+
+  const updated = await storage(env).update("bridge_authorizations", authorization.id, {
+    status,
+    updated_at: now(),
+  });
+  const denial = status === "paused"
+    ? { error: "authorization_paused", reason: "authorization_paused" }
+    : { error: "product_not_authorized", reason: "authorization_revoked" };
+  const cancelledJobs = status === "paused"
+    ? await cancelQueuedJobsForAuthorization(env, userId, deviceId, product.id, denial)
+    : 0;
+  await audit(env, userId, deviceId, product.id, `${auditActionPrefix}.${status === "paused" ? "pause" : "resume"}`, authorization.id, {
+    source_origin: sourceOrigin || null,
+    previous_status: authorization.status,
+    next_status: status,
+    cancelled_jobs: cancelledJobs,
+  });
+  return { authorization: updated, cancelledJobs };
+}
+
 async function existingRequestKeyJob(env, userId, deviceId, productId, requestKey) {
   return requestKey
     ? (await storage(env).select("bridge_jobs", {
@@ -1780,8 +1939,10 @@ async function dispatchQueuedJobs(env, deviceId) {
   const active = await activeJobsForDevice(env, deviceId);
   const stillAuthorized = [];
   for (const job of active) {
-    if (job.status === "queued" && !await activeAuthorization(env, job.user_id, job.device_id, job.product_id)) {
-      await cancelAuthorizationRevokedJob(env, job);
+    const authorization = await authorizationForProduct(env, job.user_id, job.device_id, job.product_id);
+    const denial = authorizationJobDenial(authorization);
+    if (job.status === "queued" && denial) {
+      await cancelAuthorizationInactiveJob(env, job, denial);
     } else {
       stillAuthorized.push(job);
     }
@@ -1813,7 +1974,7 @@ async function dispatchQueuedJobs(env, deviceId) {
   return dispatched;
 }
 
-async function cancelQueuedJobsForAuthorization(env, userId, deviceId, productId) {
+async function cancelQueuedJobsForAuthorization(env, userId, deviceId, productId, denial = { error: "product_not_authorized", reason: "authorization_revoked" }) {
   const rows = await storage(env).select("bridge_jobs", {
     user_id: userId,
     device_id: deviceId,
@@ -1821,28 +1982,32 @@ async function cancelQueuedJobsForAuthorization(env, userId, deviceId, productId
   });
   let count = 0;
   for (const row of rows.filter((job) => ["queued", "running"].includes(job.status))) {
-    await cancelAuthorizationRevokedJob(env, row);
+    await cancelAuthorizationInactiveJob(env, row, denial);
     count += 1;
   }
   return count;
 }
 
 async function cancelAuthorizationRevokedJob(env, job) {
+  return cancelAuthorizationInactiveJob(env, job, { error: "product_not_authorized", reason: "authorization_revoked" });
+}
+
+async function cancelAuthorizationInactiveJob(env, job, denial = { error: "product_not_authorized", reason: "authorization_revoked" }) {
   if (!["queued", "running"].includes(job.status)) return job;
   const cancelledAt = now();
   const next = await storage(env).update("bridge_jobs", job.id, {
     status: "cancelled",
     result: {
       ok: false,
-      error: "product_not_authorized",
-      reason: "authorization_revoked",
+      error: denial.error,
+      reason: denial.reason,
     },
     completed_at: job.completed_at || cancelledAt,
     updated_at: cancelledAt,
   });
   const event = await appendEvent(env, job.id, "cancelled", {
-    error: "product_not_authorized",
-    reason: "authorization_revoked",
+    error: denial.error,
+    reason: denial.reason,
     completed_at: next.completed_at,
   });
   await notifyJobEvent(env, job.device_id, next, event);
@@ -2064,61 +2229,37 @@ async function recoverableIntentTokenPatch(env, token) {
   return { token_ciphertext: await encryptString(secret, token) };
 }
 
-async function recoverIntentToken(env, intent) {
-  const secret = clean(env.BRIDGE_CONNECT_INTENT_TOKEN_SECRET, 4096);
-  const ciphertext = clean(intent?.token_ciphertext, 4096);
-  if (!secret || !ciphertext) return "";
-  try {
-    return await decryptString(secret, ciphertext);
-  } catch {
-    return "";
-  }
-}
-
 async function bridgeStatePayload(env, user, product, options = {}) {
   const install = bridgeInstallPayload(env);
   if (options.noSession || !user) {
     return {
-      state: "no_session",
-      bridge_state: "no_session",
-      product,
+      authenticated: false,
+      product: publicStateProduct(product),
       install,
+      accounts: [],
+      account: null,
       devices: [],
       authorization: null,
-      intent: null,
-      actions: [{ kind: "login" }],
+      connected: false,
+      current_device: null,
     };
   }
 
   const devices = await accountDevices(env, user.id);
-  const authorizations = await storage(env).select("bridge_authorizations", {
-    user_id: user.id,
-    product_id: product.id,
-    status: "active",
-  }, { order: "updated_at", desc: true });
-  const activeByDevice = new Map(authorizations.map((authorization) => [authorization.device_id, authorization]));
-  const authorizedDevices = devices.filter((device) => activeByDevice.has(device.id));
-  const selectedAuthorizedOnline = authorizedDevices.find((device) => isDeviceOnline(device, env)) || null;
-  const selectedAuthorized = selectedAuthorizedOnline || authorizedDevices[0] || null;
-  const selectedDevice = selectedAuthorized || devices.find((device) => isDeviceOnline(device, env)) || devices[0] || null;
-  const authorization = selectedAuthorized ? activeByDevice.get(selectedAuthorized.id) || null : null;
-  const pendingIntent = await pendingConnectIntent(env, user.id, product.id);
-
-  let state = "ready";
-  if (!devices.length) state = "no_device";
-  else if (pendingIntent) state = "authorization_pending";
-  else if (authorization && !selectedAuthorizedOnline) state = "authorized_offline";
-  else if (!authorization) state = "not_authorized";
+  const authorizations = await authorizationRowsForProduct(env, user.id, product.id);
+  const accountState = accountBridgeState(user, devices, authorizations, env);
 
   return {
-    state,
-    bridge_state: state,
-    product,
+    authenticated: true,
+    product: publicStateProduct(product),
     install,
-    devices: publicBridgeStateDevices(dedupeDevicesByInstall(devices), selectedDevice, env),
-    authorization: publicBridgeStateAuthorization(authorization),
-    intent: state === "authorization_pending" ? await publicPendingIntent(env, pendingIntent) : null,
-    actions: bridgeStateActions(state, install, state === "authorization_pending" ? await publicPendingIntent(env, pendingIntent) : null),
+    accounts: [accountState],
+    account: accountState.account,
+    devices: publicBridgeStateDevices(dedupeDevicesByInstall(devices), accountState.current_device, env),
+    authorization: accountState.authorization,
+    connected: accountState.connected,
+    connection: accountState.connection,
+    current_device: accountState.current_device,
   };
 }
 
@@ -2130,36 +2271,64 @@ function bridgeInstallPayload(env) {
   };
 }
 
-async function pendingConnectIntent(env, userId, productId) {
-  const rows = await storage(env).select("bridge_connect_intents", { user_id: userId, product_id: productId }, { order: "expires_at", desc: true });
-  return rows.find((intent) => !intent.consumed_at && Date.parse(intent.expires_at || "") > Date.now()) || null;
-}
-
-async function publicPendingIntent(env, intent) {
-  if (!intent) return null;
-  const token = await recoverIntentToken(env, intent);
+function accountBridgeState(user, devices, authorizations, env) {
+  const deviceById = new Map(devices.map((device) => [device.id, device]));
+  const selectedAuthorization = selectAccountAuthorization(authorizations, deviceById, env);
+  const selectedAuthorizedDevice = selectedAuthorization ? deviceById.get(selectedAuthorization.device_id) || null : null;
+  const selectedDevice = selectedAuthorizedDevice
+    || devices.find((device) => isDeviceOnline(device, env))
+    || devices[0]
+    || null;
+  const connected = Boolean(
+    selectedAuthorization?.status === "active"
+      && selectedAuthorizedDevice
+      && isDeviceOnline(selectedAuthorizedDevice, env),
+  );
   return {
-    token: token || null,
-    expires_at: intent.expires_at,
-    deep_link: token ? connectIntentDeepLink(env, token) : null,
+    account: publicAccount(user),
+    authorization: publicAuthorization(selectedAuthorization),
+    connected,
+    connection: {
+      status: connected ? "connected" : "reconnecting",
+    },
+    current_device: publicStateDevice(selectedDevice, env),
   };
 }
 
-function bridgeStateActions(state, install, intent) {
-  if (state === "no_session") return [{ kind: "login" }];
-  if (state === "no_device") return [{ kind: "download", url: install.download_url }];
-  if (state === "authorization_pending") return [{ kind: "confirm_on_desktop", deep_link: intent?.deep_link || null }];
-  if (state === "authorized_offline") return [{ kind: "open_desktop", url: install.open_url }];
-  if (state === "not_authorized") return [{ kind: "authorize" }];
-  return [];
+function selectAccountAuthorization(authorizations, deviceById, env) {
+  const rows = [...authorizations].sort((left, right) => {
+    const leftOnline = left?.status === "active" && isDeviceOnline(deviceById.get(left.device_id), env);
+    const rightOnline = right?.status === "active" && isDeviceOnline(deviceById.get(right.device_id), env);
+    if (leftOnline !== rightOnline) return leftOnline ? -1 : 1;
+    return compareAuthorizationRows(left, right);
+  });
+  return rows[0] || null;
 }
 
-function publicBridgeStateAuthorization(authorization) {
-  return authorization ? {
+function publicAuthorization(authorization, options = {}) {
+  if (!authorization) return { status: "revoked" };
+  const payload = {
+    id: authorization.id,
+    device_id: authorization.device_id,
+    product_id: authorization.product_id,
     status: authorization.status,
-    policy: object(authorization.policy),
+    source_origin: authorization.source_origin || null,
     authorized_at: authorization.created_at || authorization.updated_at || null,
-    origin: authorization.source_origin || null,
+    created_at: authorization.created_at || null,
+    updated_at: authorization.updated_at || null,
+  };
+  if (options.includePolicy) payload.policy = object(authorization.policy);
+  return payload;
+}
+
+function publicStateProduct(product) {
+  return product ? {
+    id: product.id,
+    name: product.name,
+    origin: product.origin || product.official_origin || null,
+    official_origin: product.official_origin || null,
+    official_origins: [...(product.official_origins || [])],
+    requires_desktop_authorization: product.requires_desktop_authorization !== false,
   } : null;
 }
 
@@ -2177,12 +2346,19 @@ function dedupeDevicesByInstall(devices) {
 
 function publicBridgeStateDevices(devices, currentDevice, env) {
   return devices.map((device) => ({
-    id: device.id,
-    name: device.device_name,
-    online: isDeviceOnline(device, env),
-    last_seen_at: device.last_seen_at || null,
+    ...publicStateDevice(device, env),
     current: Boolean(currentDevice && currentDevice.id === device.id),
   }));
+}
+
+function publicStateDevice(device, env) {
+  return device ? {
+    id: device.id,
+    name: device.device_name,
+    status: publicDeviceStatus(device, env),
+    online: isDeviceOnline(device, env),
+    last_seen_at: device.last_seen_at || null,
+  } : null;
 }
 
 async function accountDevices(env, userId) {
@@ -2201,7 +2377,7 @@ async function publicAccountDevices(env, userId, currentDeviceId = "") {
   }));
 }
 
-async function alreadyAuthorizedConnectPayload(env, user, product, requestedPolicy) {
+async function alreadyAuthorizedConnectPayload(env, user, product, requestedPolicy, installId = "") {
   const devices = await accountDevices(env, user.id);
   const authorizations = await storage(env).select("bridge_authorizations", {
     user_id: user.id,
@@ -2211,20 +2387,23 @@ async function alreadyAuthorizedConnectPayload(env, user, product, requestedPoli
   for (const authorization of authorizations) {
     const device = devices.find((item) => item.id === authorization.device_id);
     if (!device || !isDeviceOnline(device, env)) continue;
+    if (!await deviceMatchesInstallId(device, installId)) continue;
     if (!authorizationPolicyCoversRequest(authorization.policy, requestedPolicy)) continue;
     return {
       already_authorized: true,
-      state: "ready",
-      authorization,
+      connected: true,
+      connection: { status: "connected" },
+      authorization: publicAuthorization(authorization),
+      current_device: publicStateDevice(device, env),
       device: publicDevice(device, env),
-      product,
+      product: publicStateProduct(product),
       account: publicAccount(user),
     };
   }
   return null;
 }
 
-async function authorizedOfflineConnectPayload(env, user, product, requestedPolicy) {
+async function authorizedOfflineConnectPayload(env, user, product, requestedPolicy, installId = "") {
   const devices = await accountDevices(env, user.id);
   const authorizations = await storage(env).select("bridge_authorizations", {
     user_id: user.id,
@@ -2234,18 +2413,27 @@ async function authorizedOfflineConnectPayload(env, user, product, requestedPoli
   for (const authorization of authorizations) {
     const device = devices.find((item) => item.id === authorization.device_id);
     if (!device || isDeviceOnline(device, env)) continue;
+    if (!await deviceMatchesInstallId(device, installId)) continue;
     if (!authorizationPolicyCoversRequest(authorization.policy, requestedPolicy)) continue;
     return {
       already_authorized: true,
-      state: "authorized_offline",
-      authorization,
+      connected: false,
+      connection: { status: "reconnecting" },
+      authorization: publicAuthorization(authorization),
+      current_device: publicStateDevice(device, env),
       device: publicDevice(device, env),
-      product,
+      product: publicStateProduct(product),
       account: publicAccount(user),
-      actions: [{ kind: "open_desktop", url: bridgeInstallPayload(env).open_url }],
     };
   }
   return null;
+}
+
+async function deviceMatchesInstallId(device, installId) {
+  const expected = clean(installId, 200);
+  if (!expected) return true;
+  if (!device?.install_id_hash) return false;
+  return device.install_id_hash === await installIdentityHash(expected);
 }
 
 function authorizationPolicyCoversRequest(grantPolicy, requestedPolicy) {
@@ -2924,9 +3112,8 @@ function publicConnectIntent(intent, user = null, env = {}) {
   return intent ? {
     id: intent.id,
     product_id: intent.product_id,
-    product: productInfo(intent.product_id, env),
+    product: publicStateProduct(productInfo(intent.product_id, env)),
     source_origin: intent.source_origin || null,
-    policy: object(intent.policy),
     device_id: intent.device_id || null,
     device_name: intent.device_name,
     expires_at: intent.expires_at,
