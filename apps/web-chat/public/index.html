@@ -47,34 +47,35 @@
         </form>
       </section>
 
-      <div class="actions" aria-label="Pandart account actions">
+      <div class="actions account-actions" aria-label="Pandart account actions">
         <button data-action="login">登录账号</button>
         <button data-action="logout">退出账号</button>
         <button data-action="refresh">刷新</button>
         <button data-action="mobile">手机同步</button>
-        <button data-action="pair" class="primary">连接本机</button>
-        <button data-action="revoke-device" class="danger">断开本机</button>
       </div>
 
-      <section class="panel">
-        <label class="label" for="device-select">这台电脑</label>
-        <select id="device-select" data-device-select></select>
+      <section class="panel bridge-panel" data-bridge-panel data-bridge-state="loading">
+        <div class="bridge-head">
+          <div>
+            <span class="label">Codex 电脑</span>
+            <h2 data-bridge-title>检查中</h2>
+          </div>
+          <span class="state-dot" data-bridge-dot></span>
+        </div>
+        <p class="bridge-copy" data-bridge-copy>正在读取 Bridge 状态。</p>
+        <div class="bridge-primary" data-bridge-primary></div>
+        <div class="bridge-download" data-bridge-download hidden></div>
+        <div class="bridge-device-list" data-bridge-devices></div>
+        <details class="bridge-menu" data-bridge-menu hidden>
+          <summary>次要操作</summary>
+          <div class="bridge-menu-actions" data-bridge-menu-actions></div>
+        </details>
       </section>
 
       <section class="panel mobile" data-mobile hidden>
         <h2>手机同步链接</h2>
         <p>手机打开后，会进入同一个 Pandart 账号。</p>
         <a class="install-link" href="/" data-mobile-link>打开手机链接</a>
-      </section>
-
-      <section class="panel install" data-install hidden>
-        <h2 data-install-title>Pandart Connector</h2>
-        <p data-install-text>正在打开本机应用。</p>
-        <a class="install-link" href="/" data-install-link>打开桌面端</a>
-        <details>
-          <summary>开发者诊断</summary>
-          <pre><code data-install-command></code></pre>
-        </details>
       </section>
     </aside>
 

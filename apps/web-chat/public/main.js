@@ -3,33 +3,40 @@ import { createBridgeClient } from "/sdk/index.js";
 const params = new URLSearchParams(location.search);
 const API_BASE = params.get("api") || location.origin;
 const BRAND_DOMAIN = params.get("domain") || "pandart.cc";
+const PRODUCT_ID = "panda-chat";
 const DEMO_ACCOUNT = Object.freeze({
   email: "chaos@pandart.cc",
   password: "Pandart-Local-2026!",
 });
-const bridge = createBridgeClient({ apiBase: API_BASE, productId: "panda-chat" });
+
+// Fallback is used only until W1 SDK v2 provides install() in the public SDK copy.
+const FALLBACK_INSTALL = Object.freeze({
+  download_url: "/downloads/panda-bridge-macos.dmg",
+  version: "0.1.0",
+  size_bytes: 3167118,
+  sha256: "e65e04f08373ffe2363616dc1426516b74f12123f52c71d7225af4bac7225962",
+  platform: "macos",
+  open_url: "panda-bridge://open",
+});
+
+const bridge = createBridgeClient({ apiBase: API_BASE, productId: PRODUCT_ID });
+const bridgeStateSource = createBridgeStateSource(bridge);
 
 const state = {
   session: null,
-  devices: [],
-  preflight: null,
+  bridge: bridgeStateSource.emptyState(),
   selectedDeviceId: "",
   busy: false,
   activeJobId: "",
   activeBubble: null,
   cancelRequested: false,
-  refreshTimer: null,
+  watchAbort: null,
+  watchRunning: false,
 };
 
 const nodes = {
   session: document.querySelector("[data-session-status]"),
   deviceStatus: document.querySelector("[data-device-status]"),
-  select: document.querySelector("[data-device-select]"),
-  install: document.querySelector("[data-install]"),
-  installTitle: document.querySelector("[data-install-title]"),
-  installText: document.querySelector("[data-install-text]"),
-  installLink: document.querySelector("[data-install-link]"),
-  installCommand: document.querySelector("[data-install-command]"),
   readiness: document.querySelector("[data-readiness-status]"),
   runtimePill: document.querySelector("[data-runtime-pill]"),
   domainBadge: document.querySelector("[data-domain-badge]"),
@@ -41,6 +48,14 @@ const nodes = {
   loginForm: document.querySelector("[data-login-form]"),
   loginEmail: document.querySelector("[data-login-email]"),
   loginPassword: document.querySelector("[data-login-password]"),
+  bridgePanel: document.querySelector("[data-bridge-panel]"),
+  bridgeTitle: document.querySelector("[data-bridge-title]"),
+  bridgeCopy: document.querySelector("[data-bridge-copy]"),
+  bridgePrimary: document.querySelector("[data-bridge-primary]"),
+  bridgeDownload: document.querySelector("[data-bridge-download]"),
+  bridgeDevices: document.querySelector("[data-bridge-devices]"),
+  bridgeMenu: document.querySelector("[data-bridge-menu]"),
+  bridgeMenuActions: document.querySelector("[data-bridge-menu-actions]"),
   messages: document.querySelector("[data-messages]"),
   composer: document.querySelector("[data-composer]"),
   input: document.querySelector("[data-input]"),
@@ -49,23 +64,26 @@ const nodes = {
 };
 
 document.addEventListener("click", async (event) => {
-  const action = event.target.closest("[data-action]")?.dataset.action;
+  const target = event.target.closest("[data-action]");
+  const action = target?.dataset.action;
   if (!action) return;
   if (action === "login") showLogin();
   if (action === "logout") await logout();
-  if (action === "refresh") await refresh();
-  if (action === "pair") await connectDesktop();
+  if (action === "refresh") await refresh({ reason: "manual" });
   if (action === "mobile") await createMobileLink();
-  if (action === "revoke-device") await revokeCurrentDevice();
+  if (action === "primary-bridge") await runPrimaryBridgeAction(target);
+  if (action === "cancel-intent") await cancelPendingIntent();
+  if (action === "change-device") focusDeviceList();
+  if (action === "revoke-authorization") await revokeCurrentAuthorization();
 });
 
-nodes.select.addEventListener("change", async () => {
-  state.selectedDeviceId = nodes.select.value;
-  await checkAuthorization().catch(() => {});
-  state.preflight = state.session?.authenticated
-    ? await bridge.preflight({ deviceId: state.selectedDeviceId }).catch(() => state.preflight)
-    : null;
-  render();
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") {
+    stopStateWatch();
+    return;
+  }
+  startStateWatch();
+  refresh({ reason: "visible" }).catch(() => {});
 });
 
 nodes.composer.addEventListener("submit", onSubmit);
@@ -87,13 +105,12 @@ async function bootstrap() {
       state.session = await bridge.auth.join(join);
       history.replaceState(null, "", location.pathname);
       addMessage("assistant", "手机已同步到同一个 Pandart 账号，可以使用已连接的本机 Codex。");
-      await refresh();
-      return;
     } catch (error) {
       addMessage("assistant", formatError(error), "error");
     }
   }
-  await refresh().catch(() => {});
+  await refresh({ reason: "bootstrap" }).catch(() => {});
+  startStateWatch();
 }
 
 function showLogin() {
@@ -115,7 +132,7 @@ async function onLogin(event) {
     nodes.loginPanel.hidden = true;
     nodes.loginPassword.value = "";
     addMessage("assistant", `已登录 ${email}。`);
-    await refresh();
+    await refresh({ reason: "login" });
   } catch (error) {
     addMessage("assistant", formatError(error), "error");
   }
@@ -128,8 +145,7 @@ async function logout() {
     // A missing or expired session still leaves the UI in a logged-out state.
   }
   state.session = null;
-  state.devices = [];
-  state.preflight = null;
+  state.bridge = bridgeStateSource.emptyState();
   state.selectedDeviceId = "";
   state.busy = false;
   state.activeJobId = "";
@@ -142,52 +158,96 @@ async function logout() {
 }
 
 async function refresh() {
-  try {
-    state.session = await bridge.auth.session();
-  } catch {
-    state.session = null;
-  }
-  if (state.session?.authenticated) {
-    const devices = await bridge.devices.list();
-    state.devices = visibleDevices(devices.items || []);
-    const selected = state.devices.find((item) => item.id === state.selectedDeviceId);
-    state.selectedDeviceId = selected?.id || state.devices.find((item) => item.status === "online")?.id || state.devices[0]?.id || "";
-    state.preflight = await bridge.preflight({ deviceId: state.selectedDeviceId }).catch((error) => ({
-      ready: false,
-      issues: [{ code: error?.payload?.error || error?.message || "preflight_failed" }],
-      actions: [{ code: "retry_bridge", label: "Retry Bridge diagnostics or check the API base." }],
-    }));
-  } else {
-    state.devices = [];
-    state.preflight = null;
-    state.selectedDeviceId = "";
-  }
+  const next = await bridgeStateSource.state();
+  applyBridgeState(next);
+}
+
+function startStateWatch() {
+  if (state.watchRunning || document.visibilityState === "hidden") return;
+  state.watchRunning = true;
+  const controller = new AbortController();
+  state.watchAbort = controller;
+  (async () => {
+    try {
+      for await (const next of bridgeStateSource.watchState({ intervalMs: 3000, signal: controller.signal })) {
+        if (controller.signal.aborted) break;
+        applyBridgeState(next);
+      }
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        console.warn("[bridge-state] watch failed", error);
+      }
+    } finally {
+      if (state.watchAbort === controller) {
+        state.watchAbort = null;
+        state.watchRunning = false;
+      }
+    }
+  })();
+}
+
+function stopStateWatch() {
+  state.watchAbort?.abort();
+  state.watchAbort = null;
+  state.watchRunning = false;
+}
+
+function applyBridgeState(next) {
+  state.bridge = normalizeBridgeState(next);
+  state.session = state.bridge.session || state.session;
+  const current = currentDevice();
+  state.selectedDeviceId = current?.id || state.bridge.devices.find((item) => item.current)?.id || state.bridge.devices[0]?.id || "";
   render();
 }
 
-async function connectDesktop() {
-  if (!state.session?.authenticated) {
+async function runPrimaryBridgeAction(target) {
+  const action = target.dataset.bridgeAction || primaryActionForState(state.bridge);
+  if (action === "login") {
     showLogin();
-    addMessage("assistant", "先登录 Pandart 账号，再连接本机。", "error");
     return;
   }
-  const payload = await bridge.connect.createIntent({
-    deviceName: `Pandart Connector ${navigator.platform || "Desktop"}`,
-  });
-  const deepLink = payload.deep_link || `panda-bridge://connect?intent=${encodeURIComponent(payload.token)}&api=${encodeURIComponent(API_BASE)}`;
-  const fallback = [
-    "cd /path/to/panda-bridge",
-    `cargo run --manifest-path apps/desktop/Cargo.toml -- --intent '${payload.token}'`,
-  ].join("\n");
-  nodes.install.hidden = false;
-  nodes.installTitle.textContent = "正在打开 Pandart Connector";
-  nodes.installText.textContent = "请在本机应用里允许 Pandart 使用这台电脑上的 Codex。";
-  nodes.installLink.href = deepLink;
-  nodes.installLink.textContent = "重新打开桌面端";
-  nodes.installCommand.textContent = fallback;
-  addMessage("assistant", "正在打开 Pandart Connector。请在本机应用里点“允许”。");
-  openDesktop(deepLink);
-  startRefreshLoop();
+  if (action === "download") {
+    addMessage("assistant", "下载完成后打开 Panda Bridge，它会自动连接这个账号。");
+    return;
+  }
+  if (action === "open_desktop" || action === "confirm_on_desktop") {
+    const url = state.bridge.intent?.deep_link || actionUrl(state.bridge, action) || installInfo(state.bridge).open_url;
+    if (url) openDesktop(url);
+    addMessage("assistant", action === "confirm_on_desktop" ? "已重新唤起桌面端，请在桌面端确认。" : "已尝试打开 Panda Bridge。");
+    return;
+  }
+  if (action === "authorize") {
+    await authorizeBridge();
+  }
+}
+
+async function authorizeBridge() {
+  if (!state.session?.authenticated) {
+    showLogin();
+    addMessage("assistant", "先登录 Pandart 账号，再授权这台电脑。", "error");
+    return;
+  }
+  try {
+    const result = typeof bridge.ensureReady === "function"
+      ? await bridge.ensureReady({ openDeepLink: openDesktop })
+      : await bridgeStateSource.createIntent();
+    const deepLink = result?.intent?.deep_link || result?.deep_link || result?.action?.deep_link || result?.url;
+    if (deepLink) openDesktop(deepLink);
+    addMessage("assistant", "请在桌面端确认 Pandart 使用这台电脑上的 Codex。");
+    await refresh({ reason: "authorize" });
+  } catch (error) {
+    addMessage("assistant", formatError(error), "error");
+  }
+}
+
+async function cancelPendingIntent() {
+  bridgeStateSource.cancelPendingIntent?.();
+  addMessage("assistant", "已取消这次桌面端确认。");
+  await refresh({ reason: "cancel-intent" });
+}
+
+function focusDeviceList() {
+  nodes.bridgeDevices.querySelector("[data-device-id]")?.focus?.();
 }
 
 async function createMobileLink() {
@@ -204,40 +264,21 @@ async function createMobileLink() {
   addMessage("assistant", `手机同步链接已生成，10 分钟内有效：\n${payload.join_url}`);
 }
 
-async function revokeCurrentDevice() {
+async function revokeCurrentAuthorization() {
   const device = currentDevice();
   if (!device) {
-    addMessage("assistant", "当前没有可断开的本机。", "error");
+    addMessage("assistant", "当前没有可撤销的授权。", "error");
     return;
   }
-  const confirmed = confirm(`断开 ${device.device_name}？\n\n断开后，这个 Pandart 账号将不能再使用这台电脑上的 Codex，除非重新连接本机。`);
+  const confirmed = confirm(`撤销 ${device.name} 的 Pandart 授权？\n\n设备仍会保留，之后可重新授权。`);
   if (!confirmed) return;
   try {
-    await bridge.devices.revoke(device.id);
-    addMessage("assistant", `已断开 ${device.device_name}。`);
-    state.selectedDeviceId = "";
-    await refresh();
+    await bridge.products.revokeAuthorization(device.id);
+    addMessage("assistant", `已撤销 ${device.name} 的 Pandart 授权。`);
+    await refresh({ reason: "revoke" });
   } catch (error) {
     addMessage("assistant", formatError(error), "error");
   }
-}
-
-async function ensureAuthorization() {
-  const device = currentDevice();
-  if (!device) return;
-  const payload = await bridge.products.authorization(device.id);
-  if (!payload.authorization) {
-    const error = new Error("desktop_authorization_required");
-    error.payload = { error: "desktop_authorization_required" };
-    throw error;
-  }
-  return payload.authorization;
-}
-
-async function checkAuthorization() {
-  const device = currentDevice();
-  if (!device) return null;
-  return bridge.products.authorization(device.id);
 }
 
 async function onSubmit(event) {
@@ -249,12 +290,11 @@ async function onSubmit(event) {
     addMessage("assistant", "先登录 Pandart 账号。", "error");
     return;
   }
-  const device = currentDevice();
+  const device = readyDevice();
   if (!device) {
-    addMessage("assistant", "先连接本机 Pandart Connector。", "error");
+    addMessage("assistant", submitBlockedText(state.bridge), "error");
     return;
   }
-  await ensureAuthorization();
   state.busy = true;
   state.activeJobId = "";
   state.activeBubble = null;
@@ -265,7 +305,7 @@ async function onSubmit(event) {
   state.activeBubble = pending;
   const traceStartedAt = Date.now();
   pending.dataset.traceStartedAt = String(traceStartedAt);
-  addTrace(pending, "已发送到 Pandart Bridge", traceStartedAt);
+  addTrace(pending, "已发送到 Panda Bridge", traceStartedAt);
   pending.dataset.jobStatus = "queued";
   setEnabled(false);
   try {
@@ -341,7 +381,7 @@ async function onSubmit(event) {
     state.activeBubble = null;
     state.cancelRequested = false;
     setEnabled(true);
-    await refresh();
+    await refresh({ reason: "chat-complete" });
   }
 }
 
@@ -364,19 +404,152 @@ function render() {
   const account = state.session?.user?.email || state.session?.user?.display_name || "Pandart Account";
   nodes.session.textContent = state.session?.authenticated ? account : "未登录";
   if (state.session?.authenticated) nodes.loginPanel.hidden = true;
-  const device = currentDevice();
-  nodes.deviceStatus.textContent = device ? deviceOptionLabel(device) : "未连接";
-  if (nodes.readiness) nodes.readiness.textContent = readinessText();
-  if (nodes.runtimePill) nodes.runtimePill.textContent = state.preflight?.ready ? "local ready" : "setup required";
-  nodes.select.innerHTML = "";
-  if (!state.devices.length) {
-    nodes.select.append(new Option("未连接本机", ""));
-  } else {
-    for (const item of state.devices) {
-      nodes.select.append(new Option(deviceOptionLabel(item), item.id));
+  nodes.deviceStatus.textContent = currentDevice() ? deviceOptionLabel(currentDevice()) : "未连接";
+  nodes.readiness.textContent = readinessText();
+  nodes.runtimePill.textContent = state.bridge.bridge_state === "ready" ? "local ready" : "bridge setup";
+  renderBridgePanel();
+}
+
+function renderBridgePanel() {
+  const model = bridgeUiModel(state.bridge);
+  nodes.bridgePanel.dataset.bridgeState = state.bridge.bridge_state;
+  nodes.bridgeTitle.textContent = model.title;
+  nodes.bridgeCopy.textContent = model.copy;
+  nodes.bridgePrimary.innerHTML = "";
+  nodes.bridgeDownload.innerHTML = "";
+  nodes.bridgeDevices.innerHTML = "";
+  nodes.bridgeMenuActions.innerHTML = "";
+  nodes.bridgeDownload.hidden = state.bridge.bridge_state !== "no_device";
+  nodes.bridgeMenu.hidden = !model.menuActions.length;
+
+  if (model.primary) {
+    const primary = model.primary.kind === "download" ? document.createElement("a") : document.createElement("button");
+    primary.className = "bridge-cta";
+    primary.dataset.primaryCta = "true";
+    primary.dataset.bridgeAction = model.primary.kind;
+    if (primary.tagName === "A") {
+      primary.href = model.primary.href;
+      primary.download = "";
+    } else {
+      primary.type = "button";
+      primary.dataset.action = "primary-bridge";
     }
-    nodes.select.value = state.selectedDeviceId;
+    primary.textContent = model.primary.label;
+    nodes.bridgePrimary.append(primary);
   }
+
+  if (state.bridge.bridge_state === "no_device") renderDownloadCard();
+  renderDeviceList();
+  for (const item of model.menuActions) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.dataset.action = item.action;
+    button.textContent = item.label;
+    if (item.tone) button.className = item.tone;
+    nodes.bridgeMenuActions.append(button);
+  }
+}
+
+function renderDownloadCard() {
+  const install = installInfo(state.bridge);
+  const card = document.createElement("div");
+  card.className = "download-card";
+  card.innerHTML = `
+    <div class="download-meta">
+      <span>macOS</span>
+      <span data-install-version>${escapeHtml(install.version)}</span>
+      <span>${escapeHtml(formatBytes(install.size_bytes))}</span>
+    </div>
+    <p>下载后打开 Panda Bridge，它会自动连接这个 Pandart 账号。</p>
+    <details>
+      <summary>sha256</summary>
+      <code>${escapeHtml(install.sha256)}</code>
+    </details>
+  `;
+  nodes.bridgeDownload.append(card);
+}
+
+function renderDeviceList() {
+  const devices = state.bridge.devices;
+  if (!devices.length) {
+    nodes.bridgeDevices.innerHTML = `<p class="empty-devices">还没有连接过的电脑。</p>`;
+    return;
+  }
+  const list = document.createElement("div");
+  list.className = "device-list";
+  for (const device of devices) {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "device-row";
+    row.dataset.deviceId = device.id;
+    row.dataset.current = device.id === state.selectedDeviceId ? "true" : "false";
+    row.addEventListener("click", () => {
+      state.selectedDeviceId = device.id;
+      render();
+    });
+    row.innerHTML = `
+      <span class="device-presence" data-online="${device.online ? "true" : "false"}"></span>
+      <span class="device-main">
+        <strong>${escapeHtml(device.name)}</strong>
+        <small>${device.online ? "在线" : "离线"}${relativeTime(device.last_seen_at) ? ` · ${escapeHtml(relativeTime(device.last_seen_at))}` : ""}</small>
+      </span>
+    `;
+    list.append(row);
+  }
+  nodes.bridgeDevices.append(list);
+}
+
+function bridgeUiModel(next) {
+  const device = currentDevice();
+  const stateName = next.bridge_state;
+  const models = {
+    no_session: {
+      title: "需要登录",
+      copy: "先登录 Pandart 账号，再连接这台电脑上的 Codex。",
+      primary: { kind: "login", label: "登录" },
+      menuActions: [],
+    },
+    no_device: {
+      title: "下载 Panda Bridge",
+      copy: "这台账号还没有可用电脑。下载后打开即自动连接。",
+      primary: { kind: "download", label: "下载 Bridge", href: downloadHref(installInfo(next)) },
+      menuActions: [],
+    },
+    authorization_pending: {
+      title: "等待桌面端确认",
+      copy: "已发起连接请求，请在桌面端确认 Pandart 使用本机 Codex。",
+      primary: { kind: "confirm_on_desktop", label: "去桌面端确认" },
+      menuActions: [{ action: "cancel-intent", label: "取消" }],
+    },
+    authorized_offline: {
+      title: "已授权，桌面端离线",
+      copy: "这个账号已授权，打开 Panda Bridge 即可使用。",
+      primary: { kind: "open_desktop", label: "打开 Bridge" },
+      menuActions: [{ action: "refresh", label: "刷新" }],
+    },
+    not_authorized: {
+      title: "需要授权",
+      copy: "电脑已连接，请授权 Pandart 使用这台电脑上的 Codex。",
+      primary: { kind: "authorize", label: "授权" },
+      menuActions: [{ action: "refresh", label: "刷新" }],
+    },
+    ready: {
+      title: "已就绪",
+      copy: `${device?.name || "这台电脑"} 已在线，可以直接发送消息到本机 Codex。`,
+      primary: null,
+      menuActions: [
+        { action: "change-device", label: "换一台电脑" },
+        { action: "refresh", label: "刷新" },
+        { action: "revoke-authorization", label: "撤销授权", tone: "danger" },
+      ],
+    },
+  };
+  return models[stateName] || {
+    title: "检查中",
+    copy: "正在读取 Bridge 状态。",
+    primary: null,
+    menuActions: [{ action: "refresh", label: "刷新" }],
+  };
 }
 
 function renderRuntime() {
@@ -403,80 +576,239 @@ function shouldPrefillDemoAccount() {
   return host === BRAND_DOMAIN && Boolean(location.port);
 }
 
-function readinessText() {
-  if (!state.session?.authenticated) return "需要登录";
-  if (!state.preflight) return currentDevice() ? "检查中" : "需要连接本机";
-  if (state.preflight.ready) return "ready";
-  const issue = state.preflight.issues?.[0]?.code || "setup_required";
-  const labels = {
-    not_authenticated: "需要登录",
-    no_devices: "需要连接本机",
-    no_online_devices: "桌面端离线",
-    device_not_found: "设备不可见",
-    product_not_authorized: "需要授权",
-    bridge_unreachable: "Bridge 不可达",
-    queue_unavailable: "队列待检查",
-    preflight_failed: "检查失败",
+function createBridgeStateSource(client) {
+  if (typeof client.state === "function") {
+    return {
+      emptyState: () => normalizeBridgeState({ bridge_state: "no_session", install: installInfo({}) }),
+      state: () => client.state(),
+      watchState: (options = {}) => {
+        if (typeof client.watchState === "function") return client.watchState(options);
+        return sdkStatePoller(client, options);
+      },
+      createIntent: () => client.ensureReady?.({ openDeepLink: openDesktop }),
+      cancelPendingIntent: () => {},
+    };
+  }
+
+  let pendingIntent = null;
+  let cachedInstall = null;
+  return {
+    emptyState: () => normalizeBridgeState({ bridge_state: "no_session", install: installInfo({}) }),
+    state: async () => {
+      const session = await client.auth.session().catch(() => null);
+      if (!session?.authenticated) {
+        return normalizeBridgeState({ bridge_state: "no_session", session, install: await legacyInstall(client, cachedInstall) });
+      }
+      cachedInstall = await legacyInstall(client, cachedInstall);
+      const devicesPayload = await client.devices.list().catch(() => ({ items: [] }));
+      const devices = normalizeDevices(devicesPayload.items || []);
+      pendingIntent = await livePendingIntent(client, pendingIntent);
+      if (pendingIntent) {
+        return normalizeBridgeState({
+          bridge_state: "authorization_pending",
+          session,
+          install: cachedInstall,
+          devices,
+          intent: pendingIntent,
+          actions: [{ kind: "confirm_on_desktop", deep_link: pendingIntent.deep_link }],
+        });
+      }
+      if (!devices.length) {
+        return normalizeBridgeState({
+          bridge_state: "no_device",
+          session,
+          install: cachedInstall,
+          devices,
+          actions: [{ kind: "download", url: cachedInstall.download_url }],
+        });
+      }
+      const authorizations = await Promise.all(devices.map(async (device) => {
+        const payload = await client.products.authorization(device.id).catch(() => null);
+        return payload?.authorization ? { device, authorization: payload.authorization } : null;
+      }));
+      const active = authorizations.filter(Boolean);
+      const authorizedOnline = active.find((item) => item.device.online);
+      const selected = authorizedOnline?.device || active[0]?.device || devices.find((item) => item.online) || devices[0];
+      const selectedAuth = active.find((item) => item.device.id === selected?.id)?.authorization || null;
+      return normalizeBridgeState({
+        bridge_state: active.length ? (authorizedOnline ? "ready" : "authorized_offline") : "not_authorized",
+        session,
+        install: cachedInstall,
+        devices: devices.map((device) => ({ ...device, current: device.id === selected?.id })),
+        authorization: selectedAuth,
+        actions: active.length
+          ? [{ kind: authorizedOnline ? "ready" : "open_desktop", url: cachedInstall.open_url }]
+          : [{ kind: "authorize" }],
+      });
+    },
+    watchState: async function* watchState(options = {}) {
+      while (!options.signal?.aborted) {
+        yield await this.state();
+        await sleep(options.intervalMs || 3000, options.signal);
+      }
+    },
+    createIntent: async () => {
+      const payload = await client.connect.createIntent({
+        deviceName: `Pandart Connector ${navigator.platform || "Desktop"}`,
+      });
+      pendingIntent = normalizeIntent(payload);
+      return { ...payload, intent: pendingIntent };
+    },
+    cancelPendingIntent: () => {
+      pendingIntent = null;
+    },
   };
-  return labels[issue] || issue;
 }
 
-function compactUrl(value) {
-  try {
-    const url = new URL(value);
-    return url.host;
-  } catch {
-    return value || "local";
+async function* sdkStatePoller(client, options = {}) {
+  while (!options.signal?.aborted) {
+    yield await client.state();
+    await sleep(options.intervalMs || 3000, options.signal);
   }
 }
 
-function openDesktop(url) {
-  const frame = document.createElement("iframe");
-  frame.hidden = true;
-  frame.src = url;
-  document.body.append(frame);
-  setTimeout(() => frame.remove(), 3000);
+async function legacyInstall(client, cachedInstall) {
+  if (cachedInstall) return cachedInstall;
+  if (typeof client.install === "function") {
+    const install = await client.install().catch(() => null);
+    if (install) return normalizeInstall(install);
+  }
+  return normalizeInstall(FALLBACK_INSTALL);
 }
 
-function startRefreshLoop() {
-  if (state.refreshTimer) clearInterval(state.refreshTimer);
-  state.refreshTimer = setInterval(async () => {
-    await refresh().catch(() => {});
-    if (currentDevice()) {
-      clearInterval(state.refreshTimer);
-      state.refreshTimer = null;
-      nodes.install.hidden = true;
-      addMessage("assistant", "本机 Pandart Connector 已连接，可以直接发送消息。");
-    }
-  }, 1800);
-  setTimeout(() => {
-    if (!state.refreshTimer) return;
-    nodes.installTitle.textContent = "没有检测到桌面端";
-    nodes.installText.textContent = "请先安装或打开 Pandart Connector。开发者可展开诊断命令。";
-  }, 5000);
+async function livePendingIntent(client, pendingIntent) {
+  if (!pendingIntent?.token) return null;
+  const inspected = await client.connect.intent(pendingIntent.token).catch(() => null);
+  if (!inspected?.connect_intent && !inspected?.intent) return null;
+  return normalizeIntent({ ...inspected, token: pendingIntent.token });
+}
+
+function normalizeBridgeState(input = {}) {
+  const raw = input || {};
+  return {
+    bridge_state: raw.bridge_state || raw.state || "no_session",
+    session: raw.session || null,
+    install: normalizeInstall(raw.install || raw.download || FALLBACK_INSTALL),
+    devices: normalizeDevices(raw.devices || []),
+    authorization: raw.authorization || null,
+    intent: raw.intent ? normalizeIntent(raw.intent) : null,
+    actions: Array.isArray(raw.actions) ? raw.actions : [],
+  };
+}
+
+function normalizeInstall(input = {}) {
+  const raw = input || {};
+  return {
+    download_url: raw.download_url || raw.downloadUrl || raw.url || FALLBACK_INSTALL.download_url,
+    version: raw.version || raw.app_version || FALLBACK_INSTALL.version,
+    size_bytes: Number(raw.size_bytes || raw.sizeBytes || raw.file_size || raw.fileSize || FALLBACK_INSTALL.size_bytes),
+    sha256: raw.sha256 || FALLBACK_INSTALL.sha256,
+    platform: raw.platform || FALLBACK_INSTALL.platform,
+    open_url: raw.open_url || raw.openUrl || FALLBACK_INSTALL.open_url,
+  };
+}
+
+function normalizeIntent(input = {}) {
+  const raw = input.intent || input.connect_intent || input;
+  return {
+    token: input.token || raw.token || "",
+    expires_at: raw.expires_at || input.expires_at || "",
+    deep_link: input.deep_link || raw.deep_link || (input.token ? `panda-bridge://connect?intent=${encodeURIComponent(input.token)}&api=${encodeURIComponent(API_BASE)}` : ""),
+  };
+}
+
+function normalizeDevices(items) {
+  const deduped = new Map();
+  for (const item of Array.isArray(items) ? items : []) {
+    if (!item || item.status === "revoked") continue;
+    const id = String(item.id || "");
+    if (!id) continue;
+    const name = item.name || item.device_name || "Panda Bridge";
+    const key = String(item.account_id || item.install_id || item.install_id_hash || name).toLowerCase();
+    const device = {
+      id,
+      name,
+      online: item.online === true || item.status === "online",
+      last_seen_at: item.last_seen_at || item.updated_at || "",
+      current: item.current === true,
+    };
+    const existing = deduped.get(key);
+    if (!existing || scoreDevice(device) > scoreDevice(existing)) deduped.set(key, device);
+  }
+  return [...deduped.values()].sort((a, b) => scoreDevice(b) - scoreDevice(a)).slice(0, 8);
+}
+
+function scoreDevice(device) {
+  return (device.current ? 4e15 : 0) + (device.online ? 2e15 : 0) + (Date.parse(device.last_seen_at || "") || 0);
 }
 
 function currentDevice() {
-  return state.devices.find((item) => item.id === state.selectedDeviceId) || null;
+  return state.bridge.devices.find((item) => item.id === state.selectedDeviceId)
+    || state.bridge.devices.find((item) => item.current)
+    || state.bridge.devices[0]
+    || null;
 }
 
-function visibleDevices(items) {
-  const online = items
-    .filter((item) => item.status === "online")
-    .sort((a, b) => Date.parse(b.last_seen_at || b.updated_at || 0) - Date.parse(a.last_seen_at || a.updated_at || 0));
-  const normal = online.filter((item) => !isVerificationDevice(item));
-  const verification = online.filter(isVerificationDevice).slice(0, 1);
-  return [...verification, ...normal].slice(0, 6);
+function readyDevice() {
+  if (state.bridge.bridge_state !== "ready") return null;
+  return currentDevice();
 }
 
-function isVerificationDevice(device) {
-  return /^Account Password E2E\b/.test(device?.device_name || "");
+function installInfo(next) {
+  return normalizeInstall(next.install || FALLBACK_INSTALL);
+}
+
+function primaryActionForState(next) {
+  return {
+    no_session: "login",
+    no_device: "download",
+    authorization_pending: "confirm_on_desktop",
+    authorized_offline: "open_desktop",
+    not_authorized: "authorize",
+  }[next.bridge_state] || "";
+}
+
+function actionUrl(next, kind) {
+  return next.actions.find((item) => item.kind === kind)?.url
+    || next.actions.find((item) => item.kind === kind)?.deep_link
+    || "";
+}
+
+function downloadHref(install) {
+  const href = install.download_url || FALLBACK_INSTALL.download_url;
+  try {
+    const url = new URL(href, location.origin);
+    url.searchParams.set("version", install.version);
+    return url.href;
+  } catch {
+    const separator = href.includes("?") ? "&" : "?";
+    return `${href}${separator}version=${encodeURIComponent(install.version)}`;
+  }
+}
+
+function readinessText() {
+  const labels = {
+    no_session: "需要登录",
+    no_device: "需要下载",
+    authorization_pending: "等待确认",
+    authorized_offline: "已授权，离线",
+    not_authorized: "需要授权",
+    ready: "ready",
+  };
+  return labels[state.bridge.bridge_state] || "检查中";
+}
+
+function submitBlockedText(next) {
+  if (next.bridge_state === "authorized_offline") return "已授权，打开桌面端即可使用。";
+  if (next.bridge_state === "not_authorized") return "请先授权这台电脑。";
+  if (next.bridge_state === "authorization_pending") return "请先在桌面端确认授权。";
+  if (next.bridge_state === "no_device") return "请先下载并打开 Panda Bridge。";
+  return "Bridge 还没有就绪。";
 }
 
 function deviceOptionLabel(device) {
-  const status = device.status === "online" ? "已连接" : device.status;
   const lastSeen = relativeTime(device.last_seen_at);
-  return `${device.device_name} · ${status}${lastSeen ? ` · ${lastSeen}` : ""}`;
+  return `${device.name} · ${device.online ? "已连接" : "离线"}${lastSeen ? ` · ${lastSeen}` : ""}`;
 }
 
 function relativeTime(value) {
@@ -488,7 +820,54 @@ function relativeTime(value) {
   if (minutes < 60) return `${minutes}分钟前`;
   const hours = Math.round(minutes / 60);
   if (hours < 24) return `${hours}小时前`;
-  return "";
+  const days = Math.round(hours / 24);
+  return `${days}天前`;
+}
+
+function openDesktop(url) {
+  const frame = document.createElement("iframe");
+  frame.hidden = true;
+  frame.src = url;
+  document.body.append(frame);
+  setTimeout(() => frame.remove(), 3000);
+}
+
+function sleep(ms, signal) {
+  return new Promise((resolve) => {
+    if (signal?.aborted) {
+      resolve();
+      return;
+    }
+    const timer = setTimeout(resolve, ms);
+    signal?.addEventListener("abort", () => {
+      clearTimeout(timer);
+      resolve();
+    }, { once: true });
+  });
+}
+
+function compactUrl(value) {
+  try {
+    const url = new URL(value);
+    return url.host;
+  } catch {
+    return value || "local";
+  }
+}
+
+function formatBytes(value) {
+  const bytes = Number(value);
+  if (!Number.isFinite(bytes) || bytes <= 0) return "size pending";
+  const mb = bytes / 1024 / 1024;
+  return `${mb.toFixed(mb >= 10 ? 0 : 1)} MB`;
+}
+
+function escapeHtml(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }
 
 function addMessage(role, text, tone = "") {
@@ -609,12 +988,12 @@ function updateCancelState() {
 
 function formatError(error) {
   const code = error?.payload?.error || error?.message || String(error);
-  if (code === "device_offline") return "本机 Pandart Connector 暂时离线，请确认桌面端正在运行后刷新。";
+  if (code === "device_offline") return "本机 Panda Bridge 暂时离线，请打开桌面端后刷新。";
   if (code === "device_not_found") return "这个 Pandart 账号还没有连接本机。";
-  if (code === "product_not_authorized" || code === "desktop_authorization_required") return "请点击“连接本机”，并在 Pandart Connector 里允许 Pandart。";
+  if (code === "product_not_authorized" || code === "desktop_authorization_required") return "请先在桌面端确认授权。";
   if (code === "device_queue_full") return "这台电脑的任务队列已满，请稍后再发送。";
-  if (code === "account_queue_full") return "这个账号当前任务太多，请稍后再发送。";
-  if (code === "product_queue_full") return "Pandart 当前任务太多，请稍后再发送。";
+  if (code === "account_queue_full") return "这个账号当前任务太多，请稍后再试。";
+  if (code === "product_queue_full") return "Pandart 当前任务太多，请稍后再试。";
   if (code === "invalid_credentials") return "账号或密码不正确。";
   if (code === "too_many_login_attempts") return "登录失败次数过多，请稍后再试。";
   if (code === "password_login_not_enabled") return "这个账号还没有启用密码登录，请换一个测试账号。";
