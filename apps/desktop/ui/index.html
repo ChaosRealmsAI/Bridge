@@ -12,8 +12,8 @@
       --green:#34c759;--amber:#ff9f0a;--red:#ff453a;
       --side-bg:rgba(255,255,255,.62);--detail-bg:rgba(255,255,255,.74);
       --card:rgba(255,255,255,.7);--card-hover:#fff;--btn:rgba(255,255,255,.85);
-      --hover:rgba(0,0,0,.045);--okgreen:#1a8c3a;
-      --codex-bg:rgba(52,199,89,.1);--codex-bd:rgba(52,199,89,.26);--ico-set:#8a8f99;
+      --hover:rgba(0,0,0,.045);--okgreen:#267a4a;--warn:#b45f06;
+      --codex-bg:rgba(255,255,255,.48);--codex-bd:rgba(0,0,0,.08);--ico-set:#8a8f99;
       color-scheme: light;
       font-family:-apple-system,"SF Pro Display","SF Pro Text","Helvetica Neue",sans-serif;
     }
@@ -23,8 +23,8 @@
       --line:rgba(255,255,255,.1);--hair:rgba(255,255,255,.06);
       --side-bg:rgba(26,27,30,.9);--detail-bg:rgba(20,21,24,.84);
       --card:rgba(255,255,255,.07);--card-hover:rgba(255,255,255,.12);--btn:rgba(255,255,255,.09);
-      --hover:rgba(255,255,255,.06);--okgreen:#46d168;--accent-soft:rgba(10,132,255,.22);
-      --codex-bg:rgba(52,199,89,.14);--codex-bd:rgba(52,199,89,.34);--ico-set:#6c707a;
+      --hover:rgba(255,255,255,.06);--okgreen:#64d487;--warn:#ffb14a;--accent-soft:rgba(10,132,255,.22);
+      --codex-bg:rgba(255,255,255,.07);--codex-bd:rgba(255,255,255,.1);--ico-set:#6c707a;
     }
     *{box-sizing:border-box;margin:0;padding:0}
     html,body{height:100%}
@@ -36,9 +36,10 @@
       padding:14px 11px;display:flex;flex-direction:column;gap:3px;overflow:auto}
     .codex{display:flex;align-items:center;gap:9px;padding:9px 10px;margin-bottom:6px;border-radius:10px;
       background:var(--codex-bg);border:.5px solid var(--codex-bd)}
-    .codex.bad{background:rgba(255,159,10,.12);border-color:rgba(255,159,10,.32)}
-    .codex .d{width:8px;height:8px;border-radius:50%;background:var(--green);flex:none;box-shadow:0 0 0 3px rgba(52,199,89,.18)}
-    .codex.bad .d{background:var(--amber);box-shadow:0 0 0 3px rgba(255,159,10,.18)}
+    .codex.bad{background:var(--codex-bg);border-color:var(--codex-bd)}
+    .codex .d,.state-dot{width:7px;height:7px;border-radius:50%;background:var(--green);flex:none}
+    .codex.bad .d{background:var(--amber)}
+    .state-dot.off{background:var(--faint)}.state-dot.pending{background:var(--amber)}
     .codex .t{font-size:12.5px;font-weight:650}
     .codex .s{font-size:10.5px;color:var(--muted);margin-top:1px}
 
@@ -52,8 +53,8 @@
     .item .tail{margin-left:auto;flex:none;display:flex;align-items:center;gap:7px}
     .item .cnt{font-size:11.5px;color:var(--faint)}
     .item .on{width:6px;height:6px;border-radius:50%;background:var(--green)}
-    .item .on.off{background:var(--faint)}
-    .item .alert{width:18px;height:18px;border-radius:50%;background:var(--red);color:#fff;font-size:11px;font-weight:700;display:grid;place-items:center}
+    .item .on.off{background:var(--faint)}.item .on.pending{background:var(--amber)}
+    .item .alert{width:8px;height:8px;border-radius:50%;background:var(--amber);display:block}
     .side .spacer{flex:1;min-height:12px}
     .setitem{margin-top:2px;border-top:.5px solid var(--line);padding-top:11px}
     .setitem .ic{background:var(--ico-set) !important;font-size:14px}
@@ -72,20 +73,25 @@
     .lbl{display:flex;align-items:center;font-size:11.5px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--faint);margin:26px 0 11px}
     .lbl .add{margin-left:auto;text-transform:none;letter-spacing:0;font-size:13px;color:var(--accent);cursor:pointer;font-weight:600}
 
-    .acct{display:flex;align-items:center;gap:13px;padding:14px 15px;background:var(--card);border:.5px solid var(--line);border-radius:12px;margin-bottom:9px}
+    .acct{display:grid;grid-template-columns:34px minmax(0,1fr) auto;gap:13px;padding:14px 15px;background:var(--card);border:.5px solid var(--line);border-radius:8px;margin-bottom:9px}
     .acct .av{width:34px;height:34px;border-radius:50%;flex:none;display:grid;place-items:center;font-size:12.5px;font-weight:700;color:#22356f;background:linear-gradient(135deg,#cfdcff,#9fb6ff)}
     .acct .em{font-size:14px;font-weight:550;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-    .acct .ok{font-size:11px;color:var(--okgreen);margin-top:2px;display:flex;align-items:center;gap:5px}
-    .acct .ok::before{content:"";width:5px;height:5px;border-radius:50%;background:var(--green);display:inline-block}
+    .acct .ok{font-size:11px;color:var(--muted);margin-top:2px;display:flex;align-items:center;gap:5px}
     .acct .rv{margin-left:auto;font-size:12.5px;color:var(--muted);cursor:pointer;font-weight:550;flex:none}
     .acct .rv:hover{color:var(--red)}
-    .acctempty{text-align:center;color:var(--faint);font-size:13.5px;padding:34px 16px;line-height:1.7;border:1px dashed var(--line);border-radius:12px;background:var(--card)}
-    .grant{background:var(--card);border:.5px solid var(--line);border-radius:12px;padding:14px 15px;margin:18px 0 8px}
+    .devlist{grid-column:2/4;border-top:.5px solid var(--hair);margin-top:2px;padding-top:9px;display:grid;gap:7px}
+    .devrow{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px;align-items:center;font-size:12px;color:var(--muted)}
+    .devname{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text);font-weight:520}
+    .devstate{display:flex;align-items:center;gap:6px;white-space:nowrap;color:var(--muted)}
+    .acctempty{text-align:center;color:var(--faint);font-size:13.5px;padding:34px 16px;line-height:1.7;border:1px dashed var(--line);border-radius:8px;background:var(--card)}
+    .grant{background:var(--card);border:.5px solid var(--line);border-radius:8px;padding:14px 15px;margin:18px 0 8px}
     .grantgrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 18px}
     .gk{font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--faint);margin-bottom:3px}
     .gv{font-size:12.5px;font-weight:550;color:var(--text);min-width:0;overflow-wrap:anywhere;line-height:1.45}
     .chips{display:flex;flex-wrap:wrap;gap:6px}
-    .chip{font-size:11.5px;font-weight:650;padding:4px 7px;border-radius:7px;background:var(--accent-soft);color:var(--accent);border:.5px solid rgba(10,132,255,.2)}
+    .chip{font-size:11.5px;font-weight:600;padding:3px 7px;border-radius:6px;background:rgba(10,132,255,.08);color:var(--accent);border:.5px solid rgba(10,132,255,.16)}
+    .chip.warn,.risk{color:var(--warn);background:rgba(255,159,10,.1);border-color:rgba(255,159,10,.24)}
+    .diff{font-size:11px;color:var(--warn);margin-top:4px;line-height:1.45}
     .subline{font-size:11.5px;color:var(--muted);margin-top:3px;overflow-wrap:anywhere}
     @media (max-width: 620px){.app{grid-template-columns:180px 1fr}.detail{padding:20px 18px}.grantgrid{grid-template-columns:1fr}}
 
@@ -109,17 +115,19 @@
     .lrow.on{font-weight:650}
     .lrow .ck{margin-left:auto;color:var(--accent);font-weight:800;font-size:15px}
 
-    .reqp{background:var(--card);border:.5px solid var(--line);border-radius:14px;padding:22px;margin-top:10px;box-shadow:0 6px 20px -10px rgba(10,40,90,.18);text-align:center}
-    .reqp .av{width:52px;height:52px;border-radius:50%;margin:0 auto 14px;display:grid;place-items:center;font-size:15px;font-weight:700;color:#22356f;background:linear-gradient(135deg,#cfdcff,#9fb6ff)}
-    .reqp .em{font-size:17px;font-weight:700;letter-spacing:-.01em}
-    .reqp .desc{font-size:13px;color:var(--muted);margin:8px auto 20px;line-height:1.6;max-width:34ch}
+    .reqp{background:var(--card);border:.5px solid var(--line);border-radius:8px;padding:22px;margin-top:10px;box-shadow:0 6px 20px -10px rgba(10,40,90,.18);text-align:left}
+    .reqtop{display:grid;grid-template-columns:52px minmax(0,1fr);gap:14px;align-items:center}
+    .reqp .av{width:52px;height:52px;border-radius:50%;display:grid;place-items:center;font-size:15px;font-weight:700;color:#22356f;background:linear-gradient(135deg,#cfdcff,#9fb6ff)}
+    .reqp .em{font-size:17px;font-weight:700;letter-spacing:-.01em;min-width:0;overflow-wrap:anywhere}
+    .reqp .origin{font-size:12.5px;color:var(--text);font-weight:650;margin-top:4px;overflow-wrap:anywhere}
+    .reqp .desc{font-size:13px;color:var(--muted);margin:8px 0 18px;line-height:1.6}
     .reqp .desc b{color:var(--text)}
     .reqp .scope{margin:16px 0 18px;text-align:left;border:.5px solid var(--line);border-radius:10px;overflow:hidden;background:rgba(255,255,255,.35)}
     .reqp .sr{display:grid;grid-template-columns:92px 1fr;gap:10px;padding:10px 12px;font-size:12px;line-height:1.45}
     .reqp .sr+.sr{border-top:.5px solid var(--hair)}
     .reqp .sk{color:var(--faint);font-weight:700;text-transform:uppercase;letter-spacing:.04em}
     .reqp .sv{color:var(--text);font-weight:550;min-width:0;overflow-wrap:anywhere}
-    .reqp .qrow{display:flex;gap:12px}
+    .reqp .qrow{display:flex;gap:12px;margin-top:14px}
     .btn{flex:1;height:44px;border-radius:11px;border:.5px solid var(--line);background:var(--btn);font:inherit;font-size:14px;font-weight:600;cursor:pointer;transition:.13s;color:var(--text)}
     .btn:hover{background:var(--card-hover)}
     .btn.primary{flex:1.5;background:var(--accent);border-color:var(--accent);color:#fff}
@@ -250,15 +258,34 @@
         capabilities:Array.isArray(p.capabilities)?p.capabilities:[],
         policy:p.policy&&typeof p.policy==="object"?p.policy:{},
         authorized_at:p.authorized_at||"",
-        accounts: Array.isArray(p.accounts) ? p.accounts.map(a=>({
-            id:a.id||a.account_id||null,
-            email:a.email||a.display_name||a,
-            display_name:a.display_name||null,
-            device_id:a.device_id||null,
-            origin:a.origin||p.origin||null,
-            authorized_at:a.authorized_at||p.authorized_at||""
-          }))
-          : (s.account_display ? [{ id:s.account_id||null, email:s.account_display, device_id:s.device_id||null }] : []) }));
+        accounts: dedupeAccounts(Array.isArray(p.accounts) ? p.accounts : (s.account_display ? [{ id:s.account_id||null, email:s.account_display, device_id:s.device_id||null, device_name:s.device_name||null }] : []), p) }));
+    }
+
+    function dedupeAccounts(accounts,p){
+      const map=new Map();
+      for(const raw of accounts){
+        const a=raw&&typeof raw==="object"?raw:{ email:String(raw||"") };
+        const id=a.id||a.account_id||null;
+        const email=a.email||a.display_name||"Panda Account";
+        const key=id||email;
+        const devices=Array.isArray(a.devices)&&a.devices.length?a.devices:[a.device_id?{ id:a.device_id, name:a.device_name||a.name||a.device_id, online:a.online, last_seen_at:a.last_seen_at, authorized_at:a.authorized_at||p.authorized_at||"" }:null].filter(Boolean);
+        if(!map.has(key)) map.set(key,{ id, email, display_name:a.display_name||email, origin:a.origin||p.origin||null, authorized_at:a.authorized_at||p.authorized_at||"", devices:[] });
+        const item=map.get(key);
+        for(const d of devices){
+          const did=d.id||d.device_id;
+          if(!did || item.devices.some(x=>x.id===did)) continue;
+          item.devices.push({ id:did, name:d.name||d.device_name||did, online:typeof d.online==="boolean"?d.online:null, last_seen_at:d.last_seen_at||null, authorized_at:d.authorized_at||item.authorized_at||"" });
+        }
+        if(!item.devices.length && a.device_id) item.devices.push({ id:a.device_id, name:a.device_id, online:null, last_seen_at:null, authorized_at:item.authorized_at });
+      }
+      return Array.from(map.values());
+    }
+
+    function productStatus(p){
+      const devices=p.accounts.flatMap(a=>a.devices||[]);
+      if(devices.some(d=>d.online===true)) return "online";
+      if(devices.some(d=>d.online===null || typeof d.online==="undefined")) return devices.length ? "pending" : "off";
+      return "off";
     }
 
     function renderSide(){
@@ -276,7 +303,7 @@
         h += ui.products.map(p=>`<div class="item ${ui.view==='app'&&ui.sel===p.id?'sel':''}" onclick="openApp('${p.id}')">
             <div class="ic" style="background:${colorFor(p.id)}">${ini(p.name)}</div>
             <span class="nm">${p.name}</span>
-            <span class="tail"><span class="cnt">${p.accounts.length}</span><span class="on ${p.accounts.length?'':'off'}"></span></span></div>`).join("");
+            <span class="tail"><span class="cnt">${p.accounts.length}</span><span class="on ${productStatus(p)==='online'?'':productStatus(p)}"></span></span></div>`).join("");
       } else {
         h += `<div class="item" style="cursor:default"><span class="nm" style="color:var(--faint)">${t('noApps')}</span></div>`;
       }
@@ -307,10 +334,21 @@
         <div class="lbl">${t('accounts')} · ${p.accounts.length}<span class="add" onclick="addAccount('${p.id}')">＋ ${t('addAccount')}</span></div>
         ${p.accounts.length ? p.accounts.map((a,ai)=>`<div class="acct">
             <div class="av">${av(a.email)}</div>
-            <div style="min-width:0"><div class="em">${a.email}</div><div class="ok">${t('acctOk')}</div>
-              <div class="subline">Device ${esc(shortId(a.device_id)||"unknown")} · ${esc(formatTime(a.authorized_at)||"authorized")}</div></div>
-            <span class="rv" onclick="revoke('${p.id}',${ai})">${t('signOut')}</span></div>`).join("")
+            <div style="min-width:0"><div class="em">${esc(a.email)}</div><div class="ok">${t('acctOk')} · ${a.devices.length} device${a.devices.length===1?'':'s'}</div></div>
+            <span class="rv" onclick="revoke('${p.id}',${ai})">${t('signOut')}</span>
+            <div class="devlist">${deviceRows(a.devices)}</div></div>`).join("")
           : `<div class="acctempty">${t('noAccts',{name:p.name,add:t('addAccount')})}</div>`}`;
+    }
+
+    function deviceRows(devices){
+      const list=Array.isArray(devices)?devices:[];
+      if(!list.length) return `<div class="devrow"><span class="devname">Unknown device</span><span class="devstate"><span class="state-dot pending"></span>pending</span></div>`;
+      return list.map(d=>{
+        const st=d.online===true?"online":(d.online===false?"off":"pending");
+        const label=st==="online"?"在线":(st==="off"?"离线":"等待同步");
+        const time=relativeTime(d.last_seen_at||d.authorized_at);
+        return `<div class="devrow"><span class="devname">${esc(d.name||shortId(d.id)||"Device")} <span class="subline">${esc(shortId(d.id))}</span></span><span class="devstate"><span class="state-dot ${st}"></span>${label}${time?` · ${esc(time)}`:""}</span></div>`;
+      }).join("");
     }
 
     function grantView(p){
@@ -330,7 +368,7 @@
     function chips(items){
       const list=Array.isArray(items)?items:[];
       if(!list.length) return `<div class="chips"><span class="chip">none</span></div>`;
-      return `<div class="chips">${list.map(item=>`<span class="chip">${esc(item)}</span>`).join("")}</div>`;
+      return `<div class="chips">${list.map(item=>`<span class="chip ${dangerText(item)?'warn':''}">${esc(item)}</span>`).join("")}</div>`;
     }
 
     function workspaceSummary(policy){
@@ -348,25 +386,56 @@
       if(Number.isNaN(d.getTime())) return value;
       try{return d.toLocaleString(curLang(),{year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit"});}catch(e){return value;}
     }
+    function relativeTime(value){
+      if(!value) return "";
+      const d=new Date(value); if(Number.isNaN(d.getTime())) return formatTime(value);
+      const sec=Math.round((Date.now()-d.getTime())/1000);
+      if(sec<60) return "刚刚";
+      const min=Math.round(sec/60); if(min<60) return `${min} 分钟前`;
+      const hr=Math.round(min/60); if(hr<24) return `${hr} 小时前`;
+      const day=Math.round(hr/24); if(day<7) return `${day} 天前`;
+      return formatTime(value);
+    }
+    function dangerText(value){ const s=String(value||""); return /danger-full-access|approval never|approval_policy_floor.*never|\bnever\b|full-access/i.test(s); }
 
     function requestView(p){
       const policy = p.local_policy || {};
       const capItems = Array.isArray(p.capabilities) ? p.capabilities : (Array.isArray(policy.capabilities) ? policy.capabilities : []);
-      const capabilities = capItems.length ? capItems.join(", ") : "none";
-      return `<div class="reqp"><div class="av">${av(p.email)}</div>
-          <div class="em">${esc(p.email||'Panda')}</div>
+      const origin= p.cloud_origin||p.origin||policy.source_origin||"unknown";
+      if(p.confirmation_mode==="light"){
+        return `<div class="reqp light"><div class="reqtop"><div class="av">${av(p.email)}</div><div>
+          <div class="em">Otherline 已授权</div><div class="origin">${esc(origin)}</div></div></div>
+          <div class="desc">确认刷新连接后，${esc(p.product_name||"Panda")} 将继续使用当前已授权范围。</div>
+          <div class="scope">
+            <div class="sr"><div class="sk">Origin</div><div class="sv">${esc(origin)}</div></div>
+            <div class="sr"><div class="sk">Scope</div><div class="sv">${chips(capItems)}</div></div>
+            <div class="sr"><div class="sk">Workspace</div><div class="sv">${esc(workspaceSummary(policy)||"All local files")}</div></div>
+            <div class="sr"><div class="sk">Sandbox</div><div class="sv ${dangerText(policy.sandbox_floor)?'risk':''}">${esc(policy.sandbox_floor||"danger-full-access")}</div></div>
+            <div class="sr"><div class="sk">Approval</div><div class="sv ${dangerText(policy.approval_policy_floor)?'risk':''}">${esc(policy.approval_policy_floor||"never")}</div></div>
+          </div>
+          <div class="qrow"><button class="btn primary" onclick="approve(${ui.selReq})">确认刷新连接</button></div></div>`;
+      }
+      return `<div class="reqp"><div class="reqtop"><div class="av">${av(p.email)}</div><div>
+          <div class="em">${esc(p.email||'Panda')}</div><div class="origin">${esc(origin)}</div></div></div>
           <div class="desc">${t('reqLine',{product:'<b>'+esc(p.product_name||'Panda')+'</b>'})}<br>${t('reqLine2')}</div>
           <div class="scope">
-            <div class="sr"><div class="sk">Origin</div><div class="sv">${esc(p.cloud_origin||p.origin||"unknown")}</div></div>
-            <div class="sr"><div class="sk">Scope</div><div class="sv">${esc(capabilities)}</div></div>
-            <div class="sr"><div class="sk">Workspace</div><div class="sv">${esc(workspaceSummary(policy)||"All local files")}</div></div>
-            <div class="sr"><div class="sk">Sandbox</div><div class="sv">${esc(policy.sandbox_floor||"danger-full-access")}</div></div>
-            <div class="sr"><div class="sk">Approval</div><div class="sv">${esc(policy.approval_policy_floor||"never")}</div></div>
+            <div class="sr"><div class="sk">Origin</div><div class="sv">${esc(origin)}</div></div>
+            <div class="sr"><div class="sk">Scope</div><div class="sv">${chips(capItems)}${diffLine(p.scope_diff?.capabilities?.added,"新增权限")}</div></div>
+            <div class="sr"><div class="sk">Workspace</div><div class="sv">${esc(workspaceSummary(policy)||"All local files")}${workspaceDiff(p.scope_diff)}</div></div>
+            <div class="sr"><div class="sk">Sandbox</div><div class="sv ${dangerText(policy.sandbox_floor)?'risk':''}">${esc(policy.sandbox_floor||"danger-full-access")}${changeDiff(p.scope_diff?.sandbox)}</div></div>
+            <div class="sr"><div class="sk">Approval</div><div class="sv ${dangerText(policy.approval_policy_floor)?'risk':''}">${esc(policy.approval_policy_floor||"never")}${changeDiff(p.scope_diff?.approval)}</div></div>
             <div class="sr"><div class="sk">Instructions</div><div class="sv">${esc(policy.allow_developer_instructions?"allowed":"denied")}</div></div>
           </div>
           <div class="qrow"><button class="btn" onclick="deny(${ui.selReq})">${t('deny')}</button>
             <button class="btn primary" onclick="approve(${ui.selReq})">${t('allow')}</button></div></div>`;
     }
+    function diffLine(items,label){ return Array.isArray(items)&&items.length?`<div class="diff">${label}: ${items.map(esc).join(", ")}</div>`:""; }
+    function workspaceDiff(diff){
+      if(!diff?.workspace?.widening) return "";
+      if(diff.workspace.to_all&&!diff.workspace.from_all) return `<div class="diff">新增范围: All local files</div>`;
+      return diffLine(diff.workspace.added,"新增目录");
+    }
+    function changeDiff(item){ return item?.widening?`<div class="diff">${esc(item.from||"default")} → ${esc(item.to||"default")}</div>`:""; }
 
     function settingsView(){
       return `<div class="dhead"><div class="big set">⚙</div><div><h2>${t('settings')}</h2></div></div>
@@ -392,7 +461,7 @@
       const url = new URL(raw); const intent = url.searchParams.get("intent"); const api = url.searchParams.get("api") || DEFAULT_API;
       if (!intent) return;
       const pre = await window.PandaBridge.call("preview_intent", { api, intent });
-      ui.pending.push({ product_id: pre.product_id, product_name: pre.product_name, email: pre.user_display_name, cloud_origin: pre.cloud_origin, capabilities: pre.capabilities, local_policy: pre.local_policy, _api: api, _intent: intent });
+      ui.pending.push({ product_id: pre.product_id, product_name: pre.product_name, email: pre.user_display_name, cloud_origin: pre.cloud_origin, capabilities: pre.capabilities, local_policy: pre.local_policy, confirmation_mode: pre.confirmation_mode, scope_widening: pre.scope_widening, scope_diff: pre.scope_diff, _api: api, _intent: intent });
       ui.view = "request"; ui.selReq = ui.pending.length - 1; render();
     }
     async function approve(i){
@@ -409,7 +478,7 @@
       const p=ui.products.find(x=>x.id===pid); if(!p || !p.accounts[ai]) return;
       const account=p.accounts[ai];
       try{
-        await window.PandaBridge.call("revoke_authorization", { product_id: pid, account_id: account.id, device_id: account.device_id });
+        await window.PandaBridge.call("revoke_authorization", { product_id: pid, account_id: account.id });
         await refresh();
         toast(t('tOut'));
       }catch(e){ toast(`${t('tFail')} · ${safeErr(e)}`); }
