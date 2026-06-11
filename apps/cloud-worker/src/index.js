@@ -2246,7 +2246,21 @@ async function bridgeStatePayload(env, user, product, options = {}) {
   }
 
   const devices = await accountDevices(env, user.id);
-  const authorizations = await authorizationRowsForProduct(env, user.id, product.id);
+  const allAuthorizations = await authorizationRowsForProduct(env, user.id, product.id);
+  const authorizations = allAuthorizations.filter((a) => a.status === "active" || a.status === "paused");
+  if (!authorizations.length) {
+    return {
+      authenticated: true,
+      product: publicStateProduct(product),
+      install,
+      accounts: [],
+      account: null,
+      devices: publicBridgeStateDevices(dedupeDevicesByInstall(devices), null, env),
+      authorization: null,
+      connected: false,
+      current_device: null,
+    };
+  }
   const accountState = accountBridgeState(user, devices, authorizations, env);
 
   return {
@@ -2306,7 +2320,7 @@ function selectAccountAuthorization(authorizations, deviceById, env) {
 }
 
 function publicAuthorization(authorization, options = {}) {
-  if (!authorization) return { status: "revoked" };
+  if (!authorization) return null;
   const payload = {
     id: authorization.id,
     device_id: authorization.device_id,
