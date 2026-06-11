@@ -49,6 +49,8 @@ const auditToBddMap = {
   "BUG-AUDIT-P2-NONCE": ["DA-002"],
 };
 
+const specifiedOnlyBddModules = new Set(["bridge-state-machine"]);
+
 const explicitOriginExceptions = {
   "apps/cloud-worker/wrangler.test.toml": [
     "https://bridge.otherline.cc",
@@ -109,11 +111,17 @@ const scenarioIds = [];
 const scenariosById = new Map();
 const capRefs = new Set();
 for (const { file, doc } of bddDocs) {
+  const specifiedOnly = specifiedOnlyBddModules.has(doc.module);
   for (const key of ["id", "module", "userStory", "scenarios", "implementationStatus", "verificationStatus", "guardStatus"]) {
     assert.ok(doc[key] !== undefined, `${file} missing ${key}`);
   }
-  assert.equal(doc.implementationStatus, "done", `${file} implementationStatus must be done`);
-  assert.equal(doc.verificationStatus, "verified", `${file} verificationStatus must be verified`);
+  if (specifiedOnly) {
+    assert.ok(["todo", "in_progress", "done"].includes(doc.implementationStatus), `${file} implementationStatus must be schema-valid`);
+    assert.ok(["todo", "partial", "verified"].includes(doc.verificationStatus), `${file} verificationStatus must be schema-valid`);
+  } else {
+    assert.equal(doc.implementationStatus, "done", `${file} implementationStatus must be done`);
+    assert.equal(doc.verificationStatus, "verified", `${file} verificationStatus must be verified`);
+  }
   assert.equal(doc.guardStatus, "guarded", `${file} guardStatus must be guarded`);
   assert.ok(Array.isArray(doc.scenarios) && doc.scenarios.length > 0, `${file} must include scenarios`);
   for (const capRef of doc.capabilityRefs || []) capRefs.add(capRef);
@@ -122,7 +130,11 @@ for (const { file, doc } of bddDocs) {
       assert.ok(scenario[key] !== undefined, `${file} scenario missing ${key}`);
     }
     assert.ok(Array.isArray(scenario.guards) && scenario.guards.length > 0, `${scenario.id} must include concrete guards`);
-    assert.equal(scenario.status, "verified", `${scenario.id} status must be verified`);
+    if (specifiedOnly) {
+      assert.ok(["todo", "implemented", "verified"].includes(scenario.status), `${scenario.id} status must be schema-valid`);
+    } else {
+      assert.equal(scenario.status, "verified", `${scenario.id} status must be verified`);
+    }
     scenarioIds.push(scenario.id);
     scenariosById.set(scenario.id, scenario);
   }

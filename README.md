@@ -60,17 +60,22 @@ Bridge Desktop 需要本地安装。
 
 ## 能力边界
 
-Bridge Cloud 负责认证、授权关系、产品 capability、product-specific origin、
-队列和审计边界。Bridge
-Desktop 是本机权限最终执行者：SaaS / 调用方可以在 `connect.createIntent`
-里声明需要的 `AUTH-SCOPE-v1`，默认是 full-access bridge scope，也可以自定义
-scope。Desktop 展示这份 caller-defined scope，用户允许后写入本地授权记录。
+Bridge Cloud 负责认证、产品注册、product-specific origin、设备在线状态、
+授权关系、队列和审计边界。对任意 `(account, product)`，Cloud 输出唯一
+`BRIDGE-STATE-v1`：`no_session`、`no_device`、`authorization_pending`、
+`authorized_offline`、`not_authorized`、`ready`。web-chat、调用方产品、
+Desktop 和 SDK 都只渲染这个状态，不再各自推导“是否已连接/是否已授权”。
+
+Bridge Desktop 是本机权限最终执行者：SaaS / 调用方可以在授权 intent 里声明
+需要的 `AUTH-SCOPE-v1`，默认是 full-access bridge scope，也可以自定义 scope。
+Desktop 展示这份 caller-defined scope，用户允许后写入本地授权记录。
 
 授权表示某个 product 可以按这份已批准 scope 使用这台设备；job 的 `kind`、
-`policy`、`workspace_ref` 和 payload 原样传到 Desktop。请求未超过本地授权记录
-时执行。Cloud 会先用 `authorization_scope_denied` 拒绝明显超过授权 scope 的
-任务；Desktop 对本地路径和最终执行做兜底验权，越权时返回
-`local_policy_denied`，不启动 Codex。
+`policy`、`workspace_ref` 和 payload 原样传到 Desktop。Cloud 会先用
+`authorization_scope_denied` 拒绝明显超过授权 scope 的任务；Desktop 对本地路径
+和最终执行做兜底验权，越权时返回 `local_policy_denied`，不启动 Codex。
+已授权且设备在线时重复授权走 `already_authorized` 快路径，不创建新 intent；
+已授权但离线时只引导打开 Bridge，不再显示“授权”。
 
 ## Spec
 
@@ -100,13 +105,16 @@ supabase/migrations    Bridge Cloud 表结构
 用户主流程：
 
 ```text
-浏览器 / 手机打开 Pandart 本地地址或生产 Web 地址
-  -> 点击连接本机
-  -> Panda Bridge Desktop 被深链打开
-  -> 用户在桌面端确认授权
-  -> 手机或浏览器创建 job
-  -> 本机桌面端调用 Codex app-server
-  -> 网页看到流式事件和最终回复
+浏览器 / 手机打开调用方产品或 web-chat
+  -> 产品读取 BRIDGE-STATE-v1
+  -> no_session：登录
+  -> no_device：下载并打开 Panda Bridge Desktop
+  -> authorization_pending：去桌面端确认
+  -> authorized_offline：打开 Bridge，不重复授权
+  -> not_authorized：创建 intent 并在 Desktop 确认授权
+  -> ready：创建 job
+  -> 本机 Desktop 调用 Codex app-server
+  -> 产品页面看到流式事件和最终回复
 ```
 
 本地验证：
