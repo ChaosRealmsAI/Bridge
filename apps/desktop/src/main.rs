@@ -101,6 +101,8 @@ struct ProductGrant {
     name: String,
     #[serde(default)]
     origin: Option<String>,
+    #[serde(default = "default_authorization_state")]
+    authorization: AuthorizationState,
     #[serde(default)]
     capabilities: Vec<String>,
     #[serde(default)]
@@ -122,6 +124,12 @@ struct ProductGrantAccount {
     device_id: Option<String>,
     #[serde(default)]
     origin: Option<String>,
+    #[serde(default = "default_authorization_state")]
+    authorized: AuthorizationState,
+    #[serde(default)]
+    connected: Option<bool>,
+    #[serde(default)]
+    connection: Option<String>,
     #[serde(default)]
     authorized_at: String,
     #[serde(default)]
@@ -151,9 +159,78 @@ struct DesktopStatus {
     product_name: Option<String>,
     cloud_origin: Option<String>,
     authorized_products: Vec<ProductGrant>,
+    products: Vec<DesktopProductStatus>,
+    settings: DesktopSettings,
     worker_running: bool,
     realtime_connected: bool,
     codex_available: bool,
+}
+
+#[derive(Debug, Serialize, Clone)]
+struct DesktopProductStatus {
+    id: String,
+    name: String,
+    origin: String,
+    web_url: String,
+    accounts: Vec<DesktopAccountStatus>,
+    connected: bool,
+    connection: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+struct DesktopAccountStatus {
+    id: Option<String>,
+    email: String,
+    product_id: Option<String>,
+    device_id: String,
+    authorized: AuthorizationState,
+    connected: bool,
+    connection: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct DesktopSettings {
+    #[serde(default = "default_launch_at_login")]
+    launch_at_login: bool,
+    #[serde(default = "default_appearance")]
+    appearance: String,
+    #[serde(default = "default_language")]
+    language: String,
+    #[serde(default = "default_api_base")]
+    api_base: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+enum AuthorizationState {
+    Active,
+    Paused,
+}
+
+impl AuthorizationState {
+    fn is_active(self) -> bool {
+        self == AuthorizationState::Active
+    }
+}
+
+fn default_authorization_state() -> AuthorizationState {
+    AuthorizationState::Active
+}
+
+fn default_launch_at_login() -> bool {
+    true
+}
+
+fn default_appearance() -> String {
+    "auto".to_string()
+}
+
+fn default_language() -> String {
+    "auto".to_string()
+}
+
+fn default_api_base() -> String {
+    DEFAULT_API.to_string()
 }
 
 #[derive(Debug, Serialize)]
@@ -417,9 +494,9 @@ fn run_window() -> Result<(), String> {
     #[allow(unused_mut)]
     let mut window_builder = WindowBuilder::new()
         .with_title("Panda Bridge")
-        .with_inner_size(LogicalSize::new(760.0, 540.0))
-        .with_min_inner_size(LogicalSize::new(680.0, 480.0))
-        .with_resizable(true);
+        .with_inner_size(LogicalSize::new(760.0, 500.0))
+        .with_min_inner_size(LogicalSize::new(760.0, 500.0))
+        .with_resizable(false);
     #[cfg(target_os = "macos")]
     {
         window_builder = window_builder.with_transparent(true);
@@ -472,6 +549,12 @@ fn run_window() -> Result<(), String> {
         match event {
             Event::NewEvents(StartCause::Init) if !sent_initial_links => {
                 sent_initial_links = true;
+                if running_from_app_bundle() {
+                    let settings = load_settings_with_api(DEFAULT_API);
+                    if let Err(error) = apply_launch_at_login(settings.launch_at_login) {
+                        eprintln!("[launch-at-login] {error}");
+                    }
+                }
                 if load_credentials().is_ok() {
                     let _ = start_worker(&state, proxy.clone());
                 }
@@ -787,7 +870,7 @@ fn run_verify_action(
             json!({ "ok": true, "message": "disconnected" })
         }
         "open_web" => {
-            let url = string_param(params, "url").unwrap_or_else(|| DEFAULT_WEB.to_string());
+            let url = open_web_url(params);
             open_url(&url)?;
             json!({ "ok": true, "message": "opened web" })
         }
@@ -812,9 +895,15 @@ fn run_verify_action(
             let _ = start_worker(state, proxy.clone());
             serde_json::to_value(claim).map_err(|error| error.to_string())?
         }
-        "revoke_authorization" | "click_revoke_authorization" => {
-            let product_id = required_param(params, "product_id")?;
-            let account_id = string_param(params, "account_id");
+        "toggle_authorization" | "click_toggle_authorization" => {
+            let product_id = product_param(params)?;
+            let account = required_param(params, "account")?;
+            toggle_authorization_for_state(state, proxy.clone(), &product_id, &account)?
+        }
+        "remove_authorization" | "revoke_authorization" | "click_revoke_authorization" => {
+            let product_id = product_param(params)?;
+            let account_id =
+                string_param(params, "account_id").or_else(|| string_param(params, "account"));
             let device_id = string_param(params, "device_id");
             revoke_authorization_for_state(
                 state,
@@ -941,17 +1030,11 @@ fn write_builtin_screenshot(path: &Path, snapshot: &Value) -> Result<(), String>
                     .and_then(Value::as_str)
                     .unwrap_or("unknown");
                 let origin = product_display_origin(product);
-                let capabilities = product
-                    .get("capabilities")
+                let account_count = product
+                    .get("accounts")
                     .and_then(Value::as_array)
-                    .map(|items| {
-                        items
-                            .iter()
-                            .filter_map(Value::as_str)
-                            .collect::<Vec<_>>()
-                            .join(",")
-                    })
-                    .unwrap_or_else(|| "none".to_string());
+                    .map(Vec::len)
+                    .unwrap_or(0);
                 canvas.draw_text(
                     54,
                     y,
@@ -963,7 +1046,7 @@ fn write_builtin_screenshot(path: &Path, snapshot: &Value) -> Result<(), String>
                 canvas.draw_text(
                     78,
                     y,
-                    &truncate_ascii(&format!("CAPABILITIES {}", capabilities), 84),
+                    &truncate_ascii(&format!("ACCOUNTS {}", account_count), 84),
                     [51, 65, 85],
                     2,
                 );
@@ -1320,9 +1403,16 @@ fn run_command(
             let _ = start_worker(state, proxy);
             serde_json::to_value(claimed).map_err(|error| error.to_string())
         }
-        "revoke_authorization" => {
-            let product_id = required_param(params, "product_id")?;
-            let account_id = string_param(params, "account_id");
+        "toggle_authorization" => {
+            let product_id = product_param(params)?;
+            let account = required_param(params, "account")?;
+            let payload = toggle_authorization_for_state(state, proxy, &product_id, &account)?;
+            Ok(payload)
+        }
+        "remove_authorization" | "revoke_authorization" => {
+            let product_id = product_param(params)?;
+            let account_id =
+                string_param(params, "account_id").or_else(|| string_param(params, "account"));
             let device_id = string_param(params, "device_id");
             revoke_authorization_for_state(
                 state,
@@ -1330,6 +1420,16 @@ fn run_command(
                 account_id.as_deref(),
                 device_id.as_deref(),
             )
+        }
+        "settings" => {
+            let api_base = load_credentials()
+                .map(|credentials| credentials.api_base)
+                .unwrap_or_else(|_| DEFAULT_API.to_string());
+            serde_json::to_value(load_settings_with_api(&api_base))
+                .map_err(|error| error.to_string())
+        }
+        "update_settings" => {
+            serde_json::to_value(update_settings(params)?).map_err(|error| error.to_string())
         }
         "start_worker" => start_worker(state, proxy),
         "stop_worker" => {
@@ -1342,7 +1442,7 @@ fn run_command(
             Ok(json!({ "ok": true, "message": "disconnected" }))
         }
         "open_web" => {
-            let url = string_param(params, "url").unwrap_or_else(|| DEFAULT_WEB.to_string());
+            let url = open_web_url(params);
             open_url(&url)?;
             Ok(json!({ "ok": true, "message": "opened web" }))
         }
@@ -1352,6 +1452,13 @@ fn run_command(
 
 fn status(state: &AppState) -> DesktopStatus {
     let credentials = load_credentials().ok();
+    let products = desktop_products(credentials.as_ref(), state);
+    let settings = load_settings_with_api(
+        credentials
+            .as_ref()
+            .map(|item| item.api_base.as_str())
+            .unwrap_or(DEFAULT_API),
+    );
     DesktopStatus {
         api_base: credentials.as_ref().map(|item| item.api_base.clone()),
         device_id: credentials.as_ref().map(|item| item.device_id.clone()),
@@ -1375,10 +1482,190 @@ fn status(state: &AppState) -> DesktopStatus {
             .as_ref()
             .map(credentials_products)
             .unwrap_or_default(),
+        products,
+        settings,
         worker_running: state.worker_running.load(Ordering::SeqCst),
         realtime_connected: state.realtime_connected.load(Ordering::SeqCst),
         codex_available: command_exists(&codex_bin()),
     }
+}
+
+#[derive(Clone, Copy)]
+struct KnownProduct {
+    id: &'static str,
+    name: &'static str,
+    origin: &'static str,
+    web_url: &'static str,
+}
+
+fn known_products() -> [KnownProduct; 2] {
+    [
+        KnownProduct {
+            id: "pandart",
+            name: "Pandart",
+            origin: "pandart.cc",
+            web_url: "https://pandart.cc",
+        },
+        KnownProduct {
+            id: "otherline",
+            name: "Otherline",
+            origin: "otherline.cc",
+            web_url: "https://otherline.cc",
+        },
+    ]
+}
+
+fn desktop_products(
+    credentials: Option<&Credentials>,
+    state: &AppState,
+) -> Vec<DesktopProductStatus> {
+    let worker_running = state.worker_running.load(Ordering::SeqCst);
+    let realtime_connected = state.realtime_connected.load(Ordering::SeqCst);
+    let connections = credentials.map(credentials_connections).unwrap_or_default();
+    known_products()
+        .into_iter()
+        .map(|product| {
+            let mut accounts: Vec<DesktopAccountStatus> = Vec::new();
+            for connection in &connections {
+                for grant in connection_products(connection)
+                    .into_iter()
+                    .filter(|grant| product_matches_known(grant, product))
+                {
+                    upsert_desktop_account_status(
+                        &mut accounts,
+                        connection,
+                        &grant,
+                        worker_running,
+                        realtime_connected,
+                    );
+                }
+            }
+            accounts.sort_by(|left, right| left.email.cmp(&right.email));
+            let connected = accounts.iter().any(|account| account.connected);
+            let reconnecting = accounts.iter().any(|account| {
+                account.authorized.is_active() && account.connection == "reconnecting"
+            });
+            DesktopProductStatus {
+                id: product.id.to_string(),
+                name: product.name.to_string(),
+                origin: product.origin.to_string(),
+                web_url: product.web_url.to_string(),
+                accounts,
+                connected,
+                connection: if connected {
+                    "connected".to_string()
+                } else if reconnecting {
+                    "reconnecting".to_string()
+                } else {
+                    "offline".to_string()
+                },
+            }
+        })
+        .collect()
+}
+
+fn upsert_desktop_account_status(
+    accounts: &mut Vec<DesktopAccountStatus>,
+    connection: &Credentials,
+    grant: &ProductGrant,
+    worker_running: bool,
+    realtime_connected: bool,
+) {
+    let email = connection
+        .account_display
+        .clone()
+        .or_else(|| connection.account_id.clone())
+        .unwrap_or_else(|| "Panda Account".to_string());
+    let connected = grant.authorization.is_active() && worker_running && realtime_connected;
+    let connection_state = if connected {
+        "connected"
+    } else if grant.authorization.is_active() {
+        "reconnecting"
+    } else {
+        "disabled"
+    };
+    let key = connection
+        .account_id
+        .as_deref()
+        .unwrap_or(email.as_str())
+        .to_string();
+    if let Some(existing) = accounts.iter_mut().find(|item| {
+        item.id.as_deref() == Some(key.as_str())
+            || item.email == email
+            || connection
+                .account_display
+                .as_deref()
+                .map(|display| item.email == display)
+                .unwrap_or(false)
+    }) {
+        if grant.authorization.is_active() {
+            existing.authorized = AuthorizationState::Active;
+        }
+        if connected {
+            existing.connected = true;
+            existing.connection = "connected".to_string();
+        } else if !existing.connected && existing.authorized.is_active() {
+            existing.connection = "reconnecting".to_string();
+        }
+        if existing.product_id.is_none() {
+            existing.product_id = Some(grant.id.clone());
+        }
+        return;
+    }
+    accounts.push(DesktopAccountStatus {
+        id: connection.account_id.clone().or(Some(key)),
+        email,
+        product_id: Some(grant.id.clone()),
+        device_id: connection.device_id.clone(),
+        authorized: grant.authorization,
+        connected,
+        connection: connection_state.to_string(),
+    });
+}
+
+fn product_matches_known(product: &ProductGrant, known: KnownProduct) -> bool {
+    known_product_id_for_grant(product) == known.id
+}
+
+fn known_product_id_for_grant(product: &ProductGrant) -> &'static str {
+    let haystack = format!(
+        "{} {} {}",
+        product.id,
+        product.name,
+        product.origin.clone().unwrap_or_default()
+    )
+    .to_ascii_lowercase();
+    if haystack.contains("pandart") || haystack.contains("pandaart") {
+        "pandart"
+    } else {
+        "otherline"
+    }
+}
+
+fn product_matches_target(product: &ProductGrant, target: &str) -> bool {
+    let normalized_target = normalize_product_key(target);
+    if normalized_target.is_empty() {
+        return false;
+    }
+    normalize_product_key(&product.id) == normalized_target
+        || normalize_product_key(&product.name) == normalized_target
+        || known_product_id_for_grant(product) == normalized_target
+}
+
+fn normalize_product_key(value: &str) -> String {
+    value
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+fn connection_matches_account(connection: &Credentials, account: Option<&str>) -> bool {
+    let Some(account) = account.map(str::trim).filter(|value| !value.is_empty()) else {
+        return true;
+    };
+    connection.account_id.as_deref() == Some(account)
+        || connection.account_display.as_deref() == Some(account)
 }
 
 fn preview_intent(api: &str, intent: &str) -> Result<IntentPreview, String> {
@@ -1784,6 +2071,76 @@ fn claim_intent(api: &str, intent: &str, device_name: &str) -> Result<ClaimResul
     })
 }
 
+fn toggle_authorization(product_id: &str, account: &str) -> Result<Value, String> {
+    let credentials = ensure_credentials_install_id(load_credentials()?)?;
+    let mut connections = credentials_connections(&credentials);
+    let mut next_state: Option<AuthorizationState> = None;
+    let mut changed = 0_usize;
+    for connection in connections
+        .iter_mut()
+        .filter(|connection| connection_matches_account(connection, Some(account)))
+    {
+        let current_products = connection_products(connection);
+        if current_products
+            .iter()
+            .filter(|grant| product_matches_target(grant, product_id))
+            .all(|grant| !grant.authorization.is_active())
+        {
+            next_state.get_or_insert(AuthorizationState::Active);
+        } else if current_products
+            .iter()
+            .any(|grant| product_matches_target(grant, product_id))
+        {
+            next_state.get_or_insert(AuthorizationState::Paused);
+        }
+        let Some(target_state) = next_state else {
+            continue;
+        };
+        if connection.authorized_products.is_empty() {
+            connection.authorized_products = current_products;
+        }
+        for grant in connection
+            .authorized_products
+            .iter_mut()
+            .filter(|grant| product_matches_target(grant, product_id))
+        {
+            if grant.authorization != target_state {
+                grant.authorization = target_state;
+                changed += 1;
+            }
+        }
+    }
+    if changed == 0 {
+        return Err("authorization_not_found".to_string());
+    }
+    let next = credentials_from_connections(connections, None, Some(&credentials));
+    save_credentials(&next)?;
+    write_connector_state(&next)?;
+    Ok(json!({
+        "ok": true,
+        "product_id": product_id,
+        "account": account,
+        "authorized": next_state.unwrap_or(AuthorizationState::Active),
+        "authorized_products": next.authorized_products
+    }))
+}
+
+fn toggle_authorization_for_state(
+    state: &AppState,
+    proxy: EventLoopProxy<UserEvent>,
+    product_id: &str,
+    account: &str,
+) -> Result<Value, String> {
+    let payload = toggle_authorization(product_id, account)?;
+    if authorized_connections(&load_credentials()?).is_empty() {
+        state.worker_running.store(false, Ordering::SeqCst);
+        state.realtime_connected.store(false, Ordering::SeqCst);
+    } else {
+        let _ = start_worker(state, proxy);
+    }
+    Ok(payload)
+}
+
 fn revoke_authorization(
     product_id: &str,
     account_id: Option<&str>,
@@ -1795,21 +2152,28 @@ fn revoke_authorization(
     }
     let credentials = ensure_credentials_install_id(load_credentials()?)?;
     let mut connections = credentials_connections(&credentials);
-    let matching: Vec<usize> = connections
+    let matching: Vec<(usize, Vec<String>)> = connections
         .iter()
         .enumerate()
-        .filter(|(_, connection)| {
-            connection_products(connection)
-                .iter()
-                .any(|item| item.id == product_id)
-                && account_id
-                    .map(|id| connection.account_id.as_deref() == Some(id))
-                    .unwrap_or(true)
-                && device_id
+        .filter_map(|(index, connection)| {
+            if !connection_matches_account(connection, account_id)
+                || !device_id
                     .map(|id| connection.device_id == id)
                     .unwrap_or(true)
+            {
+                return None;
+            }
+            let product_ids = connection_products(connection)
+                .into_iter()
+                .filter(|item| product_matches_target(item, product_id))
+                .map(|item| item.id)
+                .collect::<Vec<_>>();
+            if product_ids.is_empty() {
+                None
+            } else {
+                Some((index, product_ids))
+            }
         })
-        .map(|(index, _)| index)
         .collect();
     if matching.is_empty() {
         return Err("authorization_not_found".to_string());
@@ -1819,39 +2183,66 @@ fn revoke_authorization(
     }
 
     let mut remote_results = Vec::new();
-    for index in matching {
+    for (index, product_ids) in matching {
         let connection = connections[index].clone();
-        let url = format!(
-            "{}/v1/connectors/products/{}/authorization",
-            connection.api_base,
-            urlencoding::encode(product_id)
-        );
-        let remote_revoke: Result<Value, String> = delete_json_with_install(
-            &url,
-            Some(&connection.device_token),
-            connection.install_id.as_deref(),
-        );
+        let mut connection_remote_results = Vec::new();
+        for actual_product_id in &product_ids {
+            let url = format!(
+                "{}/v1/connectors/products/{}/authorization",
+                connection.api_base,
+                urlencoding::encode(actual_product_id)
+            );
+            let remote_revoke: Result<Value, String> =
+                if env_flag("PANDA_BRIDGE_SKIP_REMOTE_REVOKE") {
+                    Ok(json!({ "ok": true, "skipped": true }))
+                } else {
+                    delete_json_with_install(
+                        &url,
+                        Some(&connection.device_token),
+                        connection.install_id.as_deref(),
+                    )
+                };
+            let (remote_revoke_ok, payload, remote_revoke_error) = match remote_revoke {
+                Ok(payload) => (true, payload, Value::Null),
+                Err(error) => (false, Value::Null, Value::String(redact_error_text(&error))),
+            };
+            connection_remote_results.push(json!({
+                "remote_revoke_ok": remote_revoke_ok,
+                "product_id": actual_product_id,
+                "authorization": payload.get("authorization").cloned().unwrap_or(Value::Null),
+                "cancelled_jobs": payload.get("cancelled_jobs").cloned().unwrap_or(Value::Null),
+                "remote_revoke_error": remote_revoke_error
+            }));
+        }
         connections[index].authorized_products = connection_products(&connection)
             .into_iter()
-            .filter(|item| item.id != product_id)
+            .filter(|item| !product_matches_target(item, product_id))
             .collect();
-        if connections[index].product_id.as_deref() == Some(product_id) {
+        if connections[index]
+            .product_id
+            .as_deref()
+            .map(|id| product_ids.iter().any(|product_id| product_id == id))
+            .unwrap_or(false)
+        {
             connections[index].product_id = None;
             connections[index].product_name = None;
             connections[index].cloud_origin = None;
         }
-        let (remote_revoke_ok, payload, remote_revoke_error) = match remote_revoke {
-            Ok(payload) => (true, payload, Value::Null),
-            Err(error) => (false, Value::Null, Value::String(redact_error_text(&error))),
-        };
         remote_results.push(json!({
-            "remote_revoke_ok": remote_revoke_ok,
+            "remote_revoke_ok": connection_remote_results.iter().all(|item| item.get("remote_revoke_ok").and_then(Value::as_bool) == Some(true)),
             "account_id": connection.account_id,
             "account_display": connection.account_display,
             "device_id": connection.device_id,
-            "authorization": payload.get("authorization").cloned().unwrap_or(Value::Null),
-            "cancelled_jobs": payload.get("cancelled_jobs").cloned().unwrap_or(Value::Null),
-            "remote_revoke_error": remote_revoke_error
+            "product_ids": product_ids,
+            "cancelled_jobs": connection_remote_results.iter().filter_map(|item| item.get("cancelled_jobs").and_then(Value::as_i64)).sum::<i64>(),
+            "remote_revoke_error": connection_remote_results.iter().find_map(|item| {
+                if item.get("remote_revoke_ok").and_then(Value::as_bool) == Some(false) {
+                    item.get("remote_revoke_error").cloned()
+                } else {
+                    None
+                }
+            }).unwrap_or(Value::Null),
+            "products": connection_remote_results
         }));
     }
     let next = credentials_from_connections(connections, None, Some(&credentials));
@@ -1886,12 +2277,10 @@ fn revoke_authorization_for_state(
     device_id: Option<&str>,
 ) -> Result<Value, String> {
     let payload = revoke_authorization(product_id, account_id, device_id)?;
-    let empty_products = payload
-        .get("authorized_products")
-        .and_then(Value::as_array)
-        .map(|items| items.is_empty())
-        .unwrap_or(false);
-    if empty_products {
+    if load_credentials()
+        .map(|credentials| authorized_connections(&credentials).is_empty())
+        .unwrap_or(true)
+    {
         state.worker_running.store(false, Ordering::SeqCst);
         state.realtime_connected.store(false, Ordering::SeqCst);
     }
@@ -2004,6 +2393,7 @@ fn connection_products(credentials: &Credentials) -> Vec<ProductGrant> {
             id: id.clone(),
             name: name.clone(),
             origin: credentials.cloud_origin.clone(),
+            authorization: AuthorizationState::Active,
             capabilities: Vec::new(),
             policy: Value::Null,
             accounts: Vec::new(),
@@ -2011,6 +2401,13 @@ fn connection_products(credentials: &Credentials) -> Vec<ProductGrant> {
         }],
         _ => Vec::new(),
     }
+}
+
+fn active_connection_products(credentials: &Credentials) -> Vec<ProductGrant> {
+    connection_products(credentials)
+        .into_iter()
+        .filter(|product| product.authorization.is_active())
+        .collect()
 }
 
 fn product_without_accounts(mut product: ProductGrant) -> ProductGrant {
@@ -2045,7 +2442,7 @@ fn credentials_connections(credentials: &Credentials) -> Vec<Credentials> {
 fn authorized_connections(credentials: &Credentials) -> Vec<Credentials> {
     credentials_connections(credentials)
         .into_iter()
-        .filter(|item| !connection_products(item).is_empty())
+        .filter(|item| !active_connection_products(item).is_empty())
         .collect()
 }
 
@@ -2069,6 +2466,17 @@ fn aggregate_authorized_products(connections: &[Credentials]) -> Vec<ProductGran
                     .origin
                     .clone()
                     .or_else(|| connection.cloud_origin.clone()),
+                authorized: product.authorization,
+                connected: connection.device_online,
+                connection: Some(
+                    if product.authorization.is_active() && connection.device_online == Some(true) {
+                        "connected".to_string()
+                    } else if product.authorization.is_active() {
+                        "reconnecting".to_string()
+                    } else {
+                        "disabled".to_string()
+                    },
+                ),
                 authorized_at: product.authorized_at.clone(),
                 devices: vec![device],
             };
@@ -2097,6 +2505,17 @@ fn aggregate_authorized_products(connections: &[Credentials]) -> Vec<ProductGran
                     }
                     if existing_account.display_name.is_none() {
                         existing_account.display_name = connection.account_display.clone();
+                    }
+                    if product.authorization.is_active() {
+                        existing_account.authorized = AuthorizationState::Active;
+                    }
+                    if account.connected == Some(true) {
+                        existing_account.connected = Some(true);
+                        existing_account.connection = Some("connected".to_string());
+                    } else if existing_account.connected != Some(true)
+                        && existing_account.authorized.is_active()
+                    {
+                        existing_account.connection = Some("reconnecting".to_string());
                     }
                 } else {
                     existing.accounts.push(account);
@@ -2175,7 +2594,7 @@ fn credentials_from_connections(
 fn authorized_connections_from_slice(connections: &[Credentials]) -> Vec<Credentials> {
     connections
         .iter()
-        .filter(|item| !connection_products(item).is_empty())
+        .filter(|item| !active_connection_products(item).is_empty())
         .cloned()
         .collect()
 }
@@ -2244,6 +2663,7 @@ fn merge_authorized_products(
             id: id.clone(),
             name,
             origin: cloud_origin,
+            authorization: AuthorizationState::Active,
             capabilities,
             policy,
             accounts: Vec::new(),
@@ -2430,7 +2850,7 @@ fn prepare_connections_for_worker(
     let mut connections = credentials_connections(&credentials);
     if connections
         .iter()
-        .all(|item| connection_products(item).is_empty())
+        .all(|item| active_connection_products(item).is_empty())
     {
         state.worker_running.store(false, Ordering::SeqCst);
         state.realtime_connected.store(false, Ordering::SeqCst);
@@ -2438,7 +2858,9 @@ fn prepare_connections_for_worker(
     }
     let mut changed = false;
     for connection in connections.iter_mut() {
-        if connection_products(connection).is_empty() || !device_token_rotation_due(connection) {
+        if active_connection_products(connection).is_empty()
+            || !device_token_rotation_due(connection)
+        {
             continue;
         }
         match rotate_device_token(connection) {
@@ -2528,6 +2950,63 @@ fn heartbeat_interval_ms() -> u64 {
         .unwrap_or(30_000)
 }
 
+#[derive(Debug, Clone)]
+struct ReconnectBackoff {
+    attempt: u32,
+    base_ms: u64,
+    max_ms: u64,
+}
+
+impl ReconnectBackoff {
+    fn new() -> Self {
+        Self {
+            attempt: 0,
+            base_ms: realtime_reconnect_base_ms(),
+            max_ms: realtime_reconnect_max_ms(),
+        }
+    }
+
+    fn next_delay_ms(&mut self) -> u64 {
+        let delay = reconnect_delay_ms(self.attempt, self.base_ms, self.max_ms);
+        self.attempt = self.attempt.saturating_add(1);
+        delay
+    }
+
+    fn reset(&mut self) {
+        self.attempt = 0;
+    }
+}
+
+fn reconnect_delay_ms(attempt: u32, base_ms: u64, max_ms: u64) -> u64 {
+    let shift = attempt.min(16);
+    base_ms
+        .max(1)
+        .saturating_mul(1_u64 << shift)
+        .min(max_ms.max(base_ms.max(1)))
+}
+
+fn realtime_reconnect_base_ms() -> u64 {
+    env::var("PANDA_BRIDGE_REALTIME_RECONNECT_BASE_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(1_000)
+}
+
+fn realtime_reconnect_max_ms() -> u64 {
+    env::var("PANDA_BRIDGE_REALTIME_RECONNECT_MAX_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(30_000)
+}
+
+fn sleep_while_running(running: &Arc<AtomicBool>, duration: Duration) {
+    let started = Instant::now();
+    while running.load(Ordering::SeqCst) && started.elapsed() < duration {
+        let remaining = duration.saturating_sub(started.elapsed());
+        thread::sleep(remaining.min(Duration::from_millis(250)));
+    }
+}
+
 fn spawn_missing_realtime_workers(
     state: &AppState,
     proxy: &EventLoopProxy<UserEvent>,
@@ -2562,6 +3041,7 @@ fn spawn_missing_realtime_workers(
                 "realtime_worker_started",
                 realtime_connection_payload(&connection),
             );
+            let mut backoff = ReconnectBackoff::new();
             while running.load(Ordering::SeqCst) {
                 let result = run_realtime_worker(
                     &connection,
@@ -2571,12 +3051,15 @@ fn spawn_missing_realtime_workers(
                     &thread_proxy,
                 );
                 if let Err(error) = result {
+                    realtime_connected.store(false, Ordering::SeqCst);
+                    let delay_ms = backoff.next_delay_ms();
                     push_event(
                         &thread_state,
                         "realtime_disconnected",
                         json!({
                             "error": redact_error_text(&error),
-                            "connection": realtime_connection_payload(&connection)
+                            "connection": realtime_connection_payload(&connection),
+                            "reconnect_in_ms": delay_ms
                         }),
                     );
                     let _ = thread_proxy.send_event(UserEvent::UiEvent(json!({
@@ -2584,9 +3067,17 @@ fn spawn_missing_realtime_workers(
                         "event": "log",
                         "message": "realtime disconnected; polling fallback active"
                     })));
-                }
-                if running.load(Ordering::SeqCst) {
-                    thread::sleep(Duration::from_millis(2000));
+                    push_event(
+                        &thread_state,
+                        "realtime_reconnect_scheduled",
+                        json!({
+                            "delay_ms": delay_ms,
+                            "connection": realtime_connection_payload(&connection)
+                        }),
+                    );
+                    sleep_while_running(&running, Duration::from_millis(delay_ms));
+                } else {
+                    backoff.reset();
                 }
             }
             if let Ok(mut keys) = thread_state.realtime_connection_keys.lock() {
@@ -2618,7 +3109,7 @@ fn realtime_connection_payload(credentials: &Credentials) -> Value {
         "device_id": credentials.device_id,
         "account_id": credentials.account_id,
         "account_display": credentials.account_display,
-        "product_ids": connection_products(credentials)
+        "product_ids": active_connection_products(credentials)
             .into_iter()
             .map(|product| product.id)
             .collect::<Vec<_>>()
@@ -2657,7 +3148,7 @@ fn run_realtime_worker(
             "device_id": credentials.device_id,
             "account_id": credentials.account_id,
             "account_display": credentials.account_display,
-            "product_ids": connection_products(credentials)
+            "product_ids": active_connection_products(credentials)
                 .into_iter()
                 .map(|product| product.id)
                 .collect::<Vec<_>>(),
@@ -2669,6 +3160,9 @@ fn run_realtime_worker(
         "event": "log",
         "message": "realtime connected"
     })));
+    let _ = proxy.send_event(UserEvent::UiEvent(
+        json!({ "type": "event", "event": "refresh" }),
+    ));
     let mut codex_session = warm_codex_session(credentials, state, proxy);
     let mut processed = std::collections::HashSet::<String>::new();
     while running.load(Ordering::SeqCst) {
@@ -2690,6 +3184,22 @@ fn run_realtime_worker(
                 if envelope.message_type == "job.assign" {
                     if let Some(job) = envelope.job {
                         if !processed.contains(&job.id) {
+                            let current_connection = refreshed_connection(credentials);
+                            if !connection_authorizes_product_active(
+                                &current_connection,
+                                &job.product_id,
+                            ) {
+                                push_event(
+                                    state,
+                                    "realtime_job_skipped",
+                                    json!({
+                                        "job_id": job.id,
+                                        "product_id": job.product_id,
+                                        "reason": "authorization_paused_locally"
+                                    }),
+                                );
+                                continue;
+                            }
                             push_event(
                                 state,
                                 "realtime_job",
@@ -2705,9 +3215,13 @@ fn run_realtime_worker(
                             let _ = proxy.send_event(UserEvent::UiEvent(
                                 json!({ "type": "event", "event": "refresh" }),
                             ));
-                            if accept_job(credentials, &job, "websocket")? {
+                            if accept_job(&current_connection, &job, "websocket")? {
                                 processed.insert(job.id.clone());
-                                execute_and_ack_warm(credentials, &job, &mut codex_session)?;
+                                execute_and_ack_warm(
+                                    &current_connection,
+                                    &job,
+                                    &mut codex_session,
+                                )?;
                             }
                         }
                     }
@@ -2859,9 +3373,29 @@ fn poll_once(credentials: &Credentials) -> Result<usize, String> {
     )?;
     let count = payload.items.len();
     for job in payload.items {
+        if !connection_authorizes_product_active(credentials, &job.product_id) {
+            continue;
+        }
         execute_and_ack(credentials, &job)?;
     }
     Ok(count)
+}
+
+fn connection_authorizes_product_active(credentials: &Credentials, product_id: &str) -> bool {
+    active_connection_products(credentials)
+        .iter()
+        .any(|product| product.id == product_id)
+}
+
+fn refreshed_connection(credentials: &Credentials) -> Credentials {
+    load_credentials()
+        .ok()
+        .and_then(|stored| {
+            credentials_connections(&stored)
+                .into_iter()
+                .find(|item| realtime_connection_key(item) == realtime_connection_key(credentials))
+        })
+        .unwrap_or_else(|| credentials.clone())
 }
 
 fn accept_job(credentials: &Credentials, job: &BridgeJob, transport: &str) -> Result<bool, String> {
@@ -3064,10 +3598,13 @@ fn local_job_policy_for_credentials(
     credentials: &Credentials,
     job: &BridgeJob,
 ) -> Result<LocalJobPolicy, String> {
-    let grant = credentials_products(credentials)
+    let grant = connection_products(credentials)
         .into_iter()
         .find(|item| item.id == job.product_id)
         .ok_or_else(|| format!("product_not_authorized_locally: {}", job.product_id))?;
+    if !grant.authorization.is_active() {
+        return Err(format!("authorization_paused_locally: {}", job.product_id));
+    }
     if !grant.capabilities.is_empty() && !grant.capabilities.iter().any(|item| item == &job.kind) {
         return Err(format!(
             "capability_not_authorized_locally: {}:{}",
@@ -3222,6 +3759,8 @@ fn local_policy_denial_event(job: &BridgeJob, error: &str) -> Value {
 fn local_policy_denial(error: &str) -> (&'static str, &'static str) {
     if error.starts_with("product_not_authorized_locally") {
         ("product", "product_not_authorized_locally")
+    } else if error.starts_with("authorization_paused_locally") {
+        ("authorization", "authorization_paused_locally")
     } else if error.starts_with("capability_not_authorized_locally") {
         ("capability", "capability_not_authorized_locally")
     } else if error.starts_with("authorization_scope_missing_locally") {
@@ -3969,6 +4508,118 @@ fn authorization_policy_capabilities(policy: &Value) -> Option<Vec<String>> {
         })
 }
 
+fn settings_path() -> Result<PathBuf, String> {
+    Ok(state_dir()?.join("desktop-settings.json"))
+}
+
+fn load_settings_with_api(api_base: &str) -> DesktopSettings {
+    let mut settings = fs::read_to_string(settings_path().unwrap_or_else(|_| PathBuf::new()))
+        .ok()
+        .and_then(|text| serde_json::from_str::<DesktopSettings>(&text).ok())
+        .unwrap_or_else(default_settings);
+    settings.api_base = api_base.to_string();
+    settings
+}
+
+fn default_settings() -> DesktopSettings {
+    DesktopSettings {
+        launch_at_login: default_launch_at_login(),
+        appearance: default_appearance(),
+        language: default_language(),
+        api_base: default_api_base(),
+    }
+}
+
+fn save_settings(settings: &DesktopSettings) -> Result<(), String> {
+    let mut persisted = settings.clone();
+    persisted.api_base = DEFAULT_API.to_string();
+    write_file(
+        &settings_path()?,
+        &serde_json::to_string_pretty(&persisted).map_err(|error| error.to_string())?,
+    )
+}
+
+fn update_settings(params: &Value) -> Result<DesktopSettings, String> {
+    let api_base = load_credentials()
+        .map(|credentials| credentials.api_base)
+        .unwrap_or_else(|_| DEFAULT_API.to_string());
+    let mut settings = load_settings_with_api(&api_base);
+    if let Some(value) = params.get("launch_at_login").and_then(Value::as_bool) {
+        settings.launch_at_login = value;
+    }
+    if let Some(value) = params.get("appearance").and_then(Value::as_str) {
+        settings.appearance = match value {
+            "auto" | "light" | "dark" => value.to_string(),
+            other => return Err(format!("invalid appearance: {other}")),
+        };
+    }
+    if let Some(value) = params.get("language").and_then(Value::as_str) {
+        settings.language = match value {
+            "auto" | "zh-CN" | "zh-TW" | "en" | "ja" => value.to_string(),
+            other => return Err(format!("invalid language: {other}")),
+        };
+    }
+    save_settings(&settings)?;
+    if params.get("launch_at_login").and_then(Value::as_bool).is_some() {
+        if let Err(error) = apply_launch_at_login(settings.launch_at_login) {
+            eprintln!("[launch-at-login] {error}");
+        }
+    }
+    Ok(settings)
+}
+
+fn launch_agent_plist(executable: &str) -> String {
+    let escaped = executable
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;");
+    format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
+<plist version=\"1.0\">\n\
+<dict>\n\
+    <key>Label</key>\n\
+    <string>cc.otherline.panda-bridge</string>\n\
+    <key>ProgramArguments</key>\n\
+    <array>\n\
+        <string>{escaped}</string>\n\
+    </array>\n\
+    <key>RunAtLoad</key>\n\
+    <true/>\n\
+    <key>ProcessType</key>\n\
+    <string>Interactive</string>\n\
+</dict>\n\
+</plist>"
+    )
+}
+
+/// 开机自启（契约 §1 连接全自动）：macOS 写入/移除用户级 LaunchAgent，其余平台仅持久化开关。
+fn apply_launch_at_login(enabled: bool) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let path = home_dir()?.join("Library/LaunchAgents/cc.otherline.panda-bridge.plist");
+        if !enabled {
+            if path.exists() {
+                fs::remove_file(&path).map_err(|error| error.to_string())?;
+            }
+            return Ok(());
+        }
+        let exe = env::current_exe().map_err(|error| error.to_string())?;
+        return write_external_state_file(&path, &launch_agent_plist(&exe.to_string_lossy()));
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = enabled;
+        Ok(())
+    }
+}
+
+fn running_from_app_bundle() -> bool {
+    env::current_exe()
+        .map(|exe| exe.to_string_lossy().contains(".app/Contents/MacOS"))
+        .unwrap_or(false)
+}
+
 fn save_credentials(credentials: &Credentials) -> Result<(), String> {
     let text = serde_json::to_string_pretty(credentials).map_err(|error| error.to_string())?;
     if let Ok(path) = env::var("PANDA_BRIDGE_DESKTOP_STATE") {
@@ -4475,6 +5126,24 @@ fn fake_codex_enabled() -> bool {
         .unwrap_or(false)
 }
 
+fn open_web_url(params: &Value) -> String {
+    if let Some(url) = string_param(params, "url").filter(|value| !value.trim().is_empty()) {
+        return url;
+    }
+    if let Some(product_id) =
+        string_param(params, "product_id").or_else(|| string_param(params, "product"))
+    {
+        let normalized = normalize_product_key(&product_id);
+        if let Some(product) = known_products().into_iter().find(|product| {
+            normalize_product_key(product.id) == normalized
+                || normalize_product_key(product.name) == normalized
+        }) {
+            return product.web_url.to_string();
+        }
+    }
+    DEFAULT_WEB.to_string()
+}
+
 fn open_url(url: &str) -> Result<(), String> {
     let status = if cfg!(target_os = "macos") {
         Command::new("open").arg(url).status()
@@ -4541,6 +5210,12 @@ fn unix_seconds() -> u64 {
 
 fn required_param(params: &Value, key: &str) -> Result<String, String> {
     string_param(params, key).ok_or_else(|| format!("missing {key}"))
+}
+
+fn product_param(params: &Value) -> Result<String, String> {
+    string_param(params, "product_id")
+        .or_else(|| string_param(params, "product"))
+        .ok_or_else(|| "missing product_id".to_string())
 }
 
 fn string_param(params: &Value, key: &str) -> Option<String> {
@@ -4629,6 +5304,30 @@ fn run_headless_if_requested() -> Option<i32> {
                 map.get("device-id").map(String::as_str),
             )
         }
+        "headless-toggle-authorization" => {
+            let map = arg_map(args.collect());
+            let product_id = match map.get("product-id") {
+                Some(value) => value.clone(),
+                None => return Some(print_error("missing --product-id")),
+            };
+            let account = match map.get("account") {
+                Some(value) => value.clone(),
+                None => return Some(print_error("missing --account")),
+            };
+            toggle_authorization(&product_id, &account)
+        }
+        "headless-remove-authorization" => {
+            let map = arg_map(args.collect());
+            let product_id = match map.get("product-id") {
+                Some(value) => value.clone(),
+                None => return Some(print_error("missing --product-id")),
+            };
+            revoke_authorization(
+                &product_id,
+                map.get("account").map(String::as_str),
+                map.get("device-id").map(String::as_str),
+            )
+        }
         "headless-poll" => {
             load_credentials().and_then(|credentials| poll_all_connections(&credentials))
         }
@@ -4698,6 +5397,7 @@ mod tests {
                 id: "panda-chat".to_string(),
                 name: "Panda Chat".to_string(),
                 origin: Some("http://local.test".to_string()),
+                authorization: AuthorizationState::Active,
                 capabilities: capabilities.into_iter().map(ToOwned::to_owned).collect(),
                 policy: test_auth_scope(),
                 accounts: Vec::new(),
@@ -4723,6 +5423,7 @@ mod tests {
         env::remove_var("PANDA_BRIDGE_DESKTOP_STATE");
         env::remove_var("PANDA_BRIDGE_USE_KEYCHAIN");
         env::remove_var("PANDA_BRIDGE_SKIP_KEYCHAIN");
+        env::remove_var("PANDA_BRIDGE_SKIP_REMOTE_REVOKE");
     }
 
     #[test]
@@ -4945,6 +5646,174 @@ mod tests {
             .devices
             .iter()
             .any(|item| item.id == "dev_2" && item.online == Some(false)));
+    }
+
+    #[test]
+    fn authorization_toggle_pauses_and_restores_account_product() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        reset_credentials_env();
+        let state_path = env::temp_dir().join(format!(
+            "panda-bridge-toggle-test-{}.json",
+            next_event_seq()
+        ));
+        env::set_var("PANDA_BRIDGE_DESKTOP_STATE", &state_path);
+        let credentials = test_credentials(vec!["codex.chat"]);
+        save_credentials(&credentials).unwrap();
+
+        let paused = toggle_authorization("otherline", "user@example.test").unwrap();
+        assert_eq!(paused["authorized"], "paused");
+        let loaded = load_credentials().unwrap();
+        assert_eq!(
+            loaded.connections[0].authorized_products[0].authorization,
+            AuthorizationState::Paused
+        );
+        assert!(authorized_connections(&loaded).is_empty());
+
+        let restored = toggle_authorization("otherline", "user@example.test").unwrap();
+        assert_eq!(restored["authorized"], "active");
+        let loaded = load_credentials().unwrap();
+        assert_eq!(
+            loaded.connections[0].authorized_products[0].authorization,
+            AuthorizationState::Active
+        );
+        assert_eq!(authorized_connections(&loaded).len(), 1);
+
+        reset_credentials_env();
+        let _ = fs::remove_file(state_path);
+    }
+
+    #[test]
+    fn remove_authorization_deletes_local_account_product() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        reset_credentials_env();
+        let state_path = env::temp_dir().join(format!(
+            "panda-bridge-remove-test-{}.json",
+            next_event_seq()
+        ));
+        env::set_var("PANDA_BRIDGE_DESKTOP_STATE", &state_path);
+        env::set_var("PANDA_BRIDGE_SKIP_REMOTE_REVOKE", "1");
+        let mut credentials = test_credentials(vec!["codex.chat"]);
+        credentials.api_base = "http://127.0.0.1:9".to_string();
+        save_credentials(&credentials).unwrap();
+
+        let removed = revoke_authorization("otherline", Some("user@example.test"), None).unwrap();
+        assert_eq!(removed["ok"], true);
+        let loaded = load_credentials().unwrap();
+        assert!(credentials_products(&loaded).is_empty());
+
+        reset_credentials_env();
+        let _ = fs::remove_file(state_path);
+    }
+
+    #[test]
+    fn update_settings_persists_switches_and_manages_launch_agent() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        reset_credentials_env();
+        env::set_var("PANDA_BRIDGE_SKIP_KEYCHAIN", "1");
+        let old_home = env::var_os("HOME");
+        let home = env::temp_dir().join(format!("panda-bridge-settings-test-{}", next_event_seq()));
+        let _ = fs::remove_dir_all(&home);
+        fs::create_dir_all(&home).unwrap();
+        env::set_var("HOME", &home);
+
+        let updated = update_settings(&json!({
+            "launch_at_login": true,
+            "appearance": "dark",
+            "language": "ja"
+        }))
+        .unwrap();
+        assert!(updated.launch_at_login);
+        assert_eq!(updated.appearance, "dark");
+        assert_eq!(updated.language, "ja");
+        let reloaded = load_settings_with_api(DEFAULT_API);
+        assert!(reloaded.launch_at_login);
+        assert_eq!(reloaded.appearance, "dark");
+        assert_eq!(reloaded.language, "ja");
+        assert_eq!(reloaded.api_base, DEFAULT_API);
+        #[cfg(target_os = "macos")]
+        {
+            let plist = home.join("Library/LaunchAgents/cc.otherline.panda-bridge.plist");
+            assert!(
+                plist.exists(),
+                "enabling launch_at_login should write the LaunchAgent"
+            );
+            let text = fs::read_to_string(&plist).unwrap();
+            assert!(text.contains("cc.otherline.panda-bridge"));
+            assert!(text.contains("<key>RunAtLoad</key>"));
+        }
+
+        let updated = update_settings(&json!({ "launch_at_login": false })).unwrap();
+        assert!(!updated.launch_at_login);
+        #[cfg(target_os = "macos")]
+        {
+            let plist = home.join("Library/LaunchAgents/cc.otherline.panda-bridge.plist");
+            assert!(
+                !plist.exists(),
+                "disabling launch_at_login should remove the LaunchAgent"
+            );
+        }
+
+        assert!(update_settings(&json!({ "appearance": "neon" })).is_err());
+        assert!(update_settings(&json!({ "language": "fr" })).is_err());
+        assert!(launch_agent_plist("/Apps/A&B.app/Contents/MacOS/pb").contains("A&amp;B.app"));
+
+        if let Some(value) = old_home {
+            env::set_var("HOME", value);
+        } else {
+            env::remove_var("HOME");
+        }
+        reset_credentials_env();
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn reconnect_backoff_uses_exponential_delays_and_reset() {
+        let mut backoff = ReconnectBackoff {
+            attempt: 0,
+            base_ms: 1_000,
+            max_ms: 8_000,
+        };
+        assert_eq!(backoff.next_delay_ms(), 1_000);
+        assert_eq!(backoff.next_delay_ms(), 2_000);
+        assert_eq!(backoff.next_delay_ms(), 4_000);
+        assert_eq!(backoff.next_delay_ms(), 8_000);
+        assert_eq!(backoff.next_delay_ms(), 8_000);
+        backoff.reset();
+        assert_eq!(backoff.next_delay_ms(), 1_000);
+    }
+
+    #[test]
+    fn status_serializes_account_level_dual_switches() {
+        let mut credentials = test_credentials(vec!["codex.chat"]);
+        credentials.authorized_products[0].authorization = AuthorizationState::Paused;
+        let state = new_app_state();
+        state.worker_running.store(true, Ordering::SeqCst);
+        state.realtime_connected.store(true, Ordering::SeqCst);
+
+        let products = desktop_products(Some(&credentials), &state);
+        let otherline = products
+            .iter()
+            .find(|product| product.id == "otherline")
+            .unwrap();
+        assert_eq!(otherline.accounts.len(), 1);
+        assert_eq!(otherline.accounts[0].authorized, AuthorizationState::Paused);
+        assert!(!otherline.accounts[0].connected);
+        assert_eq!(otherline.accounts[0].connection, "disabled");
+
+        let serialized = serde_json::to_value(otherline).unwrap();
+        assert_eq!(serialized["accounts"][0]["authorized"], "paused");
+        assert_eq!(serialized["accounts"][0]["connected"], false);
+
+        credentials.authorized_products[0].authorization = AuthorizationState::Active;
+        let products = desktop_products(Some(&credentials), &state);
+        let account = &products
+            .iter()
+            .find(|product| product.id == "otherline")
+            .unwrap()
+            .accounts[0];
+        assert_eq!(account.authorized, AuthorizationState::Active);
+        assert!(account.connected);
+        assert_eq!(account.connection, "connected");
     }
 
     #[test]
