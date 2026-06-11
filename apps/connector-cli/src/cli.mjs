@@ -6,6 +6,7 @@ import { delimiter, dirname, resolve } from "node:path";
 import readline from "node:readline";
 
 const VERSION = "panda-bridge-connector-v0.1";
+let cachedInstallId = "";
 const DEFAULT_API = (process.env.PANDA_BRIDGE_API_BASE || "https://api.bridge.otherline.cc").replace(/\/$/, "");
 const DEFAULT_STATE = resolve(homedir(), ".panda-bridge", "connector.json");
 const args = parseArgs(process.argv.slice(2));
@@ -39,11 +40,13 @@ async function claim() {
     app_version: VERSION,
     capabilities: capabilities(),
     local_state: localState(),
+    install_id: installId(),
   });
   const state = {
     api_base: api,
     device_id: payload.device.id,
     device_token: payload.device_token,
+    install_id: installId(),
     authorized_products: [],
     claimed_at: new Date().toISOString(),
   };
@@ -64,11 +67,13 @@ async function connect() {
     capabilities: capabilities(),
     local_state: localState(),
     policy: fullAccessAuthorizationPolicy(),
+    install_id: installId(),
   });
   const state = {
     api_base: api,
     device_id: payload.device.id,
     device_token: payload.device_token,
+    install_id: installId(),
     authorized_products: payload.product ? [productGrant(payload.product, payload.authorization)] : [],
     claimed_at: new Date().toISOString(),
   };
@@ -796,6 +801,15 @@ function statePath() {
   return resolve(args.state || process.env.PANDA_BRIDGE_CONNECTOR_STATE || DEFAULT_STATE);
 }
 
+function installId() {
+  if (cachedInstallId) return cachedInstallId;
+  const existing = readConnectorState(statePath());
+  cachedInstallId = existing.state?.install_id
+    || process.env.PANDA_BRIDGE_INSTALL_ID
+    || `cli-${crypto.randomUUID()}`;
+  return cachedInstallId;
+}
+
 function loadState() {
   if (!existsSync(statePath())) throw new Error(`missing connector state: ${statePath()}; run claim first`);
   return JSON.parse(readFileSync(statePath(), "utf8"));
@@ -845,7 +859,8 @@ async function parseResponse(response) {
 }
 
 function authHeaders(token) {
-  return token ? { authorization: `Bearer ${token}` } : {};
+  if (!token) return {};
+  return { authorization: `Bearer ${token}`, "x-panda-bridge-install-id": installId() };
 }
 
 function redactState(state) {

@@ -8,6 +8,7 @@ import { createBridgeClient } from "../../packages/sdk/src/index.js";
 import { createBridgeServerClient } from "../../packages/sdk/src/server.js";
 
 const VERSION = "v6-sdk-call-examples-account-stability";
+const installIdsByToken = new Map();
 const evidenceDir = resolve(process.env.PANDA_BRIDGE_SDK_EXAMPLES_EVIDENCE_DIR || `spec/verification/evidence/${VERSION}`);
 const temp = mkdtempSync(resolve(tmpdir(), "panda-bridge-sdk-examples-"));
 const startedAt = new Date();
@@ -533,6 +534,9 @@ async function connectorRequest(deviceToken, method, path, body = null) {
       accept: "application/json",
       origin: apiBase,
       authorization: `Bearer ${deviceToken}`,
+      ...(installIdsByToken.has(deviceToken)
+        ? { "x-panda-bridge-install-id": installIdsByToken.get(deviceToken) }
+        : {}),
       ...(body ? { "content-type": "application/json" } : {}),
     },
     body: body ? JSON.stringify(body) : undefined,
@@ -551,6 +555,7 @@ async function nativeClaimIntent(token, input = {}) {
     capabilities: input.capabilities || {},
     local_state: input.localState || input.local_state || {},
     policy: input.policy || {},
+    install_id: input.installId || input.install_id || `sdk-example-install-${token.slice(-10)}`,
   };
   const path = `/v1/connect-intents/${encodeURIComponent(token)}/claim`;
   const response = await workerFetch(`${apiBase}${path}`, {
@@ -566,6 +571,7 @@ async function nativeClaimIntent(token, input = {}) {
   const payload = text ? JSON.parse(text) : {};
   connectorCalls.push({ method: "POST", path: redactPath(path), status: response.status, native_claim: true });
   assert.ok(response.ok, `POST ${path}: ${JSON.stringify(payload)}`);
+  if (payload.device_token) installIdsByToken.set(payload.device_token, body.install_id);
   return payload;
 }
 
