@@ -2,6 +2,7 @@ import type {
   BridgeAuthorizationInput,
   BridgeAuthorizationPolicy,
   BridgeAuthorizationResponse,
+  BridgeConnectIntentResult,
   BridgeStateModel,
   JsonObject,
 } from "./index.js";
@@ -60,7 +61,7 @@ export type BridgeServerClient = {
   productId: string;
   state(input: BridgeServerUserInput): Promise<BridgeStateModel>;
   account(input: BridgeServerUserInput): Promise<BridgeStateModel>;
-  createConnectIntent(input: BridgeServerConnectIntentInput): Promise<JsonObject>;
+  createConnectIntent(input: BridgeServerConnectIntentInput): Promise<BridgeConnectIntentResult>;
   intentStatus(token: string, input: BridgeServerUserInput): Promise<JsonObject>;
   authorization: BridgeServerAuthorizationApi;
   pause(input: BridgeServerAuthorizationInput): Promise<BridgeAuthorizationResponse>;

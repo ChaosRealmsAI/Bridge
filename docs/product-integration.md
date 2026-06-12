@@ -1,78 +1,38 @@
-# Panda Bridge Product Integration
+# Panda Bridge 产品接入指南
 
-本文面向要从零接入 Panda Bridge 的 SaaS 产品。目标是：产品后端负责服务端委托签名，产品前端只渲染 `BRIDGE-STATE-v1` 和调用 `ensureReady()`，不接触 Desktop device token，也不复刻 Bridge 状态推导。
+本文面向要从零接入 Panda Bridge 的 SaaS 产品（例如 Pandart、Otherline）。Panda Bridge 让你的 Web 产品通过云中转，使用用户本机 Mac 上的 Codex AI。你只需要做两件事：
 
-## 1. 注册产品
+- **前端**：渲染账号状态、提供「授权 / 暂停 / 删除」三个动作、在就绪后调用 Codex。
+- **后端**：用 `createBridgeServerClient` 做委托签名调用（创建授权意图、查询状态、发起任务）。
 
-接入前先在 Bridge Cloud 注册：
+你不需要接触 Desktop 的 device token，不需要管连接，也不需要复刻任何状态推导。
 
-- `product_id`：稳定 ID，例如 `otherline`、`panda-chat`、`panda-dev`、`panda-spec`。
-- official origins：产品真实浏览器来源；浏览器请求必须来自该产品自己的 origin，不能借用全局 CORS allowlist。
-- delegation secret：服务端 HMAC secret，只放在产品后端或 Worker secret 中。
-- capabilities：当前 runtime 能力为 `codex.chat`、`codex.run`、`codex.rpc`、`saas.custom.run`。
-- 默认或请求时传入的 `AUTH-SCOPE-v1` policy：用户会在 Desktop 授权页看到这份本机授权范围。
+---
 
-Bridge 记录的是：
+## 1. 心智模型：账号级双开关 + 自动连接
 
-```text
-Panda account + product_id + desktop device + approved AUTH-SCOPE-v1
-```
+每个 `(产品, 账号)` 只有两个**正交**维度：
 
-同一账号可以有多台 Mac；同一台 Mac 可以服务多个账号；每个 product 的授权独立撤销。
+| 维度 | 谁控制 | 取值 | 含义 |
+| --- | --- | --- | --- |
+| **授权 authorization** | 用户 | `active` / `paused` / 删除 | 用户决定这个账号能不能用这台 Mac。`active`=可用；`paused`=暂停但保留记录；删除=彻底移除授权。 |
+| **连接 connection** | 系统全自动 | `connected` / `reconnecting` | 桌面端在线即 `connected`；断网/重启自动退避重连，期间 `reconnecting`。**用户和调用方都从不手动管连接。** |
 
-## 2. 服务端接入
+一句话：**授权是用户的唯一决策，连接是全自动的，你（调用方）只需要看 `connected` 这个布尔值。**
 
-产品后端使用 SDK server client。它负责 8 字段 HMAC、timestamp、nonce、body hash 和重放防护细节。
+- 用户只能做三件事：暂停/恢复授权、删除授权、（空态时）打开你的产品网页去发起新授权。
+- 连接没有按钮。桌面端开机自启 + 心跳 + 断线指数退避重连 + 设备身份静默复用；恢复后自动继续，绝不重新弹授权窗。
+- `paused` 时谈不上连接，UI 应把连接显示为不可用。
 
-```js
-import { createBridgeServerClient } from "@panda-bridge/sdk/server";
+> 对外、对用户界面**不要**暴露 scope / capabilities / workspace / sandbox / approval / 工作目录 / 「full-access」这些实现层概念。它们是云端与本机的安全兜底，不是产品能力。Bridge 记录的事实是：`Panda 账号 + 产品 + 这台 Mac + 授权状态`。
 
-const bridgeServer = createBridgeServerClient({
-  apiBase: "https://api.bridge.otherline.cc",
-  productId: "otherline",
-  secret: process.env.PANDA_BRIDGE_DELEGATION_SECRET,
-  fetch,
-});
+同一账号可以有多台 Mac；同一台 Mac 可以服务多个账号；每个产品的授权各自独立。
 
-export async function bridgeStateForUser(user) {
-  return bridgeServer.state({ userId: user.id });
-}
+---
 
-export async function createBridgeJob(user, input) {
-  const state = await bridgeServer.state({ userId: user.id });
-  if (state.bridge_state !== "ready") return state;
+## 2. 前端接入（最少代码）
 
-  return bridgeServer.createJob({
-    userId: user.id,
-    deviceId: state.devices.find((device) => device.current)?.id,
-    kind: "codex.chat",
-    payload: { prompt: input.prompt },
-    requestKey: input.requestKey,
-    policy: {
-      sandbox: "danger-full-access",
-      approvalPolicy: "never",
-      timeout_ms: 240000,
-    },
-  });
-}
-```
-
-服务端常用调用：
-
-```js
-await bridgeServer.state({ userId });
-await bridgeServer.createConnectIntent({ userId, deviceName, policy });
-await bridgeServer.intentStatus(token, { userId });
-await bridgeServer.authorization({ userId, deviceId });
-await bridgeServer.revoke({ userId, deviceId });
-await bridgeServer.createJob({ userId, deviceId, kind, payload, policy, requestKey });
-await bridgeServer.jobEvents(jobId, { userId, deviceId, after });
-await bridgeServer.account({ userId });
-```
-
-## 3. 前端接入
-
-前端使用浏览器 client 获取单一状态机结果，不再自己组合 session/device/authorization/preflight。
+前端用浏览器 client。它的唯一职责是渲染 `state()` 并暴露三个授权动作。
 
 ```js
 import { createBridgeClient } from "@panda-bridge/sdk";
@@ -82,184 +42,246 @@ const bridge = createBridgeClient({
   productId: "otherline",
 });
 
+// 1. 读取账号级状态
 const state = await bridge.state();
-renderBridgeState(state);
 
-await bridge.ensureReady({
-  openDeepLink(action) {
-    if (action.deep_link || action.url) window.location.href = action.deep_link || action.url;
-  },
-});
+// 2. 渲染：每个账号一行（邮箱 + 授权开关 + 连接指示灯）
+for (const item of state.accounts) {
+  render({
+    email: item.account?.email,
+    authorized: item.authorization?.status === "active",   // 授权开关
+    paused: item.authorization?.status === "paused",
+    connected: item.connected,                              // 连接全自动，只读
+  });
+}
+
+// 3. 三个用户动作
+await bridge.authorization.pause({ accountId });   // 暂停
+await bridge.authorization.resume({ accountId });  // 恢复
+await bridge.authorization.remove({ accountId });  // 删除
 ```
 
-前端规则：
-
-- 只渲染 `bridge_state` 和 `actions`，不要二次推导。
-- `ready` 时不显示“授权”按钮。
-- `authorized_offline` 只显示“打开 Bridge”，不要创建授权 intent。
-- `authorization_pending` 复用已有 intent 等待 Desktop 确认。
-- 浏览器永远不调用 claim endpoint；claim 只能由 native Desktop 完成。
-
-## 4. BRIDGE-STATE-v1
-
-Cloud 对 `(account, product)` 计算唯一 `bridge_state`，web-chat、otherline、desktop、SDK 都以它为事实源。
-
-| state | 判定，按优先级命中第一条 | 唯一 CTA |
-| --- | --- | --- |
-| `no_session` | 无有效会话 | 登录 |
-| `no_device` | 该账号无任何非 revoked 设备 | 下载 Bridge（显示真实下载链接+版本）→ 打开后自动连接 |
-| `authorization_pending` | 存在未过期未 claim 的 connect intent | 去桌面端确认（可重新唤起 deep link / 取消） |
-| `authorized_offline` | 有 active authorization，但授权设备全部离线 | 打开 Bridge（`panda-bridge://open`），绝不显示“授权”按钮 |
-| `not_authorized` | 有在线或离线设备，但该产品无 active authorization，含从未授权/已撤销/已过期 | 授权（创建 intent → deep link） |
-| `ready` | active authorization && 授权设备在线 | 无 CTA；显示就绪态 + 设备名；换设备/撤销/刷新折叠为次要动作 |
-
-同一响应给齐：
+`bridge.state()` 返回的账号级模型：
 
 ```js
 {
-  bridge_state: "ready",
-  install: {
-    download_url: "https://assets.bridge.otherline.cc/downloads/panda-bridge-macos.dmg",
-    version: "1.0.0",
-    sha256: "...",
-    platform: "macos",
-    open_url: "panda-bridge://open"
-  },
-  devices: [
-    { id, name, online: true, last_seen_at, current: true }
-  ],
-  authorization: {
-    status: "active",
-    policy: { version: "AUTH-SCOPE-v1" },
-    authorized_at,
-    origin
-  },
-  intent: null,
-  actions: []
+  install: { download_url, version, sha256, platform, open_url },
+  accounts: [{
+    account: { id, email, display_name },
+    authorization: { status: "active" }, // active | paused | revoked
+    connected: true,                     // 全自动连接结果，只读
+    current_device: { id, name, online, last_seen_at, current },
+  }],
+  ready: true,                           // 至少一个账号 active + connected
+  current_account,                       // 优先 active+connected，否则 active，否则 paused
 }
 ```
 
-`authorized_offline` 与 `not_authorized` 不等价。前者已经授权，只需要打开 Desktop；后者才需要授权。
+### 自动连接如何体现
 
-## 5. 授权与重授权语义
+调用方不发起、不重连、不显示「连接」按钮。连接状态完全体现在 `connected` 字段上：
 
-创建 intent 时传入调用方需要的 `AUTH-SCOPE-v1`：
+- `authorization.status === "active" && connected === true` → 就绪，可以调 Codex。
+- `authorization.status === "active" && connected === false` → 桌面端正在重连（reconnecting），等待即可，**不要**重新发起授权。
+- `authorization.status === "paused"` → 用户暂停了，引导「恢复授权」。
+- 没有任何账号 → 空态，引导用户打开产品网页发起新授权（见第 4 节）。
+
+需要实时刷新时用 `watchState()`，它默认每 3 秒轮询、`document.hidden` 时暂停，并在可用时用设备实时通道加速：
 
 ```js
-await bridgeServer.createConnectIntent({
-  userId,
-  deviceName: "User Mac",
-  policy: {
-    version: "AUTH-SCOPE-v1",
-    capabilities: ["codex.chat", "codex.run"],
-    workspace_roots: [{ id: "all", allow_all: true, path_display: "All local files" }],
-    sandbox_floor: "danger-full-access",
-    approval_policy_floor: "never",
-    allow_approval_never: true,
-    allow_developer_instructions: true,
-  },
+for await (const next of bridge.watchState({ intervalMs: 3000 })) {
+  renderAccounts(next.accounts);
+}
+```
+
+`ensureReady()` 只检查「授权 active + 设备在线」，**绝不**创建新的授权意图：
+
+```js
+const ready = await bridge.ensureReady({ wait: true, timeoutMs: 120000 });
+if (!ready.ready) {
+  // ready.action.kind: "authorize" | "resume_authorization" | "wait_for_device"
+}
+```
+
+---
+
+## 3. 后端接入（委托 + HMAC 8 字段签名）
+
+产品后端用 server client。它内部完成全部委托签名（HMAC、timestamp、nonce、body hash、重放防护），你只提供业务参数。
+
+```js
+import { createBridgeServerClient } from "@panda-bridge/sdk/server";
+
+const bridge = createBridgeServerClient({
+  apiBase: "https://api.bridge.otherline.cc",
+  productId: "otherline",
+  secret: process.env.PANDA_BRIDGE_DELEGATION_SECRET, // 只放后端 / Worker secret
 });
+
+// 查询某用户的账号级状态
+const state = await bridge.state({ userId: user.id });
+
+// 授权管理（与前端等价，但走委托签名）
+await bridge.authorization.pause({ userId: user.id, accountId });
+await bridge.authorization.resume({ userId: user.id, accountId });
+await bridge.authorization.remove({ userId: user.id, accountId });
 ```
 
-规则：
+`userId` 是你自己产品侧的用户 ID；Bridge 内部按产品命名空间隔离，不同产品的同名 `userId` 互不相干。
 
-- 已授权且设备在线，且已批准 scope 覆盖请求 scope：返回 `already_authorized:true` 和 `ready`，不创建 intent。
-- 已授权但设备离线：返回 `authorized_offline`，只打开 Bridge。
-- scope 不变宽的重复授权：Desktop 显示轻确认或刷新连接。
-- scope 变宽：Desktop 必须显示完整授权确认和 scope diff。
-- intent 过期：`authorization_pending` 回落到 `not_authorized`，用户可重新发送。
-- revoke 后：状态立即变为 `not_authorized` 或 `no_device`；queued/running job 的取消与 late ack 拒绝遵循 runtime revocation BDD。
+### 委托 HMAC 8 字段签名规范（逐字段）
 
-## 6. 错误码
-
-| Code | HTTP | Meaning | Product action |
-| --- | --- | --- | --- |
-| `not_authenticated` | 401 | 无 Bridge session | 让用户登录 |
-| `no_session` | 200/state | 状态机无有效会话 | 渲染登录 CTA |
-| `no_device` | 200/state | 账号没有非 revoked Desktop | 渲染下载 CTA |
-| `authorization_pending` | 200/state | 有未过期未 claim intent | 等待 Desktop 确认 |
-| `authorized_offline` | 200/state | 已授权但授权设备离线 | 打开 Bridge |
-| `not_authorized` | 200/state | 有设备但产品未授权 | 发起授权 |
-| `ready` | 200/state | 已授权且设备在线 | 允许创建 job |
-| `already_authorized` | 200 | 幂等授权快路径 | 直接进入 ready，不显示 deep link |
-| `install_id_required` | 400 | Desktop claim 缺少 install_id | Desktop 修复并重试；产品继续 pending/重试 |
-| `install_identity_mismatch` | 401 | device token 与 install_id 不匹配 | 要求 Desktop 重新连接 |
-| `desktop_claim_required` | 403 | 浏览器尝试 claim native intent | 移除浏览器 claim 代码 |
-| `invalid_connect_intent` | 400 | intent 不存在、已消费或过期 | 重新创建 intent |
-| `product_not_authorized` | 403 | 产品无 active authorization | 渲染授权流程 |
-| `authorization_scope_denied` | 403 | Cloud 发现 job 明显超过已批准 scope | 重新授权更宽 scope 或缩小 job policy |
-| `local_policy_denied` | job result | Desktop 本地拒绝越权 job | 重新授权或缩小本地请求 |
-| `scope_insufficient` | 403 | job kind 超出产品注册能力 | 修正产品注册或 job kind |
-| `product_origin_mismatch` | 403 | Origin 与 product_id 不匹配 | 使用注册 origin 或测试 origin mapping |
-| `invalid_authorization_policy` | 400 | AUTH-SCOPE-v1 格式或 capability 不合法 | 修正 policy |
-| `device_not_found` | 404 | device 不存在或 revoked | 重新选择设备/重新授权 |
-| `device_offline` | 409 | 目标设备离线 | 打开 Desktop 或切换设备 |
-| `delegated_device_mismatch` | 403 | 委托签名中的 device 与请求对象不一致 | 使用正确 deviceId |
-| `authorization_import_proof_required` | 400 | 委托导入授权缺 proof token | 先创建/传递 proof |
-| `invalid_authorization_import_proof` | 409 | proof 缺失、过期或已消费 | 重新创建 proof |
-| `delegated_authorization_proof_mismatch` | 403 | proof 不属于签名 user/device | 修正 userId/deviceId |
-| `product_delegation_not_configured` | 503 | 产品 secret 未配置 | 配置 Worker secret |
-| `product_delegation_unauthorized` | 401 | 委托签名头缺失或身份无效 | 修正服务端 client 配置 |
-| `product_delegation_timestamp_invalid` | 401 | timestamp 超出允许偏移 | 同步时钟并重签 |
-| `product_delegation_body_hash_invalid` | 401 | body hash 与请求体不一致 | 按实际 body 重算 hash |
-| `product_delegation_signature_invalid` | 401 | HMAC 输入或 secret 不匹配 | 核对 8 字段，尤其 path 含 query |
-| `product_delegation_replay` | 401 | nonce 已使用 | 使用新的 nonce 重试 |
-| `request_body_too_large` | 413 | JSON body 超限 | 缩小请求 |
-| `invalid_json` | 400 | body 不是合法 JSON | 修正请求 |
-| `invalid_content_type` | 415 | 写请求不是 JSON | 设置 `content-type: application/json` |
-
-SDK 错误暴露 `error.status`、`error.payload`、`error.code`。
-
-## 7. 委托签名附录
-
-Worker 参考实现位于 `apps/cloud-worker/test/worker.test.mjs:110-135`。签名 payload 必须逐字段、逐行拼接：
+signing payload 必须按 **8 行**用 `\n` 拼接，顺序与含义如下：
 
 ```text
-METHOD
-path含query
-productId
-userId
-deviceId
-timestamp
-nonce
-bodySha256
+METHOD          ← 大写 HTTP 方法，如 POST
+path含query     ← URL pathname + query，如 /v1/products/otherline/delegated/authorization?device_id=dev_1
+productId       ← 注册的产品 ID
+userId          ← 产品侧用户 ID
+deviceId        ← 目标设备 ID；不针对设备时用约定值（state 用 "account"，建意图用 "pending"）
+timestamp       ← ISO 字符串，如 2026-06-12T12:00:00.000Z
+nonce           ← 每次请求唯一
+bodySha256      ← 请求体原文的 SHA-256 hex；GET / 空 body 用空字符串的 hash
 ```
 
-字段说明：
+算法：`HMAC-SHA256(delegation_secret, signingPayload)`，输出 hex。
 
-- `METHOD`：大写 HTTP method，例如 `POST`。
-- `path含query`：URL path 加 query，例如 `/v1/products/otherline/delegated/jobs?after=10`。漏掉 query 会签名失败。
-- `productId`：注册产品 ID。
-- `userId`：产品侧用户 ID；Bridge 内部会按 product namespace 隔离。
-- `deviceId`：目标 device ID；不适用时仍使用 SDK 对应方法要求的值。
-- `timestamp`：ISO 字符串；超出允许 skew 返回 `product_delegation_timestamp_invalid`。
-- `nonce`：每次请求唯一；同 product 重放返回 `product_delegation_replay`。
-- `bodySha256`：请求 body 原文的 SHA-256 hex；GET/空 body 使用空字符串的 hash。
-
-请求头：
+对应请求头：
 
 ```text
-x-panda-bridge-product-id: <productId>
-x-panda-bridge-user-id: <userId>
-x-panda-bridge-device-id: <deviceId>
+x-panda-bridge-product-id:        <productId>
+x-panda-bridge-user-id:           <userId>
+x-panda-bridge-device-id:         <deviceId>
 x-panda-bridge-request-timestamp: <timestamp>
-x-panda-bridge-request-nonce: <nonce>
-x-panda-bridge-body-sha256: <bodySha256>
-x-panda-bridge-signature: <hmacSha256Hex>
-content-type: application/json
+x-panda-bridge-request-nonce:     <nonce>
+x-panda-bridge-body-sha256:       <bodySha256>
+x-panda-bridge-signature:         <hmacSha256Hex>
+content-type:                     application/json
 ```
 
-Node 级签名示例：
+> ⚠️ **最容易踩的坑：第 2 行的 path 必须包含 query。** 例如 `/v1/products/otherline/delegated/authorization?device_id=dev_1`，漏掉 `?device_id=dev_1` 就会得到 `product_delegation_signature_invalid`。`createBridgeServerClient` 已经帮你正确处理；**只有手写签名时**才需要自己注意这一点。
+
+**nonce 规则**：每次请求必须唯一（一次性）。同产品重放同一 nonce 返回 `product_delegation_replay`。server client 默认用 `crypto.randomUUID()`。
+
+**timestamp 规则**：ISO 字符串，必须落在服务端允许的时钟偏移内，超出返回 `product_delegation_timestamp_invalid`。请保证后端时钟同步。
+
+生产代码一律用 `createBridgeServerClient`；手写签名只用于诊断或非 JS 后端移植。
+
+---
+
+## 4. 授权请求流程（调用方发起 → 桌面端确认 → 账号出现）
+
+新账号从无到有的完整流程：
+
+1. **后端创建授权意图**（connect intent）：
+
+   ```js
+   const intent = await bridge.createConnectIntent({
+     userId: user.id,
+     account: { display_name: user.name }, // 可选，用于桌面端显示
+     deviceName: "User Mac",
+   });
+   // intent.token / intent.deep_link
+   ```
+
+2. **前端把用户引导到桌面端**：用返回的 `deep_link`（`panda-bridge://connect?intent=...`）唤起已安装的 Panda Bridge；未安装则先用 `state.install.download_url` 引导下载。
+
+3. **桌面端弹窗确认**：用户在 Mac 上看到「X 想连接这台 Mac」+ 域名 + 授权给哪个账号 + 拒绝/允许。确认后桌面端原生 claim 该意图（**浏览器永远不调用 claim，那是桌面端的事**）。
+
+4. **账号出现**：claim 成功后，该 `(产品, 账号)` 的授权变为 `active`，连接随心跳自动建立。前端的 `state().accounts` 里就会出现这个账号且 `connected: true`。
+
+5. **轮询意图状态（可选）**：等待期间后端可查 `bridge.intentStatus(intent.token, { userId })`。
+
+就绪后即可发起任务：
+
+```js
+const created = await bridge.createJob({
+  userId: user.id,
+  deviceId,                 // 取自 state 的 current_account.current_device.id
+  kind: "codex.chat",
+  input: { prompt: "只回复 OK" },
+  requestKey: crypto.randomUUID(), // 幂等键
+});
+
+const events = await bridge.jobEvents(created.job.id, { userId: user.id, deviceId });
+```
+
+---
+
+## 5. 错误码全表
+
+所有 SDK 请求失败时抛出 `BridgeError`，带 `error.status`（HTTP）、`error.code`、`error.payload`。
+
+### 授权 / 连接类
+
+| Code | HTTP | 含义 | 怎么处理 |
+| --- | --- | --- | --- |
+| `authorization_paused` | 403 | 该账号授权被用户暂停 | 引导用户「恢复授权」，不要重发意图 |
+| `product_not_authorized` | 403 | 该产品对此账号无 active 授权 | 走第 4 节授权请求流程 |
+| `already_authorized` | 200 | 已授权的幂等快路径 | 直接进入就绪态，不显示授权按钮 |
+| `invalid_connect_intent` | 400 | 意图不存在、已消费或过期 | 重新创建 connect intent |
+| `desktop_claim_required` | 403 | 浏览器尝试 claim 原生意图 | 移除浏览器侧 claim 代码；claim 只能桌面端做 |
+| `device_not_found` | 404 | 设备不存在或已撤销 | 刷新设备 / 重新走授权流程 |
+
+### 委托签名类（后端最常见）
+
+| Code | HTTP | 含义 | 怎么处理 |
+| --- | --- | --- | --- |
+| `product_delegation_signature_invalid` | 401 | HMAC 输入或 secret 不匹配 | **逐字段核对 8 行，尤其 path 含 query**；核对 secret |
+| `product_delegation_replay` | 401 | nonce 已使用 | 用新的 nonce 重试 |
+| `product_delegation_timestamp_invalid` | 401 | timestamp 超出允许偏移 | 同步后端时钟后重签 |
+| `product_delegation_body_hash_invalid` | 401 | body hash 与请求体不一致 | 按实际发送的 body 重算 hash（注意序列化要一致） |
+| `product_delegation_unauthorized` | 401 | 委托签名头缺失或身份无效 | 检查 server client 配置（apiBase/productId/secret） |
+| `product_delegation_not_configured` | 503 | 产品 secret 未在云端配置 | 联系云端配置该产品的 delegation secret |
+| `install_id_required` | 400 | Desktop claim 缺少 install_id | 桌面端修复重试；产品侧继续等待/重试 |
+| `invalid_origin` | 403 | 浏览器请求来源不在产品 allowlist | 用注册的产品 origin 发请求；检查 origin 映射 |
+| `product_origin_mismatch` | 403 | Origin 与 product_id 不匹配 | 用该产品自己注册的 origin |
+
+### 请求 / 运行类
+
+| Code | HTTP | 含义 | 怎么处理 |
+| --- | --- | --- | --- |
+| `local_policy_denied` | job result | 桌面端本地拒绝了越权任务 | 缩小本地请求或重新授权 |
+| `idempotency_key_conflict` | 409 | 同 requestKey 但 body 不同 | 换新的 requestKey，或确保 body 一致 |
+| `request_body_too_large` | 413 | JSON body 超限 | 缩小请求 |
+| `invalid_json` | 400 | body 不是合法 JSON | 修正序列化 |
+| `invalid_content_type` | 415 | 写请求不是 JSON | 设置 `content-type: application/json` |
+| `unauthorized` | 401 | 无有效会话 | 让用户登录 |
+
+错误处理范式：
+
+```js
+try {
+  await bridge.createJob({ userId, deviceId, kind: "codex.chat", input });
+} catch (error) {
+  if (error.code === "product_not_authorized") {
+    // 走授权流程
+  } else if (error.code === "authorization_paused") {
+    // 引导恢复
+  } else {
+    console.error(error.status, error.code, error.payload);
+  }
+}
+```
+
+---
+
+## 6. 端到端示例（curl 级）
+
+下面是手写签名的端到端示例，演示一个委托任务请求。**生产请用 `createBridgeServerClient`**，这里仅用于理解协议。
+
+Node 侧生成签名：
 
 ```js
 import { createHash, createHmac, randomUUID } from "node:crypto";
 
 const method = "POST";
-const path = "/v1/products/otherline/delegated/jobs?trace=1";
+const path = "/v1/products/otherline/delegated/jobs"; // 无 query 时就是纯 path
 const bodyText = JSON.stringify({
   device_id: "dev_123",
   kind: "codex.chat",
   input: { prompt: "Reply OK" },
+  request_key: "demo-001",
 });
 const productId = "otherline";
 const userId = "user_123";
@@ -270,7 +292,7 @@ const bodySha256 = createHash("sha256").update(bodyText).digest("hex");
 
 const signingPayload = [
   method.toUpperCase(),
-  path,
+  path,            // ← 有 query 时这里必须带上 query
   productId,
   userId,
   deviceId,
@@ -284,20 +306,32 @@ const signature = createHmac("sha256", process.env.PANDA_BRIDGE_DELEGATION_SECRE
   .digest("hex");
 ```
 
-curl 级请求示例：
+curl 请求：
 
 ```bash
-curl "https://api.bridge.otherline.cc/v1/products/otherline/delegated/jobs?trace=1" \
+curl "https://api.bridge.otherline.cc/v1/products/otherline/delegated/jobs" \
   -X POST \
   -H "content-type: application/json" \
   -H "x-panda-bridge-product-id: otherline" \
   -H "x-panda-bridge-user-id: user_123" \
   -H "x-panda-bridge-device-id: dev_123" \
-  -H "x-panda-bridge-request-timestamp: 2026-06-11T12:00:00.000Z" \
+  -H "x-panda-bridge-request-timestamp: 2026-06-12T12:00:00.000Z" \
   -H "x-panda-bridge-request-nonce: 0198f0f4-0c8e-7b85-9f12-demo" \
   -H "x-panda-bridge-body-sha256: <sha256-of-body>" \
   -H "x-panda-bridge-signature: <hmac-sha256-hex>" \
-  --data '{"device_id":"dev_123","kind":"codex.chat","input":{"prompt":"Reply OK"}}'
+  --data '{"device_id":"dev_123","kind":"codex.chat","input":{"prompt":"Reply OK"},"request_key":"demo-001"}'
 ```
 
-生产代码应优先使用 `createBridgeServerClient`，手写签名只用于诊断或非 JS 后端移植。
+可运行的最小接入示例（内存 Worker，本地即可跑）见 [`examples/minimal-caller/`](../examples/minimal-caller/)。
+
+---
+
+## 7. 注册产品（前置）
+
+接入前先在 Bridge Cloud 注册：
+
+- `product_id`：稳定 ID，例如 `otherline`、`panda-chat`。
+- official origins：产品真实浏览器来源；浏览器请求必须来自该产品自己的 origin。
+- delegation secret：服务端 HMAC secret，只放后端 / Worker secret。
+
+参考实现：Worker 的委托签名校验在 `apps/cloud-worker/test/worker.test.mjs`（`delegatedApiRawText`），8 字段顺序与本文逐字段一致。

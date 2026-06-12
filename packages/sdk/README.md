@@ -1,10 +1,14 @@
 # @panda-bridge/sdk
 
-Panda Bridge SDK gives product callers one stable API for account-level
-authorization, automatic desktop presence, local Codex jobs, and delegated
-server calls.
+Panda Bridge SDK 给产品调用方一套稳定 API：账号级授权、自动桌面连接、本机 Codex 任务、以及后端委托调用。
 
-## Browser Setup
+模型：每个 `(产品, 账号)` 只有两个正交开关 —— **授权**（用户控制 `active`/`paused`/删除）和 **连接**（系统全自动，调用方只读 `connected`）。完整接入指南见 [`docs/product-integration.md`](../../docs/product-integration.md)。
+
+---
+
+## 5 分钟接入
+
+### 前端
 
 ```js
 import { createBridgeClient } from "@panda-bridge/sdk";
@@ -14,68 +18,30 @@ const bridge = createBridgeClient({
   productId: "panda-chat",
 });
 
+// 1. 读账号级状态并渲染
 const state = await bridge.state();
-const account = state.accounts.find((item) =>
-  item.authorization?.status === "active" && item.connected
-);
+state.accounts.forEach((item) => render({
+  email: item.account?.email,
+  authorized: item.authorization?.status === "active",
+  connected: item.connected, // 全自动连接，只读
+}));
 
-if (!account) {
-  const ready = await bridge.ensureReady({ wait: true, timeoutMs: 120000 });
-  if (!ready.ready) throw new Error(ready.action?.reason || "bridge_not_ready");
-}
-
-const current = (await bridge.state()).current_account;
-const deviceId = current.current_device.id;
-
-const created = await bridge.codex.chat({
-  deviceId,
-  prompt: "只回复 OK",
-  requestKey: crypto.randomUUID(),
-  policy: { timeout_ms: 240000 },
-});
-
-for await (const event of bridge.jobs.stream(created.job.id, { deviceId })) {
-  console.log(event);
+// 2. 就绪后调 Codex（current_account 已帮你选好账号）
+const current = state.current_account;
+if (current?.authorization?.status === "active" && current.connected) {
+  const deviceId = current.current_device.id;
+  const created = await bridge.codex.chat({
+    deviceId,
+    prompt: "只回复 OK",
+    requestKey: crypto.randomUUID(),
+  });
+  for await (const event of bridge.jobs.stream(created.job.id, { deviceId })) {
+    console.log(event);
+  }
 }
 ```
 
-`bridge.state()` returns the account-level v2 model:
-
-```js
-{
-  install: { download_url, version, sha256, platform, open_url },
-  accounts: [{
-    account,
-    authorization: { status: "active" }, // active | paused | revoked
-    connected: true,
-    current_device,
-  }],
-  ready: true,
-  current_account,
-}
-```
-
-Use `bridge.watchState({ intervalMs: 3000 })` when UI needs live readiness. It
-polls every 3 seconds by default, pauses while `document.hidden`, and uses the
-device realtime channel as an accelerator when available.
-
-Authorization is account-level:
-
-```js
-await bridge.authorization.pause();
-await bridge.authorization.resume();
-await bridge.authorization.remove();
-const authorizations = await bridge.authorization.list();
-```
-
-Desktop connection is automatic presence. The SDK does not expose a manual
-connect or reconnect method. `ensureReady()` only checks that authorization is
-active and a device is online; it never creates a new authorization intent.
-
-Legacy `products.requestAuthorization()`, `products.authorization()`, and
-`products.revokeAuthorization()` remain as compatibility aliases.
-
-## Server Setup
+### 后端（委托）
 
 ```js
 import { createBridgeServerClient } from "@panda-bridge/sdk/server";
@@ -87,16 +53,77 @@ const bridge = createBridgeServerClient({
 });
 
 const state = await bridge.state({ userId: account.id });
-await bridge.authorization.pause({ userId: account.id });
-await bridge.authorization.resume({ userId: account.id });
-await bridge.authorization.remove({ userId: account.id });
+await bridge.authorization.pause({ userId: account.id, accountId });
+await bridge.authorization.resume({ userId: account.id, accountId });
+await bridge.authorization.remove({ userId: account.id, accountId });
 ```
 
-The server client signs every delegated request internally with:
+server client 内部对每个委托请求做 8 字段 HMAC 签名；`timestamp`、`nonce`、`bodySha256` 全自动，你只给业务参数。完整可运行的最小示例见 [`examples/minimal-caller/`](../../examples/minimal-caller/)。
+
+---
+
+## API 速查
+
+### `bridge.state()` 返回结构
+
+```js
+{
+  install: { download_url, version, sha256, platform, open_url },
+  accounts: [{
+    account: { id, email, display_name },
+    authorization: { status: "active" }, // "active" | "paused" | "revoked"
+    connected: true,                     // boolean，全自动连接结果
+    current_device: { id, name, online, last_seen_at, current },
+  }],
+  ready: true,            // 至少一个账号 active + connected
+  current_account,        // 优先 active+connected → active → paused → 第一个
+}
+```
+
+### authorization 命名空间
+
+授权是账号级的，只有三个用户动作 + 一个查询 + 创建意图：
+
+```js
+await bridge.authorization.list({ accountId });    // 查询
+await bridge.authorization.pause({ accountId });   // 暂停
+await bridge.authorization.resume({ accountId });  // 恢复（= authorize 为 active）
+await bridge.authorization.remove({ accountId });  // 删除
+await bridge.authorization.createIntent({ deviceName }); // 发起新授权意图
+```
+
+后端 server client 用法相同，额外带 `userId`。
+
+> 连接是全自动的：SDK **不**提供手动 connect / reconnect 方法。`ensureReady()` 只检查「授权 active + 设备在线」，绝不创建新意图。
+
+### 实时与就绪
+
+```js
+for await (const next of bridge.watchState({ intervalMs: 3000 })) { /* ... */ }
+
+const ready = await bridge.ensureReady({ wait: true, timeoutMs: 120000 });
+// ready.ready: boolean
+// ready.action?.kind: "authorize" | "resume_authorization" | "wait_for_device"
+```
+
+### server client
+
+```js
+const bridge = createBridgeServerClient({ apiBase, productId, secret });
+
+await bridge.state({ userId });
+await bridge.createConnectIntent({ userId, deviceName, account });
+await bridge.intentStatus(token, { userId });
+await bridge.authorization.pause/resume/remove({ userId, accountId });
+await bridge.createJob({ userId, deviceId, kind, input, requestKey });
+await bridge.jobEvents(jobId, { userId, deviceId, after });
+```
+
+签名 payload（server client 内部自动生成）：
 
 ```text
 METHOD
-path-with-query
+path-with-query      ← 必须含 query，否则 product_delegation_signature_invalid
 productId
 userId
 deviceId
@@ -105,30 +132,53 @@ nonce
 bodySha256
 ```
 
-Callers provide only business inputs. `timestamp`, `nonce`, and `bodySha256`
-are automatic. The implementation uses WebCrypto and `fetch` only.
+---
 
-## Errors
+## 错误处理
 
-Failed SDK requests throw `BridgeError` with `{ code, status, payload }`.
+失败请求抛出 `BridgeError`，带 `{ code, status, payload }`：
 
-Stable exported codes include:
+```js
+try {
+  await bridge.codex.chat({ deviceId, prompt });
+} catch (error) {
+  // error.status  → HTTP 状态码
+  // error.code    → 稳定错误码
+  // error.payload → 云端返回的原始 JSON
+}
+```
 
-| Code | Typical handling |
-|---|---|
-| `authorization_paused` | Ask the user to resume authorization |
-| `product_not_authorized` | Create or restore account authorization |
-| `device_not_found` | Refresh account devices or reinstall Desktop |
-| `product_delegation_signature_invalid` | Check secret, product id, and path including query |
-| `product_delegation_body_hash_invalid` | Body changed after signing |
-| `product_delegation_timestamp_invalid` | Check clock skew |
-| `product_delegation_replay` | Retry with a fresh nonce |
-| `local_policy_denied` | Desktop rejected local execution |
-| `request_body_too_large` / `invalid_json` / `invalid_content_type` | Fix request serialization |
+稳定错误码常量从 `BridgeErrorCodes` 导出：
 
-## Verification
+```js
+import { BridgeErrorCodes } from "@panda-bridge/sdk";
+if (error.code === BridgeErrorCodes.product_not_authorized) { /* 走授权流程 */ }
+```
 
-From the repository root:
+常见错误码：
+
+| Code | 典型处理 |
+| --- | --- |
+| `authorization_paused` | 引导用户恢复授权 |
+| `product_not_authorized` | 创建 / 恢复账号授权 |
+| `desktop_claim_required` | 移除浏览器侧 claim 代码 |
+| `device_not_found` | 刷新设备或重新走授权 |
+| `install_id_required` | 桌面端修复重试 |
+| `invalid_origin` | 用注册的产品 origin |
+| `product_delegation_signature_invalid` | 核对 secret、productId 和 **path 含 query** |
+| `product_delegation_body_hash_invalid` | 签名后 body 被改动 |
+| `product_delegation_timestamp_invalid` | 同步后端时钟 |
+| `product_delegation_replay` | 用新 nonce 重试 |
+| `local_policy_denied` | 桌面端本地拒绝执行 |
+| `request_body_too_large` / `invalid_json` / `invalid_content_type` | 修正请求序列化 |
+
+完整错误码表见 [`docs/product-integration.md` 第 5 节](../../docs/product-integration.md)。
+
+---
+
+## 验证
+
+仓库根目录：
 
 ```bash
 node --test packages/sdk/test/

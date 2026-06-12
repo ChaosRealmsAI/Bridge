@@ -113,8 +113,14 @@ export type BridgeStateAuthorization = {
   origin?: string;
 };
 
+export type BridgeAccount = {
+  id?: string;
+  email?: string;
+  display_name?: string;
+};
+
 export type BridgeStateAccount = {
-  account: JsonObject | null;
+  account: BridgeAccount | null;
   authorization: BridgeStateAuthorization | null;
   connected: boolean;
   current_device: BridgeStateDevice | null;
@@ -124,6 +130,16 @@ export type BridgeStateIntent = {
   token: string | null;
   expires_at: string | null;
   deep_link: string | null;
+};
+
+export type BridgeConnectIntentResult = {
+  token: string;
+  deep_link?: string;
+  expires_at?: string;
+  account?: BridgeAccount | null;
+  product?: JsonObject;
+  connect_intent?: JsonObject;
+  [key: string]: JsonValue | undefined;
 };
 
 export type BridgeStateModel = {
@@ -267,7 +283,7 @@ export type BridgeAuthorizationResponse = {
   ready?: boolean;
   current_account?: BridgeStateAccount | null;
   authorization: BridgeStateAuthorization | null;
-  account: JsonObject | null;
+  account: BridgeAccount | null;
   connected: boolean;
   current_device: BridgeStateDevice | null;
   accounts: BridgeStateAccount[];
@@ -312,7 +328,7 @@ export type BridgeClient = {
     revoke(deviceId: string): Promise<JsonObject>;
   };
   connect: {
-    createIntent(input?: { productId?: string; product_id?: string; deviceName?: string; device_name?: string; policy?: BridgeAuthorizationPolicy; permissions?: BridgeAuthorizationPolicy; permission?: BridgeAuthorizationPolicy }): Promise<JsonObject>;
+    createIntent(input?: { productId?: string; product_id?: string; deviceName?: string; device_name?: string; policy?: BridgeAuthorizationPolicy; permissions?: BridgeAuthorizationPolicy; permission?: BridgeAuthorizationPolicy }): Promise<BridgeConnectIntentResult>;
     intent(token: string): Promise<JsonObject>;
     claim(token: string, input?: JsonObject): Promise<JsonObject>;
   };
@@ -322,7 +338,7 @@ export type BridgeClient = {
     pause(input?: BridgeAuthorizationInput): Promise<BridgeAuthorizationResponse>;
     resume(input?: BridgeAuthorizationInput): Promise<BridgeAuthorizationResponse>;
     remove(input?: BridgeAuthorizationInput): Promise<BridgeAuthorizationResponse>;
-    createIntent(input?: { productId?: string; product_id?: string; deviceName?: string; device_name?: string; policy?: BridgeAuthorizationPolicy; permissions?: BridgeAuthorizationPolicy; permission?: BridgeAuthorizationPolicy }): Promise<JsonObject>;
+    createIntent(input?: { productId?: string; product_id?: string; deviceName?: string; device_name?: string; policy?: BridgeAuthorizationPolicy; permissions?: BridgeAuthorizationPolicy; permission?: BridgeAuthorizationPolicy }): Promise<BridgeConnectIntentResult>;
   };
   products: {
     list(): Promise<JsonObject>;
