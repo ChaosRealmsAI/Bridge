@@ -59,16 +59,29 @@ pub enum SandboxMode {
 }
 
 pub fn mode() -> SandboxMode {
-    match std::env::var("PANDA_BRIDGE_SANDBOX_MODE") {
-        Ok(value) if value.eq_ignore_ascii_case("disabled") && cfg!(target_os = "macos") => {
-            SandboxMode::Disabled
+    #[cfg(debug_assertions)]
+    {
+        match std::env::var("PANDA_BRIDGE_SANDBOX_MODE") {
+            Ok(value) if value.eq_ignore_ascii_case("disabled") && cfg!(target_os = "macos") => {
+                SandboxMode::Disabled
+            }
+            _ => SandboxMode::Enforce,
         }
-        _ => SandboxMode::Enforce,
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        SandboxMode::Enforce
     }
 }
 
+#[cfg(debug_assertions)]
 pub fn disabled_for_debug() -> bool {
     mode() == SandboxMode::Disabled
+}
+
+#[cfg(not(debug_assertions))]
+pub fn disabled_for_debug() -> bool {
+    false
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -242,13 +255,23 @@ mod tests {
     fn sandbox_mode_disabled_only_applies_on_macos() {
         let _guard = ENV_LOCK.lock().unwrap();
         std::env::set_var("PANDA_BRIDGE_SANDBOX_MODE", "disabled");
-        if cfg!(target_os = "macos") {
+        if cfg!(debug_assertions) && cfg!(target_os = "macos") {
             assert_eq!(mode(), SandboxMode::Disabled);
             assert!(disabled_for_debug());
         } else {
             assert_eq!(mode(), SandboxMode::Enforce);
             assert!(!disabled_for_debug());
         }
+        std::env::remove_var("PANDA_BRIDGE_SANDBOX_MODE");
+    }
+
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn sandbox_mode_disabled_env_is_ignored_in_release() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::set_var("PANDA_BRIDGE_SANDBOX_MODE", "disabled");
+        assert_eq!(mode(), SandboxMode::Enforce);
+        assert!(!disabled_for_debug());
         std::env::remove_var("PANDA_BRIDGE_SANDBOX_MODE");
     }
 }

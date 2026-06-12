@@ -101,6 +101,7 @@ impl BridgeConnector for CodexConnector {
                 result: json!({ "ok": true, "reply": reply, "fixture": true, "cloud_openai_credentials": false }),
             });
         }
+        emit_sandbox_disabled_debug(job, &policy, ctx);
 
         let result = if self.session.is_some() {
             self.run_warm(job, &policy, ctx)
@@ -214,6 +215,28 @@ fn warm_session_should_restart(
     session_cwd != cwd
         || session_fingerprint != spec_fingerprint
         || session_product_id != product_id
+}
+
+fn emit_sandbox_disabled_debug(
+    job: &BridgeJob,
+    policy: &crate::LocalJobPolicy,
+    ctx: &mut ExecCtx<'_>,
+) {
+    if !sandbox::disabled_for_debug() {
+        return;
+    }
+    ctx.emit(
+        "sandbox_disabled_debug",
+        json!({
+            "reason": "PANDA_BRIDGE_SANDBOX_MODE=disabled",
+            "debug_only": true,
+            "product_id": job.product_id.clone(),
+            "kind": job.kind.clone(),
+            "workspace_ref": job.workspace_ref.clone().unwrap_or_else(|| "default".to_string()),
+            "sandbox": policy.sandbox,
+            "cwd": crate::redact_local_path(&policy.cwd)
+        }),
+    );
 }
 
 fn run_warm_session_job(

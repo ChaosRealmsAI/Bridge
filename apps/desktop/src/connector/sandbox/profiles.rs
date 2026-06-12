@@ -255,7 +255,7 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn codex_profile_enforces_file_and_exec_boundaries_with_sandbox_exec() {
+    fn codex_profile_enforces_file_exec_and_network_boundaries_with_sandbox_exec() {
         if !Path::new("/usr/bin/sandbox-exec").exists() {
             return;
         }
@@ -268,11 +268,16 @@ mod tests {
         let workspace = std::fs::canonicalize(&workspace_raw).unwrap();
         let cat = PathBuf::from("/bin/cat");
         let touch = PathBuf::from("/usr/bin/touch");
+        let curl = PathBuf::from("/usr/bin/curl");
+        let mut exec_allow = vec![cat.clone(), touch.clone()];
+        if curl.exists() {
+            exec_allow.push(curl.clone());
+        }
         let profile = render(&SandboxSpec {
             profile: SandboxProfileKind::CodexWorkspace,
             read_roots: vec![workspace.clone()],
             write_roots: vec![workspace.clone()],
-            exec_allow: vec![cat.clone(), touch.clone()],
+            exec_allow,
             net: NetPolicy::Deny,
             limits: ResourceLimits::codex_default(),
             env_allow: Vec::new(),
@@ -328,6 +333,25 @@ mod tests {
             .output()
             .unwrap();
         assert!(!output.status.success(), "sh must not be executable");
+
+        if curl.exists() {
+            let output = Command::new("/usr/bin/sandbox-exec")
+                .args(["-p", &profile, "--"])
+                .arg(&curl)
+                .args([
+                    "--max-time",
+                    "3",
+                    "--fail",
+                    "--silent",
+                    "https://example.com",
+                ])
+                .output()
+                .unwrap();
+            assert!(
+                !output.status.success(),
+                "curl must fail when the rendered profile has net=Deny"
+            );
+        }
 
         let _ = std::fs::remove_file(&evil);
         let _ = std::fs::remove_dir_all(&workspace_raw);

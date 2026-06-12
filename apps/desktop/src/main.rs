@@ -2,6 +2,7 @@ use keyring::Entry;
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::{
@@ -3302,6 +3303,23 @@ fn warm_codex_connector(
         }
     };
     let spec_fingerprint = sandbox::spec_fingerprint(&spec, &boundary.product_id);
+    if sandbox::disabled_for_debug() {
+        let policy = codex_job_policy_from_scope(&warm_job, &boundary.raw).ok();
+        post_event_best_effort(
+            credentials,
+            &warm_job.id,
+            "sandbox_disabled_debug",
+            json!({
+                "reason": "PANDA_BRIDGE_SANDBOX_MODE=disabled",
+                "debug_only": true,
+                "product_id": warm_job.product_id.clone(),
+                "kind": warm_job.kind.clone(),
+                "workspace_ref": warm_job.workspace_ref.clone().unwrap_or_else(|| "default".to_string()),
+                "sandbox": policy.as_ref().map(|item| item.sandbox.as_str()).unwrap_or("unknown"),
+                "cwd": policy.as_ref().map(|item| redact_local_path(&item.cwd)).unwrap_or_else(|| "[unknown]".to_string())
+            }),
+        );
+    }
     push_event(
         state,
         "codex_warming",
@@ -3790,7 +3808,7 @@ fn build_codex_sandbox_spec(
         reason: "sandbox_apply_failed_local".to_string(),
     })?;
     let codex_home = codex_home_dir();
-    let tmp_dir = cwd.join(".panda-bridge").join("codex-tmp");
+    let tmp_dir = codex_tmp_dir(&cwd, &policy.sandbox);
     fs::create_dir_all(&tmp_dir).map_err(|error| ConnectorError::RuntimeFailed {
         reason: format!("failed to create codex tmp dir: {error}"),
     })?;
@@ -3801,6 +3819,9 @@ fn build_codex_sandbox_spec(
         }
     })?;
     let mut read_roots = vec![cwd.clone(), codex_home.clone()];
+    if policy.sandbox == "read-only" {
+        read_roots.push(tmp_dir.clone());
+    }
     if let Some(package_root) = codex_package_root(&runtime_bin) {
         read_roots.push(package_root);
     }
@@ -3815,10 +3836,17 @@ fn build_codex_sandbox_spec(
     } else {
         NetPolicy::AllowOutbound
     };
+    let mut write_roots = if policy.sandbox == "read-only" {
+        vec![codex_home.clone(), tmp_dir]
+    } else {
+        vec![cwd.clone(), codex_home]
+    };
+    write_roots.sort();
+    write_roots.dedup();
     Ok(SandboxSpec {
         profile: SandboxProfileKind::CodexWorkspace,
         read_roots,
-        write_roots: vec![cwd.clone(), codex_home],
+        write_roots,
         exec_allow: vec![runtime_bin],
         net,
         limits: ResourceLimits::codex_default(),
@@ -5349,6 +5377,22 @@ fn codex_home_dir() -> PathBuf {
         })
 }
 
+fn codex_tmp_dir(cwd: &Path, sandbox: &str) -> PathBuf {
+    if sandbox != "read-only" {
+        return cwd.join(".panda-bridge").join("codex-tmp");
+    }
+    let mut token_hasher = Sha256::new();
+    token_hasher.update(cwd.to_string_lossy().as_bytes());
+    let token = token_hasher.finalize()[..8]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    env::temp_dir()
+        .join("panda-bridge")
+        .join("codex-readonly-tmp")
+        .join(token)
+}
+
 fn codex_package_root(runtime_bin: &Path) -> Option<PathBuf> {
     if let Ok(explicit) = env::var("CODEX_MANAGED_PACKAGE_ROOT") {
         let path = PathBuf::from(explicit);
@@ -5807,6 +5851,14 @@ mod tests {
         env::remove_var("PANDA_BRIDGE_USE_KEYCHAIN");
         env::remove_var("PANDA_BRIDGE_SKIP_KEYCHAIN");
         env::remove_var("PANDA_BRIDGE_SKIP_REMOTE_REVOKE");
+    }
+
+    fn restore_env_var(key: &str, value: Option<std::ffi::OsString>) {
+        if let Some(value) = value {
+            env::set_var(key, value);
+        } else {
+            env::remove_var(key);
+        }
     }
 
     #[test]
@@ -6343,6 +6395,78 @@ mod tests {
             .find(|(key, _)| key == "SSL_CERT_FILE")
             .map(|(_, value)| PathBuf::from(value));
         assert_eq!(ssl_cert_file, cert_file);
+    }
+
+    #[test]
+    fn codex_read_only_sandbox_spec_keeps_workspace_out_of_write_roots() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        reset_policy_env();
+        let old_codex_home = env::var_os("CODEX_HOME");
+        let old_runtime_bin = env::var_os("PANDA_BRIDGE_CODEX_RUNTIME_BIN");
+        let old_codex_cwd = env::var_os("PANDA_BRIDGE_CODEX_CWD");
+        let base = env::temp_dir().join(format!(
+            "panda-bridge-readonly-spec-test-{}-{}",
+            std::process::id(),
+            unix_seconds()
+        ));
+        let workspace_raw = base.join("workspace");
+        let codex_home = base.join("codex-home");
+        fs::create_dir_all(&workspace_raw).unwrap();
+        fs::create_dir_all(&codex_home).unwrap();
+        let workspace = fs::canonicalize(&workspace_raw).unwrap();
+        env::set_var("PANDA_BRIDGE_CODEX_CWD", &workspace);
+        env::set_var("CODEX_HOME", &codex_home);
+        env::set_var(
+            "PANDA_BRIDGE_CODEX_RUNTIME_BIN",
+            env::current_exe().unwrap(),
+        );
+
+        let boundary = GrantedBoundary {
+            product_id: "panda-chat".to_string(),
+            product_name: "Panda Chat".to_string(),
+            domain: "codex".to_string(),
+            boundary_type: connector::BoundaryType::WorkspaceSandbox,
+            capabilities: vec!["codex.chat".to_string()],
+            raw: test_auth_scope(),
+        };
+        let read_only =
+            build_codex_sandbox_spec(&test_job(json!({ "sandbox": "read-only" })), &boundary)
+                .unwrap();
+        let tmp_dir = read_only
+            .env_allow
+            .iter()
+            .find(|(key, _)| key == "TMPDIR")
+            .map(|(_, value)| PathBuf::from(value))
+            .unwrap();
+
+        assert_eq!(read_only.net, NetPolicy::Deny);
+        assert!(read_only.read_roots.contains(&workspace));
+        assert!(read_only.read_roots.contains(&tmp_dir));
+        assert!(!tmp_dir.starts_with(&workspace));
+        assert!(!read_only.write_roots.contains(&workspace));
+        assert!(
+            !read_only
+                .write_roots
+                .iter()
+                .any(|root| workspace.starts_with(root)),
+            "read-only write roots must not cover the workspace: {:?}",
+            read_only.write_roots
+        );
+        assert!(read_only.write_roots.contains(&codex_home));
+        assert!(read_only.write_roots.contains(&tmp_dir));
+
+        let workspace_write = build_codex_sandbox_spec(
+            &test_job(json!({ "sandbox": "workspace-write" })),
+            &boundary,
+        )
+        .unwrap();
+        assert_eq!(workspace_write.net, NetPolicy::AllowOutbound);
+        assert!(workspace_write.write_roots.contains(&workspace));
+
+        restore_env_var("CODEX_HOME", old_codex_home);
+        restore_env_var("PANDA_BRIDGE_CODEX_RUNTIME_BIN", old_runtime_bin);
+        restore_env_var("PANDA_BRIDGE_CODEX_CWD", old_codex_cwd);
+        let _ = fs::remove_dir_all(&base);
     }
 
     #[test]
