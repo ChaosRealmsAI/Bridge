@@ -314,6 +314,14 @@ export type BridgeJobInput = {
   policy?: JsonObject;
 };
 
+export type BridgeDataJobInput = BridgeJobInput & {
+  ns?: string;
+  key?: string;
+  value?: JsonValue;
+  prefix?: string;
+  limit?: number;
+};
+
 export type BridgeClient = {
   productId: string;
   state(): Promise<BridgeStateModel>;
@@ -361,6 +369,12 @@ export type BridgeClient = {
     chat(input: BridgeJobInput): Promise<JsonObject>;
     run(input: BridgeJobInput): Promise<JsonObject>;
     rpc(input: BridgeJobInput): Promise<JsonObject>;
+  };
+  data: {
+    put(input: BridgeDataJobInput): Promise<JsonObject>;
+    get(input: BridgeDataJobInput): Promise<JsonObject>;
+    query(input: BridgeDataJobInput): Promise<JsonObject>;
+    delete(input: BridgeDataJobInput): Promise<JsonObject>;
   };
   jobs: {
     create(input?: BridgeJobInput): Promise<JsonObject>;

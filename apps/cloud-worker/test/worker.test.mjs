@@ -219,6 +219,8 @@ assert.equal(diagnostics.jobs.registry["codex.chat"].boundary_type, "workspace_s
 assert.equal(diagnostics.jobs.registry["saas.custom.run"].verb, "custom.run");
 assert.equal(diagnostics.jobs.registry["saas.custom.run"].danger, "high");
 assert.equal(diagnostics.jobs.registry["saas.custom.run"].boundary_type, "opaque_runtime");
+assert.equal(diagnostics.jobs.registry["data.put"].danger, "medium");
+assert.equal(diagnostics.jobs.registry["data.put"].boundary_type, "namespace_kv");
 assert.ok(diagnostics.jobs.event_types.includes("queued"));
 assert.equal(diagnostics.jobs.queue_limits.device_max_running, 1);
 assert.equal(diagnostics.connector.device_token_prefix, "pbd_");
@@ -258,6 +260,14 @@ assert.deepEqual(mixedMetadata.domain_boundaries.saas, {
   danger: "high",
   boundary_type: "opaque_runtime",
 });
+const dataMetadata = scopeDangerMetadataFromCapabilities(["data.put", "data.get"]);
+assert.equal(dataMetadata.danger_tiers.medium.granted, true);
+assert.deepEqual(dataMetadata.danger_tiers.medium.domains, ["data"]);
+assert.deepEqual(dataMetadata.domain_boundaries.data, {
+  granted: true,
+  danger: "medium",
+  boundary_type: "namespace_kv",
+});
 const v1Scope = {
   version: "AUTH-SCOPE-v1",
   capabilities: ["codex.chat"],
@@ -282,6 +292,40 @@ assert.deepEqual(authorizationScopeDenial(v2LowScope, {
   workspace_ref: "default",
   policy: { sandbox: "workspace-write", approvalPolicy: "on-request" },
 }), { denied: "tier", reason: "tier_not_granted" });
+assert.deepEqual(authorizationScopeDenial(v2LowScope, {
+  kind: "data.put",
+  product_id: "panda-chat",
+  workspace_ref: "default",
+  policy: { sandbox: "workspace-write", approvalPolicy: "on-request" },
+}), { denied: "tier", reason: "tier_not_granted" });
+const v2DataScope = {
+  ...v1Scope,
+  version: "AUTH-SCOPE-v2",
+  capabilities: ["data.put"],
+  ...scopeDangerMetadataFromCapabilities(["data.put"]),
+  boundaries: {
+    data: {
+      type: "namespace_kv",
+      owner_product_id: "panda-chat",
+      namespace: "product:panda-chat",
+    },
+  },
+};
+assert.equal(authorizationScopeDenial(v2DataScope, {
+  kind: "data.put",
+  product_id: "panda-chat",
+  workspace_ref: "default",
+  policy: { sandbox: "danger-full-access", approvalPolicy: "never", developerInstructions: "ignored-by-data" },
+}), null);
+assert.deepEqual(authorizationScopeDenial({
+  ...v2DataScope,
+  boundaries: { data: { ...v2DataScope.boundaries.data, owner_product_id: "otherline" } },
+}, {
+  kind: "data.put",
+  product_id: "panda-chat",
+  workspace_ref: "default",
+  policy: {},
+}), { denied: "namespace", reason: "namespace_owner_mismatch" });
 
 const unauthenticatedQueueSummary = await apiRaw("GET", "/v1/queue/summary");
 assert.equal(unauthenticatedQueueSummary.response.status, 401);
@@ -336,6 +380,8 @@ const products = await api("GET", "/v1/products");
 assert.ok(products.items.some((item) => item.id === "panda-chat" && item.capabilities.includes("codex.chat")));
 assert.ok(products.items.some((item) => item.id === "panda-dev" && item.capabilities.includes("codex.rpc")));
 assert.ok(products.items.some((item) => item.id === "otherline" && item.capabilities.includes("saas.custom.run")));
+assert.equal(products.items.find((item) => item.id === "panda-chat").capabilities.includes("data.put"), false);
+assert.equal(products.items.find((item) => item.id === "otherline").capabilities.includes("data.put"), true);
 const noDeviceState = await api("GET", "/v1/bridge/state?product_id=panda-chat");
 assert.equal(noDeviceState.authenticated, true, "AUTH-001 authenticated state");
 assert.equal(noDeviceState.accounts.length, 0, "AUTH-001 no account row before any authorization");
@@ -568,12 +614,21 @@ const fullAccessClaim = await nativeClaimIntent(fullAccessIntent.token, {
 assert.equal(fullAccessClaim.authorization.policy.version, "AUTH-SCOPE-v2");
 assert.equal(fullAccessClaim.authorization.policy.preset, "full-access");
 assert.ok(fullAccessClaim.authorization.policy.capabilities.includes("saas.custom.run"));
+assert.ok(fullAccessClaim.authorization.policy.capabilities.includes("data.put"));
 assert.equal(fullAccessClaim.authorization.policy.workspace_roots[0].allow_all, true);
 assert.equal(fullAccessClaim.authorization.policy.sandbox_floor, "danger-full-access");
 assert.equal(fullAccessClaim.authorization.policy.approval_policy_floor, "never");
 assert.equal(fullAccessClaim.authorization.policy.allow_approval_never, true);
 assert.equal(fullAccessClaim.authorization.policy.allow_developer_instructions, true);
+assert.equal(fullAccessClaim.authorization.policy.danger_tiers.medium.granted, true);
 assert.equal(fullAccessClaim.authorization.policy.danger_tiers.high.granted, true);
+assert.deepEqual(fullAccessClaim.authorization.policy.domain_boundaries.data, {
+  granted: true,
+  danger: "medium",
+  boundary_type: "namespace_kv",
+});
+assert.equal(fullAccessClaim.authorization.policy.boundaries.data.owner_product_id, "panda-chat");
+assert.equal(fullAccessClaim.authorization.policy.boundaries.data.namespace, "product:panda-chat");
 assert.deepEqual(fullAccessClaim.authorization.policy.domain_boundaries.saas, {
   granted: true,
   danger: "high",

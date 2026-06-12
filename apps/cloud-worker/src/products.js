@@ -7,8 +7,7 @@ export const CAPABILITY_BOUNDARY_TYPES = Object.freeze([
   "opaque_runtime",
 ]);
 
-// v3.1+ reserved definitions, not registered in v3.0:
-// data.put/get/query/delete -> medium / namespace_kv
+// v3.1+ registered data definitions:
 // fs.read/fs.write -> high / directory_whitelist
 // shell.run -> high / command_sandbox
 export const BRIDGE_RUNTIME_CAPABILITY_REGISTRY = Object.freeze({
@@ -33,6 +32,34 @@ export const BRIDGE_RUNTIME_CAPABILITY_REGISTRY = Object.freeze({
     boundary_type: "workspace_sandbox",
     description: "Codex RPC call",
   }),
+  "data.put": Object.freeze({
+    domain: "data",
+    verb: "put",
+    danger: "medium",
+    boundary_type: "namespace_kv",
+    description: "Write product-scoped local data",
+  }),
+  "data.get": Object.freeze({
+    domain: "data",
+    verb: "get",
+    danger: "medium",
+    boundary_type: "namespace_kv",
+    description: "Read product-scoped local data",
+  }),
+  "data.query": Object.freeze({
+    domain: "data",
+    verb: "query",
+    danger: "medium",
+    boundary_type: "namespace_kv",
+    description: "Query product-scoped local data",
+  }),
+  "data.delete": Object.freeze({
+    domain: "data",
+    verb: "delete",
+    danger: "medium",
+    boundary_type: "namespace_kv",
+    description: "Delete product-scoped local data",
+  }),
   "saas.custom.run": Object.freeze({
     domain: "saas",
     verb: "custom.run",
@@ -43,6 +70,14 @@ export const BRIDGE_RUNTIME_CAPABILITY_REGISTRY = Object.freeze({
 });
 
 export const BRIDGE_RUNTIME_CAPABILITIES = Object.freeze(Object.keys(BRIDGE_RUNTIME_CAPABILITY_REGISTRY));
+export const NON_DATA_RUNTIME_CAPABILITIES = Object.freeze(BRIDGE_RUNTIME_CAPABILITIES.filter((kind) => !kind.startsWith("data.")));
+export const OTHERLINE_RUNTIME_CAPABILITIES = Object.freeze([
+  ...NON_DATA_RUNTIME_CAPABILITIES,
+  "data.put",
+  "data.get",
+  "data.query",
+  "data.delete",
+]);
 
 export const PRODUCT_REGISTRY = {
   "panda-chat": {
@@ -50,7 +85,7 @@ export const PRODUCT_REGISTRY = {
     name: "Panda Chat",
     official_origin: "https://bridge.otherline.cc",
     official_origins: ["https://bridge.otherline.cc", "https://panda.otherline.cc", "https://pandart.cc", "https://www.pandart.cc"],
-    capabilities: [...BRIDGE_RUNTIME_CAPABILITIES],
+    capabilities: [...NON_DATA_RUNTIME_CAPABILITIES],
     default_policy: {},
     requires_desktop_authorization: true,
   },
@@ -59,7 +94,7 @@ export const PRODUCT_REGISTRY = {
     name: "Panda Dev",
     official_origin: "https://bridge.otherline.cc",
     official_origins: ["https://bridge.otherline.cc", "https://dev.otherline.cc"],
-    capabilities: [...BRIDGE_RUNTIME_CAPABILITIES],
+    capabilities: [...NON_DATA_RUNTIME_CAPABILITIES],
     default_policy: {},
     requires_desktop_authorization: true,
   },
@@ -68,7 +103,7 @@ export const PRODUCT_REGISTRY = {
     name: "Panda Spec",
     official_origin: "https://bridge.otherline.cc",
     official_origins: ["https://bridge.otherline.cc", "https://spec.otherline.cc"],
-    capabilities: [...BRIDGE_RUNTIME_CAPABILITIES],
+    capabilities: [...NON_DATA_RUNTIME_CAPABILITIES],
     default_policy: {},
     requires_desktop_authorization: true,
   },
@@ -77,7 +112,7 @@ export const PRODUCT_REGISTRY = {
     name: "Otherline",
     official_origin: "https://otherline.cc",
     official_origins: ["https://otherline.cc", "https://app.test.example"],
-    capabilities: [...BRIDGE_RUNTIME_CAPABILITIES],
+    capabilities: [...OTHERLINE_RUNTIME_CAPABILITIES],
     default_policy: {},
     requires_desktop_authorization: true,
   },

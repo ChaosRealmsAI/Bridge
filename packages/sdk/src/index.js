@@ -378,6 +378,12 @@ export function createBridgeClient(options = {}) {
       run: (input) => createJob(request, productId, { ...input, kind: "codex.run" }),
       rpc: (input) => createJob(request, productId, { ...input, kind: "codex.rpc" }),
     },
+    data: {
+      put: (input = {}) => createJob(request, productId, dataJob("data.put", input)),
+      get: (input = {}) => createJob(request, productId, dataJob("data.get", input)),
+      query: (input = {}) => createJob(request, productId, dataJob("data.query", input)),
+      delete: (input = {}) => createJob(request, productId, dataJob("data.delete", input)),
+    },
     jobs: {
       create: (input = {}) => createJob(request, productId, input),
       get: (jobId) => request("GET", `/v1/jobs/${encodeURIComponent(jobId)}`),
@@ -388,6 +394,22 @@ export function createBridgeClient(options = {}) {
       cancel: (jobId) => request("POST", `/v1/jobs/${encodeURIComponent(jobId)}/cancel`),
     },
   };
+}
+
+function dataJob(kind, input = {}) {
+  return {
+    ...input,
+    kind,
+    input: input.input || input.payload || dataOperationInput(input),
+  };
+}
+
+function dataOperationInput(input = {}) {
+  const out = {};
+  for (const key of ["ns", "key", "value", "prefix", "limit"]) {
+    if (Object.hasOwn(input, key)) out[key] = input[key];
+  }
+  return out;
 }
 
 function bridgeDefaultAuthorizationPolicy(overrides = {}) {
@@ -415,7 +437,7 @@ function bridgeFullAccessAuthorizationPolicy(overrides = {}) {
     version: "AUTH-SCOPE-v2",
     preset: "full-access",
     request_source: "sdk_default_full_access",
-    capabilities: ["codex.chat", "codex.run", "codex.rpc", "saas.custom.run"],
+    capabilities: ["codex.chat", "codex.run", "codex.rpc", "data.put", "data.get", "data.query", "data.delete", "saas.custom.run"],
     workspace_roots: [{
       id: "all",
       path_display: "All local files",
