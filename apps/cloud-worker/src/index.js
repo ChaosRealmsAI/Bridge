@@ -1,5 +1,12 @@
 import { BRIDGE_PROTOCOL_VERSION, EVENT_TYPES, bridgeEvent, validateBridgeJob } from "@panda-bridge/protocol";
 import {
+  authorizationEpoch,
+  capTokenMode,
+  issueCapToken,
+  parseCompactJws,
+  verifyCapTokenJws,
+} from "./captoken.js";
+import {
   BRIDGE_RUNTIME_CAPABILITY_REGISTRY,
   allProducts,
   capabilityDanger,
@@ -572,9 +579,12 @@ async function revokeDevice(request, env, deviceId) {
     device_id: device.id,
   });
   for (const authorization of authorizations.filter((item) => item.status !== "revoked")) {
-    await storage(env).update("bridge_authorizations", authorization.id, {
+    await updateAuthorizationWithEpoch(env, authorization, {
       status: "revoked",
       updated_at: revokedAt,
+    }, {
+      cause: "device_revoke",
+      cancelDenial: { error: "product_not_authorized", reason: "device_revoked" },
     });
   }
   await audit(env, session.user.id, device.id, null, "device.revoke", device.id, {
@@ -837,6 +847,9 @@ async function connectorJobs(request, env) {
   if (available <= 0) return json({ items: [], queue: await publicDeviceQueue(env, connector.device.id) }, env);
   const jobs = [];
   for (const row of authorizedRows.slice(0, available)) {
+    const authorization = await authorizationForProduct(env, row.user_id, row.device_id, row.product_id);
+    const l1 = await cloudCapTokenAcceptGate(env, row, authorization);
+    if (!l1.allow) continue;
     const acceptedAt = now();
     const job = await store.update("bridge_jobs", row.id, {
       status: "running",
@@ -956,8 +969,15 @@ async function revokeAuthorization(request, env, productId) {
     product_id: product.id,
   }))[0];
   if (!authorization) return json({ authorization: null, product: publicStateProduct(product) }, env);
-  const revoked = await storage(env).update("bridge_authorizations", authorization.id, { status: "revoked", updated_at: now() });
-  const cancelled_jobs = await cancelQueuedJobsForAuthorization(env, session.user.id, device.id, product.id);
+  const revokedResult = await updateAuthorizationWithEpoch(env, authorization, {
+    status: "revoked",
+    updated_at: now(),
+  }, {
+    cause: "revoke",
+    cancelDenial: { error: "product_not_authorized", reason: "authorization_revoked" },
+  });
+  const revoked = revokedResult.authorization;
+  const cancelled_jobs = revokedResult.cancelledJobs;
   await audit(env, session.user.id, device.id, product.id, "authorization.revoke", authorization.id, { source_origin: sourceOrigin(env) });
   return json({ authorization: publicAuthorization(revoked), product: publicStateProduct(product), cancelled_jobs }, env);
 }
@@ -991,8 +1011,15 @@ async function revokeConnectorAuthorization(request, env, productId) {
     product_id: product.id,
   }))[0];
   if (!authorization) return json({ authorization: null, product: publicStateProduct(product), cancelled_jobs: 0 }, env);
-  const revoked = await storage(env).update("bridge_authorizations", authorization.id, { status: "revoked", updated_at: now() });
-  const cancelled_jobs = await cancelQueuedJobsForAuthorization(env, connector.device.user_id, connector.device.id, product.id);
+  const revokedResult = await updateAuthorizationWithEpoch(env, authorization, {
+    status: "revoked",
+    updated_at: now(),
+  }, {
+    cause: "revoke.connector",
+    cancelDenial: { error: "product_not_authorized", reason: "authorization_revoked" },
+  });
+  const revoked = revokedResult.authorization;
+  const cancelled_jobs = revokedResult.cancelledJobs;
   await audit(env, connector.device.user_id, connector.device.id, product.id, "authorization.revoke.connector", authorization.id, {
     source_origin: sourceOrigin(env),
   });
@@ -1212,8 +1239,15 @@ async function revokeDelegatedProductAuthorization(request, env, productId) {
     product_id: product.id,
   }))[0];
   if (!authorization) return json({ authorization: null, device: publicDevice(device, env), product: publicStateProduct(product), cancelled_jobs: 0 }, env);
-  const revoked = await storage(env).update("bridge_authorizations", authorization.id, { status: "revoked", updated_at: now() });
-  const cancelled_jobs = await cancelQueuedJobsForAuthorization(env, delegation.bridgeUserId, device.id, product.id);
+  const revokedResult = await updateAuthorizationWithEpoch(env, authorization, {
+    status: "revoked",
+    updated_at: now(),
+  }, {
+    cause: "revoke.delegated",
+    cancelDenial: { error: "product_not_authorized", reason: "authorization_revoked" },
+  });
+  const revoked = revokedResult.authorization;
+  const cancelled_jobs = revokedResult.cancelledJobs;
   await audit(env, delegation.bridgeUserId, device.id, product.id, "authorization.revoke.delegated", authorization.id, {
     source_origin: delegation.sourceOrigin,
   });
@@ -1243,7 +1277,10 @@ async function createAuthorizedProductJob(env, product, userId, source_origin, b
   const existing = await existingRequestKeyJob(env, userId, device.id, product.id, normalized.request_key);
   if (existing) {
     if (!sameNormalizedJob(existing, normalized)) return json({ error: "idempotency_key_conflict" }, env, 409);
-    return json({ job: publicJob(existing), reused: true }, env);
+    const tokenized = existing.cap_token
+      ? existing
+      : await attachCapTokenToJob(env, ctx, { authorization, job: existing, product, userId, device });
+    return json({ job: publicJob(tokenized), reused: true }, env);
   }
 
   const limits = jobQueueLimits(env);
@@ -1292,10 +1329,16 @@ async function createAuthorizedProductJob(env, product, userId, source_origin, b
     });
   } catch (error) {
     const duplicate = await existingRequestKeyJob(env, userId, device.id, product.id, normalized.request_key);
-    if (duplicate && sameNormalizedJob(duplicate, normalized)) return json({ job: publicJob(duplicate), reused: true }, env);
+    if (duplicate && sameNormalizedJob(duplicate, normalized)) {
+      const tokenized = duplicate.cap_token
+        ? duplicate
+        : await attachCapTokenToJob(env, ctx, { authorization, job: duplicate, product, userId, device });
+      return json({ job: publicJob(tokenized), reused: true }, env);
+    }
     if (duplicate) return json({ error: "idempotency_key_conflict" }, env, 409);
     throw error;
   }
+  job = await attachCapTokenToJob(env, ctx, { authorization, job, product, userId, device });
   await runBackground(ctx, appendEvent(env, job.id, "queued", {
     product_id: product.id,
     source_origin,
@@ -1320,6 +1363,124 @@ async function createAuthorizedProductJob(env, product, userId, source_origin, b
       max_queued: limits.deviceMaxQueued,
     },
   }, env, 201);
+}
+
+async function attachCapTokenToJob(env, ctx, { authorization, job, product, userId, device }) {
+  const issued = await issueCapToken(env, { authorization, job, product, userId, device });
+  const updated = await storage(env).update("bridge_jobs", job.id, {
+    cap_token: issued.token,
+  });
+  await runBackground(ctx, audit(env, userId, device.id, product.id, "cap_token.issue", job.id, {
+    jti: issued.claims.jti,
+    kid: issued.header.kid,
+    cap: issued.claims.cap,
+    bnd: issued.claims.bnd,
+    eph: issued.claims.eph,
+    exp: issued.claims.exp,
+    max: issued.claims.max,
+    danger: issued.danger,
+    mode: capTokenMode(env),
+  }));
+  return updated || { ...job, cap_token: issued.token };
+}
+
+async function cloudCapTokenAcceptGate(env, job, authorization) {
+  const mode = capTokenMode(env);
+  const token = clean(job.cap_token, 20000);
+  if (!token) {
+    await auditCapTokenL1(env, job, "cap_token.l1_missing", {
+      reason: "cap_token_missing",
+      mode,
+    });
+    return { allow: mode === "shadow", reason: "cap_token_missing", mode };
+  }
+
+  const parsed = parseCompactJws(token);
+  const claims = object(parsed?.claims);
+  const context = {
+    device_id: job.device_id,
+    job: {
+      id: job.id,
+      product_id: job.product_id,
+      request_key: job.request_key,
+      kind: job.kind,
+    },
+    epoch: authorizationEpoch(authorization),
+    authorization_policy: authorization?.policy || {},
+    user_id: job.user_id,
+    now: Math.trunc(Date.now() / 1000),
+    env,
+  };
+  const verified = await verifyCapTokenJws(token, context);
+  if (verified.verdict !== "allow") {
+    await auditCapTokenL1(env, job, "cap_token.l1_denied", {
+      ...capTokenAuditFields(claims),
+      reason: verified.reason || "cap_token_denied",
+      mode,
+    });
+    return { allow: mode === "shadow", reason: verified.reason || "cap_token_denied", mode };
+  }
+
+  const consumed = await consumeCapTokenJti(env, job, claims);
+  if (!consumed.ok) {
+    await auditCapTokenL1(env, job, "cap_token.l1_denied", {
+      ...capTokenAuditFields(claims),
+      reason: consumed.reason,
+      mode,
+    });
+    return { allow: mode === "shadow", reason: consumed.reason, mode };
+  }
+
+  await auditCapTokenL1(env, job, "cap_token.l1_verify_ok", {
+    ...capTokenAuditFields(claims),
+    uses: consumed.uses,
+    mode,
+  });
+  return { allow: true, reason: null, mode };
+}
+
+async function consumeCapTokenJti(env, job, claims) {
+  const jti = clean(claims.jti, 160);
+  const maxUses = Number(claims.max);
+  const exp = Number(claims.exp);
+  if (!jti || !Number.isInteger(maxUses) || maxUses < 1 || !Number.isFinite(exp)) {
+    return { ok: false, reason: "cap_token_malformed" };
+  }
+  try {
+    await storage(env).insert("bridge_cap_token_jti", {
+      jti,
+      job_id: job.id,
+      product_id: job.product_id,
+      device_id: job.device_id,
+      uses: 1,
+      max_uses: maxUses,
+      expires_at: new Date(exp * 1000).toISOString(),
+      created_at: now(),
+      updated_at: now(),
+    });
+    return { ok: true, uses: 1 };
+  } catch (error) {
+    if (isUniqueConflict(error, "cap_token_replay")) {
+      return { ok: false, reason: "cap_token_replay" };
+    }
+    return { ok: false, reason: "cap_token_jti_store_failed" };
+  }
+}
+
+async function auditCapTokenL1(env, job, action, payload) {
+  await audit(env, job.user_id, job.device_id, job.product_id, action, job.id, {
+    ...object(payload),
+    job_id: job.id,
+  });
+}
+
+function capTokenAuditFields(claims) {
+  return {
+    jti: clean(claims.jti, 160) || null,
+    eph: Number.isFinite(Number(claims.eph)) ? Number(claims.eph) : null,
+    exp: Number.isFinite(Number(claims.exp)) ? Number(claims.exp) : null,
+    max: Number.isFinite(Number(claims.max)) ? Number(claims.max) : null,
+  };
 }
 
 async function getDelegatedJob(request, env, productId, jobId) {
@@ -1405,6 +1566,16 @@ async function postConnectorEvents(request, env, jobId) {
     if (Object.keys(patch).length) currentJob = await storage(env).update("bridge_jobs", currentJob.id, patch);
     const event = await appendEvent(env, currentJob.id, eventType, { ...eventPayload, ...patch });
     events.push(event);
+    if (eventType === "cap_token.verify_ok" || eventType === "cap_token.denied") {
+      await runBackground({}, audit(env, currentJob.user_id, currentJob.device_id, currentJob.product_id, eventType, currentJob.id, {
+        jti: clean(eventPayload.jti, 120) || null,
+        eph: eventPayload.eph ?? null,
+        uses: eventPayload.uses ?? null,
+        denied: clean(eventPayload.denied, 120) || null,
+        reason: clean(eventPayload.reason, 160) || null,
+        mode: clean(eventPayload.mode, 40) || capTokenMode(env),
+      }));
+    }
     await notifyJobEvent(env, connector.device.id, currentJob, event);
   }
   return json({ items: events }, env, 201);
@@ -1433,6 +1604,15 @@ async function acceptConnectorJob(request, env, jobId) {
       reason: "device_busy",
       queue: await publicDeviceQueue(env, connector.device.id),
     }, env);
+  }
+  const l1 = await cloudCapTokenAcceptGate(env, job, authorization);
+  if (!l1.allow) {
+    return json({
+      error: l1.reason,
+      job: publicJob(job),
+      accepted: false,
+      reason: l1.reason,
+    }, env, 403);
   }
   const acceptedAt = now();
   const desktopReceivedAt = clean(body.desktop_received_at, 80) || acceptedAt;
@@ -1854,6 +2034,42 @@ function authorizationJobDenial(authorization) {
   return { error: "product_not_authorized", reason: "authorization_revoked" };
 }
 
+async function updateAuthorizationWithEpoch(env, authorization, patch, options = {}) {
+  const from = authorizationEpoch(authorization);
+  const to = from + 1;
+  const updated = await storage(env).update("bridge_authorizations", authorization.id, {
+    ...patch,
+    epoch: to,
+  });
+  const cancelDenial = options.cancelDenial || null;
+  const cancelledJobs = cancelDenial
+    ? await cancelQueuedJobsForAuthorization(
+        env,
+        authorization.user_id,
+        authorization.device_id,
+        authorization.product_id,
+        cancelDenial,
+      )
+    : 0;
+  await audit(env, authorization.user_id, authorization.device_id, authorization.product_id, "authorization.epoch_bump", authorization.id, {
+    from,
+    to,
+    cause: clean(options.cause, 120) || "authorization_update",
+    cancelled_jobs: cancelledJobs,
+  });
+  await notifyDeviceRoom(env, authorization.device_id, {
+    type: "authorization.epoch_bump",
+    authorization: {
+      id: authorization.id,
+      product_id: authorization.product_id,
+      status: updated?.status || patch.status || authorization.status,
+      epoch: to,
+    },
+    sent_at: now(),
+  });
+  return { authorization: updated, cancelledJobs, from, to };
+}
+
 async function updateAuthorizationStatus(env, { userId, deviceId, product, status, sourceOrigin = "", auditActionPrefix = "authorization" }) {
   if (!["active", "paused"].includes(status)) {
     return { error: "invalid_authorization_status", status: 400 };
@@ -1863,16 +2079,18 @@ async function updateAuthorizationStatus(env, { userId, deviceId, product, statu
   if (authorization.status === "revoked") return { error: "authorization_revoked", status: 409 };
   if (authorization.status === status) return { authorization, cancelledJobs: 0 };
 
-  const updated = await storage(env).update("bridge_authorizations", authorization.id, {
-    status,
-    updated_at: now(),
-  });
   const denial = status === "paused"
     ? { error: "authorization_paused", reason: "authorization_paused" }
     : { error: "product_not_authorized", reason: "authorization_revoked" };
-  const cancelledJobs = status === "paused"
-    ? await cancelQueuedJobsForAuthorization(env, userId, deviceId, product.id, denial)
-    : 0;
+  const updatedResult = await updateAuthorizationWithEpoch(env, authorization, {
+    status,
+    updated_at: now(),
+  }, {
+    cause: status === "paused" ? "pause" : "resume",
+    cancelDenial: status === "paused" ? denial : null,
+  });
+  const updated = updatedResult.authorization;
+  const cancelledJobs = updatedResult.cancelledJobs;
   await audit(env, userId, deviceId, product.id, `${auditActionPrefix}.${status === "paused" ? "pause" : "resume"}`, authorization.id, {
     source_origin: sourceOrigin || null,
     previous_status: authorization.status,
@@ -2102,6 +2320,7 @@ async function cleanupExpiredRows(env) {
     "bridge_pairing_codes",
     "bridge_connect_intents",
     "bridge_device_tokens",
+    "bridge_cap_token_jti",
     "bridge_password_attempts",
   ];
   const deleted = {};
@@ -2403,6 +2622,7 @@ function publicAuthorization(authorization, options = {}) {
     device_id: authorization.device_id,
     product_id: authorization.product_id,
     status: authorization.status,
+    epoch: authorizationEpoch(authorization),
     source_origin: authorization.source_origin || null,
     authorized_at: authorization.created_at || authorization.updated_at || null,
     created_at: authorization.created_at || null,
@@ -2632,12 +2852,15 @@ async function replaceOtherBridgeDevices(env, userId, activeDeviceId, reason) {
       device_id: device.id,
     });
     for (const authorization of authorizations.filter((item) => item.status !== "revoked")) {
-      await store.update("bridge_authorizations", authorization.id, {
+      const revokedResult = await updateAuthorizationWithEpoch(env, authorization, {
         status: "revoked",
         updated_at: replacedAt,
+      }, {
+        cause: reason,
+        cancelDenial: { error: "product_not_authorized", reason: "device_replaced" },
       });
       authorizationsRevoked += 1;
-      cancelledJobs += await cancelQueuedJobsForAuthorization(env, userId, device.id, authorization.product_id);
+      cancelledJobs += revokedResult.cancelledJobs;
     }
     await notifyDeviceRoom(env, device.id, {
       type: "device.replaced",
@@ -2927,18 +3150,34 @@ async function upsertAuthorization(env, userId, deviceId, productId, policy, sou
     product_id: productId,
     device_id: deviceId,
   }))[0];
-  return existing
-    ? store.update("bridge_authorizations", existing.id, { status: "active", policy, source_origin: sourceOrigin || existing.source_origin || null, updated_at: now() })
-    : store.insert("bridge_authorizations", {
-        user_id: userId,
-        device_id: deviceId,
-        product_id: productId,
-        source_origin: sourceOrigin || null,
-        status: "active",
-        policy,
-        created_at: now(),
-        updated_at: now(),
-    });
+  if (existing) {
+    const policyChanged = canonicalJson(existing.policy || {}) !== canonicalJson(policy || {});
+    const statusChanged = existing.status !== "active";
+    const patch = {
+      status: "active",
+      policy,
+      source_origin: sourceOrigin || existing.source_origin || null,
+      updated_at: now(),
+    };
+    if (policyChanged || statusChanged) {
+      return (await updateAuthorizationWithEpoch(env, existing, patch, {
+        cause: policyChanged ? "policy_change" : "resume",
+        cancelDenial: policyChanged ? { error: "authorization_scope_changed", reason: "authorization_policy_changed" } : null,
+      })).authorization;
+    }
+    return store.update("bridge_authorizations", existing.id, patch);
+  }
+  return store.insert("bridge_authorizations", {
+    user_id: userId,
+    device_id: deviceId,
+    product_id: productId,
+    source_origin: sourceOrigin || null,
+    status: "active",
+    policy,
+    epoch: 1,
+    created_at: now(),
+    updated_at: now(),
+  });
 }
 
 async function consumeAuthorizationImportProof(env, proof) {
@@ -3184,7 +3423,18 @@ function uniqueConflict(tableName, rows, row) {
     ));
     if (duplicate) return "product_delegation_replay";
   }
+  if (tableName === "bridge_cap_token_jti") {
+    const duplicate = rows.find((item) => item.jti === row.jti);
+    if (duplicate) return "cap_token_replay";
+  }
   return "";
+}
+
+function isUniqueConflict(error, code) {
+  return error?.code === code
+    || error?.message === code
+    || error?.status === 409
+    || /unique|duplicate|23505/i.test(String(error?.message || ""));
 }
 
 function selectRows(rows, filters = {}, options = {}) {
@@ -3209,6 +3459,7 @@ function publicJob(job) {
     status: job.status,
     result: job.result,
     request_key: job.request_key,
+    cap_token: job.cap_token || null,
     created_at: job.created_at,
     updated_at: job.updated_at,
     queued_at: job.queued_at || job.created_at || null,

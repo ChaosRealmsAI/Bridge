@@ -32,6 +32,7 @@ use window_vibrancy::{apply_acrylic, apply_mica};
 use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial, NSVisualEffectState};
 use wry::WebViewBuilder;
 
+mod captoken;
 mod connector;
 
 use connector::{
@@ -118,6 +119,8 @@ struct ProductGrant {
     capabilities: Vec<String>,
     #[serde(default)]
     policy: Value,
+    #[serde(default = "default_authorization_epoch")]
+    epoch: u64,
     #[serde(default)]
     accounts: Vec<ProductGrantAccount>,
     authorized_at: String,
@@ -228,6 +231,10 @@ fn default_authorization_state() -> AuthorizationState {
     AuthorizationState::Active
 }
 
+fn default_authorization_epoch() -> u64 {
+    1
+}
+
 fn default_launch_at_login() -> bool {
     true
 }
@@ -317,6 +324,8 @@ struct AuthorizationInfo {
     policy: Value,
     #[serde(default)]
     source_origin: Option<String>,
+    #[serde(default = "default_authorization_epoch")]
+    epoch: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -377,7 +386,18 @@ struct RealtimeEnvelope {
     #[serde(default)]
     job: Option<BridgeJob>,
     #[serde(default)]
+    authorization: Option<RealtimeAuthorization>,
+    #[serde(default)]
     error: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RealtimeAuthorization {
+    product_id: String,
+    #[serde(default)]
+    status: Option<AuthorizationState>,
+    #[serde(default = "default_authorization_epoch")]
+    epoch: u64,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -389,6 +409,10 @@ struct BridgeJob {
     input: Value,
     #[serde(default)]
     policy: Value,
+    #[serde(default)]
+    request_key: Option<String>,
+    #[serde(default)]
+    cap_token: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -2022,6 +2046,11 @@ fn claim_intent(api: &str, intent: &str, device_name: &str) -> Result<ClaimResul
         .as_ref()
         .map(|authorization| authorization.policy.clone())
         .unwrap_or(Value::Null);
+    let authorization_epoch = payload
+        .authorization
+        .as_ref()
+        .map(|authorization| authorization.epoch)
+        .unwrap_or(1);
     let grant_capabilities =
         authorization_policy_capabilities(&authorization_policy).unwrap_or(product_capabilities);
     let existing_connection = existing_connections.iter().find(|connection| {
@@ -2039,6 +2068,7 @@ fn claim_intent(api: &str, intent: &str, device_name: &str) -> Result<ClaimResul
         cloud_origin.clone(),
         grant_capabilities,
         authorization_policy,
+        authorization_epoch,
     );
     let connection = Credentials {
         api_base: api_base.clone(),
@@ -2136,6 +2166,46 @@ fn toggle_authorization(product_id: &str, account: &str) -> Result<Value, String
         "authorized": next_state.unwrap_or(AuthorizationState::Active),
         "authorized_products": next.authorized_products
     }))
+}
+
+fn apply_authorization_epoch_bump(
+    product_id: &str,
+    status: Option<AuthorizationState>,
+    epoch: u64,
+) -> Result<bool, String> {
+    if epoch == 0 {
+        return Ok(false);
+    }
+    let credentials = ensure_credentials_install_id(load_credentials()?)?;
+    let mut connections = credentials_connections(&credentials);
+    let mut changed = false;
+    for connection in &mut connections {
+        if connection.authorized_products.is_empty() {
+            connection.authorized_products = connection_products(connection);
+        }
+        for grant in connection
+            .authorized_products
+            .iter_mut()
+            .filter(|grant| product_matches_target(grant, product_id))
+        {
+            if epoch > grant.epoch {
+                grant.epoch = epoch;
+                changed = true;
+            }
+            if let Some(status) = status {
+                if grant.authorization != status {
+                    grant.authorization = status;
+                    changed = true;
+                }
+            }
+        }
+    }
+    if changed {
+        let next = credentials_from_connections(connections, None, Some(&credentials));
+        save_credentials(&next)?;
+        write_connector_state(&next)?;
+    }
+    Ok(changed)
 }
 
 fn toggle_authorization_for_state(
@@ -2409,6 +2479,7 @@ fn connection_products(credentials: &Credentials) -> Vec<ProductGrant> {
             authorization: AuthorizationState::Active,
             capabilities: Vec::new(),
             policy: Value::Null,
+            epoch: 1,
             accounts: Vec::new(),
             authorized_at: credentials.claimed_at.clone(),
         }],
@@ -2668,6 +2739,7 @@ fn merge_authorized_products(
     cloud_origin: Option<String>,
     capabilities: Vec<String>,
     policy: Value,
+    epoch: u64,
 ) -> Vec<ProductGrant> {
     let mut products = existing.map(connection_products).unwrap_or_default();
     if let Some(id) = product_id {
@@ -2679,6 +2751,7 @@ fn merge_authorized_products(
             authorization: AuthorizationState::Active,
             capabilities,
             policy,
+            epoch: epoch.max(1),
             accounts: Vec::new(),
             authorized_at: now_string(),
         };
@@ -3195,6 +3268,27 @@ fn run_realtime_worker(
                         .error
                         .unwrap_or_else(|| "realtime error".to_string()));
                 }
+                if envelope.message_type == "authorization.epoch_bump" {
+                    if let Some(authorization) = envelope.authorization {
+                        if apply_authorization_epoch_bump(
+                            &authorization.product_id,
+                            authorization.status,
+                            authorization.epoch,
+                        )
+                        .unwrap_or(false)
+                        {
+                            push_event(
+                                state,
+                                "authorization_epoch_bump",
+                                json!({
+                                    "product_id": authorization.product_id,
+                                    "epoch": authorization.epoch
+                                }),
+                            );
+                        }
+                    }
+                    continue;
+                }
                 if envelope.message_type == "job.assign" {
                     if let Some(job) = envelope.job {
                         if !processed.contains(&job.id) {
@@ -3282,6 +3376,8 @@ fn warm_codex_connector(
         workspace_ref: Some("default".to_string()),
         input: json!({ "prompt": "" }),
         policy: json!({}),
+        request_key: None,
+        cap_token: None,
     };
     let boundary = GrantedBoundary {
         product_id: grant.id.clone(),
@@ -3547,11 +3643,51 @@ fn declaration_registry() -> ConnectorRegistry {
     registry
 }
 
+fn post_cap_token_decision_event(
+    credentials: &Credentials,
+    job: &BridgeJob,
+    decision: &captoken::CapTokenDecision,
+) {
+    let event_type = if decision.is_allow() {
+        "cap_token.verify_ok"
+    } else {
+        "cap_token.denied"
+    };
+    post_event_best_effort(
+        credentials,
+        &job.id,
+        event_type,
+        json!({
+            "jti": decision.jti.clone(),
+            "eph": decision.eph,
+            "uses": decision.uses,
+            "denied": if decision.is_allow() { Value::Null } else { Value::String("cap_token".to_string()) },
+            "reason": decision.reason.clone(),
+            "mode": captoken::mode(),
+        }),
+    );
+}
+
 fn execute_via_registry(
     registry: &mut ConnectorRegistry,
     credentials: &Credentials,
     job: &BridgeJob,
 ) -> Result<Value, String> {
+    let cap_decision = captoken::verify_for_job(credentials, job);
+    post_cap_token_decision_event(credentials, job, &cap_decision);
+    if !cap_decision.is_allow() && captoken::mode() == "enforce" {
+        post_event_best_effort(
+            credentials,
+            &job.id,
+            "policy_denied",
+            local_policy_denial_event_from_parts(job, "cap_token", cap_decision.reason_str()),
+        );
+        return Ok(local_policy_denial_result_from_parts(
+            job,
+            "cap_token",
+            cap_decision.reason_str(),
+        ));
+    }
     let grant = match resolve_active_grant(credentials, job) {
         Ok(grant) => grant,
         Err(error) => {
@@ -4374,6 +4510,10 @@ fn post_event_best_effort(
     event_type: &str,
     payload: Value,
 ) {
+    #[cfg(test)]
+    if credentials.api_base.contains("local.test") {
+        return;
+    }
     let _ = post_event(credentials, job_id, event_type, payload);
 }
 
@@ -5804,6 +5944,8 @@ mod tests {
             workspace_ref: Some("default".to_string()),
             input: json!({ "prompt": "hello" }),
             policy,
+            request_key: Some("rk_1".to_string()),
+            cap_token: None,
         }
     }
 
@@ -5826,6 +5968,7 @@ mod tests {
                 authorization: AuthorizationState::Active,
                 capabilities: capabilities.into_iter().map(ToOwned::to_owned).collect(),
                 policy: test_auth_scope(),
+                epoch: 1,
                 accounts: Vec::new(),
                 authorized_at: now_string(),
             }],
@@ -5837,6 +5980,47 @@ mod tests {
             connections: Vec::new(),
             claimed_at: now_string(),
         }
+    }
+
+    fn cap_token_vector_token() -> String {
+        let vectors: Value =
+            serde_json::from_str(include_str!("../../../spec/captoken/vectors.json")).unwrap();
+        vectors["signature_cases"][0]["token"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    fn cap_token_vector_policy() -> Value {
+        let vectors: Value =
+            serde_json::from_str(include_str!("../../../spec/captoken/vectors.json")).unwrap();
+        vectors["base_context"]["authorization_policy"].clone()
+    }
+
+    fn cap_token_vector_job() -> BridgeJob {
+        BridgeJob {
+            id: "job_vec_1".to_string(),
+            product_id: "panda-chat".to_string(),
+            kind: "codex.chat".to_string(),
+            workspace_ref: Some("default".to_string()),
+            input: json!({ "prompt": "hello" }),
+            policy: json!({ "sandbox": "workspace-write", "approvalPolicy": "on-request" }),
+            request_key: Some("rk_vec_1".to_string()),
+            cap_token: Some(cap_token_vector_token()),
+        }
+    }
+
+    fn cap_token_vector_credentials(epoch: u64) -> Credentials {
+        let mut credentials = test_credentials(vec!["codex.chat"]);
+        credentials.device_id = "dev_vec_1".to_string();
+        credentials.account_id = Some("user_vec_1".to_string());
+        credentials.authorized_products[0].policy = cap_token_vector_policy();
+        credentials.authorized_products[0].epoch = epoch;
+        credentials
+    }
+
+    fn set_cap_token_vector_now() {
+        env::set_var("PANDA_BRIDGE_CAPTOKEN_NOW_SECONDS", "1718200100");
     }
 
     fn reset_policy_env() {
@@ -6698,6 +6882,88 @@ mod tests {
         let error = validate_local_job_authorization(&test_credentials(vec!["codex.chat"]), &job)
             .unwrap_err();
         assert!(error.contains("capability_not_authorized_locally"));
+    }
+
+    #[test]
+    fn cap_token_shadow_default_does_not_break_existing_scope() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        reset_policy_env();
+        env::remove_var("PANDA_BRIDGE_CAPTOKEN_MODE");
+        env::set_var("PANDA_BRIDGE_FAKE_CODEX", "1");
+        let mut registry = execution_registry(CodexConnector::new()).unwrap();
+        let credentials = test_credentials(vec!["codex.chat"]);
+        let result =
+            execute_via_registry(&mut registry, &credentials, &test_job(json!({}))).unwrap();
+        assert_eq!(result["ok"], true);
+        env::remove_var("PANDA_BRIDGE_FAKE_CODEX");
+    }
+
+    #[test]
+    fn cap_token_enforce_rejects_missing_token() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        reset_policy_env();
+        set_cap_token_vector_now();
+        env::set_var("PANDA_BRIDGE_CAPTOKEN_MODE", "enforce");
+        let mut registry = declaration_registry();
+        let result = execute_via_registry(
+            &mut registry,
+            &test_credentials(vec!["codex.chat"]),
+            &test_job(json!({})),
+        )
+        .unwrap();
+        assert_eq!(result["ok"], false);
+        assert_eq!(result["denied"], "cap_token");
+        assert_eq!(result["reason"], "cap_token_missing");
+        env::remove_var("PANDA_BRIDGE_CAPTOKEN_MODE");
+        env::remove_var("PANDA_BRIDGE_CAPTOKEN_NOW_SECONDS");
+    }
+
+    #[test]
+    fn cap_token_epoch_stale_rejects_unexpired_token_in_enforce() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        reset_policy_env();
+        // Freeze the clock to the vector epoch so the token is unexpired and the
+        // denial is epoch_stale (not expired); do not depend on a prior test
+        // leaking NOW_SECONDS — parallel test order is nondeterministic.
+        set_cap_token_vector_now();
+        env::set_var("PANDA_BRIDGE_CAPTOKEN_MODE", "enforce");
+        let mut registry = declaration_registry();
+        let result = execute_via_registry(
+            &mut registry,
+            &cap_token_vector_credentials(8),
+            &cap_token_vector_job(),
+        )
+        .unwrap();
+        assert_eq!(result["ok"], false);
+        assert_eq!(result["denied"], "cap_token");
+        assert_eq!(result["reason"], "cap_token_epoch_stale");
+        env::remove_var("PANDA_BRIDGE_CAPTOKEN_MODE");
+        env::remove_var("PANDA_BRIDGE_CAPTOKEN_NOW_SECONDS");
+    }
+
+    #[test]
+    fn cap_token_job_reuse_misuse_rejects_job_and_request_key() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        reset_policy_env();
+        set_cap_token_vector_now();
+        env::set_var("PANDA_BRIDGE_CAPTOKEN_MODE", "enforce");
+        let mut registry = declaration_registry();
+        let credentials = cap_token_vector_credentials(7);
+        let mut wrong_job = cap_token_vector_job();
+        wrong_job.id = "job_vec_2".to_string();
+        let job_result = execute_via_registry(&mut registry, &credentials, &wrong_job).unwrap();
+        assert_eq!(job_result["reason"], "cap_token_job_mismatch");
+
+        let mut wrong_request_key = cap_token_vector_job();
+        wrong_request_key.request_key = Some("rk_vec_2".to_string());
+        let request_key_result =
+            execute_via_registry(&mut registry, &credentials, &wrong_request_key).unwrap();
+        assert_eq!(
+            request_key_result["reason"],
+            "cap_token_request_key_mismatch"
+        );
+        env::remove_var("PANDA_BRIDGE_CAPTOKEN_MODE");
+        env::remove_var("PANDA_BRIDGE_CAPTOKEN_NOW_SECONDS");
     }
 
     #[test]

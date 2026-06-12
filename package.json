@@ -9,10 +9,11 @@
   ],
   "scripts": {
     "build:web": "node scripts/build-web.mjs",
-    "check": "npm run check:protocol && npm run check:sdk && npm run check:worker && npm run check:connector && npm run check:desktop",
+    "check": "npm run check:protocol && npm run check:sdk && npm run check:worker && npm run check:captoken && npm run check:connector && npm run check:desktop",
     "check:protocol": "node packages/protocol/test/protocol.test.mjs",
     "check:sdk": "node --test packages/sdk/test/",
     "check:worker": "node apps/cloud-worker/test/worker.test.mjs",
+    "check:captoken": "node apps/cloud-worker/test/captoken.test.mjs",
     "check:connector": "node apps/connector-cli/test/connector.test.mjs",
     "check:desktop": "npm --workspace @panda-bridge/desktop run check",
     "verify:local": "node scripts/verify/local-smoke.mjs",

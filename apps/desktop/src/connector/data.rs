@@ -661,6 +661,8 @@ mod tests {
             workspace_ref: None,
             input,
             policy: json!({}),
+            request_key: None,
+            cap_token: None,
         }
     }
 

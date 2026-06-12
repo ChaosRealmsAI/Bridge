@@ -429,6 +429,7 @@ const localIntentClaim = nativeClaimWithHeader.payload;
 assert.equal(localIntentClaim.device.id, claim.device.id);
 const readyState = await api("GET", "/v1/bridge/state?product_id=panda-chat");
 assert.equal(readyState.accounts[0].authorization.status, "active", "AUTH-002 active authorization in account state");
+assert.equal(readyState.authorization.epoch, 1, "CAPTOKEN-001 initial authorization epoch starts at 1");
 assert.equal(readyState.connected, true, "CONN-003 active online authorization is connected");
 assert.equal(readyState.current_device.id, localIntentClaim.device.id, "CONN-003 current_device is selected");
 assert.equal("policy" in readyState.authorization, false, "AUTH-002 state authorization hides policy");
@@ -443,6 +444,7 @@ const created = await api("POST", "/v1/products/panda-chat/jobs", {
   policy: { token_budget: 1000, timeout_ms: 60000 },
 });
 assert.equal(created.job.status, "queued");
+assert.match(created.job.cap_token, /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/, "CAPTOKEN-001 job includes compact JWS");
 assert.ok(created.job.queued_at);
 assert.equal(created.job.timing.total_job_ms, null);
 const accepted = await api("POST", `/v1/connectors/jobs/${created.job.id}/accept`, { transport: "websocket" }, localIntentClaim.device_token);
@@ -775,6 +777,7 @@ assert.equal(runningBeforeConnectorRevokeAccept.job.status, "running");
 const connectorRevokedChat = await api("DELETE", "/v1/connectors/products/panda-chat/authorization", null, intentClaim.device_token);
 assert.equal(connectorRevokedChat.authorization.status, "revoked");
 assert.equal(connectorRevokedChat.authorization.product_id, "panda-chat");
+assert.equal(connectorRevokedChat.authorization.epoch, 2, "CAPTOKEN-004 revoke bumps epoch");
 assert.equal(connectorRevokedChat.cancelled_jobs, 2);
 const cancelledAfterConnectorRevoke = await api("GET", `/v1/jobs/${queuedBeforeConnectorRevoke.job.id}`);
 assert.equal(cancelledAfterConnectorRevoke.job.status, "cancelled");
@@ -811,6 +814,7 @@ const reconnectClaim = await nativeClaimIntent(reconnectIntent.token, {
 }, intentClaim.device_token);
 assert.equal(reconnectClaim.device.id, intentClaim.device.id);
 assert.equal(reconnectClaim.authorization.status, "active");
+assert.equal(reconnectClaim.authorization.epoch, 3, "CAPTOKEN-004 reconnect after revoke bumps epoch again");
 intentClaim.device_token = reconnectClaim.device_token;
 const authAfterExplicitReconnect = await api("GET", `/v1/products/panda-chat/authorization?device_id=${encodeURIComponent(intentClaim.device.id)}`);
 assert.equal(authAfterExplicitReconnect.authorization.status, "active");
@@ -820,6 +824,7 @@ const pausedChat = await api("PATCH", `/v1/products/panda-chat/authorization?dev
   status: "paused",
 }, "", { origin: "http://chat.local.test" });
 assert.equal(pausedChat.authorization.status, "paused", "AUTH-005 PATCH pauses authorization");
+assert.equal(pausedChat.authorization.epoch, 4, "CAPTOKEN-004 pause bumps epoch");
 assert.equal("policy" in pausedChat.authorization, false, "AUTH-005 paused response hides policy");
 const pausedState = await api("GET", "/v1/bridge/state?product_id=panda-chat", null, "", { origin: "http://chat.local.test" });
 assert.equal(pausedState.authorization.status, "paused", "AUTH-005 state exposes paused authorization");
@@ -839,6 +844,7 @@ const resumedChat = await api("PATCH", `/v1/products/panda-chat/authorization?de
   status: "active",
 }, "", { origin: "http://chat.local.test" });
 assert.equal(resumedChat.authorization.status, "active", "AUTH-006 PATCH resumes authorization");
+assert.equal(resumedChat.authorization.epoch, 5, "CAPTOKEN-004 resume bumps epoch");
 const resumedState = await api("GET", "/v1/bridge/state?product_id=panda-chat", null, "", { origin: "http://chat.local.test" });
 assert.equal(resumedState.authorization.status, "active", "AUTH-006 resumed state is active");
 assert.equal(resumedState.connected, true, "CONN-006 resumed authorization reconnects automatically");
@@ -1114,9 +1120,11 @@ const delegatedJob = await delegatedApi("POST", "/v1/products/otherline/delegate
 assert.equal(delegatedJob.job.status, "queued");
 assert.equal(delegatedJob.job.product_id, "otherline");
 assert.equal(delegatedJob.job.source_origin, "https://otherline.cc");
+assert.match(delegatedJob.job.cap_token, /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/, "CAPTOKEN-001 delegated job includes compact JWS");
 const delegatedDuplicate = await delegatedApi("POST", "/v1/products/otherline/delegated/jobs", delegatedJobBody, otherlineClaim.account.id, otherlineClaim.device.id);
 assert.equal(delegatedDuplicate.reused, true);
 assert.equal(delegatedDuplicate.job.id, delegatedJob.job.id);
+assert.equal(delegatedDuplicate.job.cap_token, delegatedJob.job.cap_token, "CAPTOKEN-001 idempotent job reuses stored cap_token");
 const delegatedConflict = await delegatedApiRaw("POST", "/v1/products/otherline/delegated/jobs", {
   ...delegatedJobBody,
   input: { prompt: "delegated changed body" },
