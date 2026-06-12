@@ -236,13 +236,7 @@ impl ShellBoundary {
                 denied: "cwd_root".to_string(),
                 reason: "cwd_root_not_granted_locally".to_string(),
             })?;
-        let cwd_root = shell_cwd_root_map()
-            .get(&cwd_root_id)
-            .cloned()
-            .ok_or_else(|| ConnectorError::LocalPolicyDenied {
-                denied: "cwd_root".to_string(),
-                reason: "cwd_root_not_granted_locally".to_string(),
-            })?;
+        let cwd_root = shell_cwd_root_path(raw, &cwd_root_id)?;
         let cwd_root = sandbox::canonical_existing_path(cwd_root).map_err(|_| {
             ConnectorError::LocalPolicyDenied {
                 denied: "cwd_root".to_string(),
@@ -251,6 +245,9 @@ impl ShellBoundary {
         })?;
         if !cwd_root.is_dir() {
             return deny("cwd_root", "cwd_root_not_granted_locally");
+        }
+        if crate::local_root_is_denied_sensitive(&cwd_root) {
+            return deny("cwd_root", "root_denied_sensitive");
         }
         Ok(Self {
             cwd_root_id,
@@ -613,10 +610,31 @@ fn parse_cmd_allowlist(raw: &Value) -> Option<Vec<PathBuf>> {
     }
 }
 
-fn shell_cwd_root_map() -> HashMap<String, PathBuf> {
+fn shell_cwd_root_path(raw: &Value, cwd_root_id: &str) -> Result<PathBuf, ConnectorError> {
+    if let Some(map) = shell_cwd_root_map() {
+        return map
+            .get(cwd_root_id)
+            .cloned()
+            .ok_or_else(|| ConnectorError::LocalPolicyDenied {
+                denied: "cwd_root".to_string(),
+                reason: "cwd_root_not_granted_locally".to_string(),
+            });
+    }
+    raw.get("_local_cwd")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+        .ok_or_else(|| ConnectorError::LocalPolicyDenied {
+            denied: "cwd_root".to_string(),
+            reason: "cwd_root_not_granted_locally".to_string(),
+        })
+}
+
+fn shell_cwd_root_map() -> Option<HashMap<String, PathBuf>> {
     let mut out = HashMap::new();
     let Ok(raw) = std::env::var(SHELL_CWD_ROOTS_ENV) else {
-        return out;
+        return None;
     };
     for item in raw.split([',', ';']) {
         let Some((id, path)) = item.split_once(':') else {
@@ -629,7 +647,7 @@ fn shell_cwd_root_map() -> HashMap<String, PathBuf> {
         }
         out.insert(id, PathBuf::from(path));
     }
-    out
+    Some(out)
 }
 
 fn normalize_net_value(raw: &Value) -> NetPolicy {
@@ -857,6 +875,84 @@ mod tests {
 
         restore_env(SHELL_CWD_ROOTS_ENV, old);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn shell_boundary_uses_local_cwd_when_env_missing() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let old = std::env::var_os(SHELL_CWD_ROOTS_ENV);
+        std::env::remove_var(SHELL_CWD_ROOTS_ENV);
+        let root = std::env::temp_dir().join(format!(
+            "panda-bridge-shell-local-cwd-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let mut policy = shell_policy("root-a");
+        policy["_local_cwd"] = json!(root.clone());
+
+        let parsed = ShellBoundary::parse(&policy).unwrap();
+        assert_eq!(parsed.cwd_root, std::fs::canonicalize(&root).unwrap());
+
+        restore_env(SHELL_CWD_ROOTS_ENV, old);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn shell_boundary_env_mapping_takes_precedence_over_local_cwd() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let old = std::env::var_os(SHELL_CWD_ROOTS_ENV);
+        let base = std::env::temp_dir().join(format!(
+            "panda-bridge-shell-env-priority-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        let env_root = base.join("env-root");
+        let local_root = base.join("local-root");
+        std::fs::create_dir_all(&env_root).unwrap();
+        std::fs::create_dir_all(&local_root).unwrap();
+        std::env::set_var(
+            SHELL_CWD_ROOTS_ENV,
+            format!("root-a:{}", env_root.display()),
+        );
+        let mut policy = shell_policy("root-a");
+        policy["_local_cwd"] = json!(local_root);
+
+        let parsed = ShellBoundary::parse(&policy).unwrap();
+        assert_eq!(parsed.cwd_root, std::fs::canonicalize(&env_root).unwrap());
+
+        restore_env(SHELL_CWD_ROOTS_ENV, old);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn shell_boundary_rejects_sensitive_local_cwd() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let old = std::env::var_os(SHELL_CWD_ROOTS_ENV);
+        std::env::remove_var(SHELL_CWD_ROOTS_ENV);
+        let mut policy = shell_policy("root-a");
+        policy["_local_cwd"] = json!("/");
+
+        assert_eq!(
+            reason(ShellBoundary::parse(&policy).unwrap_err()),
+            "root_denied_sensitive"
+        );
+
+        restore_env(SHELL_CWD_ROOTS_ENV, old);
+    }
+
+    #[test]
+    fn shell_boundary_without_env_or_local_cwd_fails_closed() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let old = std::env::var_os(SHELL_CWD_ROOTS_ENV);
+        std::env::remove_var(SHELL_CWD_ROOTS_ENV);
+
+        assert_eq!(
+            reason(ShellBoundary::parse(&shell_policy("root-a")).unwrap_err()),
+            "cwd_root_not_granted_locally"
+        );
+
+        restore_env(SHELL_CWD_ROOTS_ENV, old);
     }
 
     #[test]

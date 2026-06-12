@@ -321,7 +321,9 @@ fn normalize_shell_boundary(policy: &Value) -> Value {
     // to match the JS codePointCompare on the raw string. canonical_json sorts the
     // escaped+quoted form, which diverges from JS on JSON-escapable chars (\t, ", \).
     cmd_allowlist.sort_by(|left, right| {
-        left.as_str().unwrap_or_default().cmp(right.as_str().unwrap_or_default())
+        left.as_str()
+            .unwrap_or_default()
+            .cmp(right.as_str().unwrap_or_default())
     });
     cmd_allowlist.dedup_by(|left, right| left.as_str() == right.as_str());
     let limits = shell.get("limits").unwrap_or(&Value::Null);
@@ -752,6 +754,105 @@ mod tests {
                 case["name"]
             );
         }
+    }
+
+    #[test]
+    fn local_runtime_fields_do_not_affect_boundary_fingerprints() {
+        let supplemental = "\u{10000}";
+        let fs_root_id = format!("root-{supplemental}");
+        let fs_display = format!("[local]/Project-{supplemental}");
+        let fs_job = BridgeJob {
+            id: "job_fs_local_1".to_string(),
+            product_id: "panda-dev".to_string(),
+            kind: "fs.read".to_string(),
+            workspace_ref: None,
+            input: json!({ "path": "/tmp/unused" }),
+            policy: json!({}),
+            request_key: Some("rk_fs_local_1".to_string()),
+            cap_token: None,
+        };
+        let fs_policy = json!({
+            "boundaries": {
+                "fs": {
+                    "type": "directory_whitelist",
+                    "allowed_roots": [{ "id": fs_root_id.clone(), "path_display": fs_display.clone() }],
+                    "write_roots": [],
+                    "writable": false,
+                    "max_bytes": 8388608,
+                    "follow_symlinks": false
+                }
+            }
+        });
+        let mut fs_injected = fs_policy.clone();
+        let mut local_paths = serde_json::Map::new();
+        local_paths.insert(
+            fs_root_id.clone(),
+            Value::String(format!("/Users/alice/Project-{supplemental}")),
+        );
+        fs_injected
+            .pointer_mut("/boundaries/fs")
+            .and_then(Value::as_object_mut)
+            .unwrap()
+            .insert("_local_paths".to_string(), Value::Object(local_paths));
+        assert_eq!(
+            compute_boundary_fingerprint(&fs_policy, &fs_job),
+            compute_boundary_fingerprint(&fs_injected, &fs_job)
+        );
+        let fs_normalized = normalize_boundary(&fs_injected, &fs_job);
+        let fs_normalized_text = serde_json::to_string(&fs_normalized).unwrap();
+        assert!(!fs_normalized_text.contains("_local"));
+        assert!(!fs_normalized_text.contains("/Users/alice"));
+
+        let shell_root_id = format!("cwd-{supplemental}");
+        let shell_display = format!("[local]/Shell-{supplemental}");
+        let shell_job = BridgeJob {
+            id: "job_shell_local_1".to_string(),
+            product_id: "panda-dev".to_string(),
+            kind: "shell.run".to_string(),
+            workspace_ref: None,
+            input: json!({ "argv": ["/bin/echo", "ok"] }),
+            policy: json!({}),
+            request_key: Some("rk_shell_local_1".to_string()),
+            cap_token: None,
+        };
+        let shell_policy = json!({
+            "boundaries": {
+                "shell": {
+                    "type": "command_sandbox",
+                    "cwd_root_id": shell_root_id.clone(),
+                    "cwd_root": { "id": shell_root_id.clone(), "path_display": shell_display.clone() },
+                    "net": "deny",
+                    "allow_exec_subtree": false,
+                    "cmd_allowlist": [format!("/bin/echo-{supplemental}")],
+                    "max_output_bytes": 1024,
+                    "deadline_ms": 1000,
+                    "limits": {
+                        "cpu_seconds": 30,
+                        "address_space": 1073741824,
+                        "open_files": 128,
+                        "processes": 16,
+                        "file_size": 67108864
+                    }
+                }
+            }
+        });
+        let mut shell_injected = shell_policy.clone();
+        shell_injected
+            .pointer_mut("/boundaries/shell")
+            .and_then(Value::as_object_mut)
+            .unwrap()
+            .insert(
+                "_local_cwd".to_string(),
+                Value::String(format!("/Users/alice/Shell-{supplemental}")),
+            );
+        assert_eq!(
+            compute_boundary_fingerprint(&shell_policy, &shell_job),
+            compute_boundary_fingerprint(&shell_injected, &shell_job)
+        );
+        let shell_normalized = normalize_boundary(&shell_injected, &shell_job);
+        let shell_normalized_text = serde_json::to_string(&shell_normalized).unwrap();
+        assert!(!shell_normalized_text.contains("_local"));
+        assert!(!shell_normalized_text.contains("/Users/alice"));
     }
 
     #[test]

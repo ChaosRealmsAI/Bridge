@@ -30,7 +30,7 @@ pub const MAX_BYTES_LIMIT: usize = 64 * 1024 * 1024;
 pub const FS_WRITE_HELPER_ARG: &str = "--fs-write-helper";
 const CAT_BIN: &str = "/bin/cat";
 const CHUNK_BYTES: usize = 16 * 1024;
-const FS_ALLOWED_ROOTS_ENV: &str = "PANDA_BRIDGE_FS_ALLOWED_ROOTS";
+pub const FS_ALLOWED_ROOTS_ENV: &str = "PANDA_BRIDGE_FS_ALLOWED_ROOTS";
 
 pub struct FsConnector;
 
@@ -257,11 +257,11 @@ impl FsBoundary {
             return deny("path", "boundary_type_mismatch_locally");
         }
 
-        let env_roots = fs_allowed_root_map();
+        let root_map = fs_allowed_root_map().unwrap_or_else(|| fs_local_root_map(raw));
         let display_roots = normalized_display_roots(raw);
         let write_display_roots = normalized_write_display_roots(raw);
-        let allowed_roots = canonical_roots_from_display(&display_roots, &env_roots);
-        let write_roots = canonical_roots_from_display(&write_display_roots, &env_roots);
+        let allowed_roots = canonical_roots_from_display(&display_roots, &root_map)?;
+        let write_roots = canonical_roots_from_display(&write_display_roots, &root_map)?;
         let writable = raw
             .get("writable")
             .and_then(Value::as_bool)
@@ -344,27 +344,33 @@ fn normalized_display_roots_for_keys(
 
 fn canonical_roots_from_display(
     display_roots: &[DisplayRoot],
-    env_roots: &HashMap<String, PathBuf>,
-) -> Vec<PathBuf> {
+    root_map: &HashMap<String, PathBuf>,
+) -> Result<Vec<PathBuf>, ConnectorError> {
     let mut roots = Vec::new();
     for root in display_roots {
-        let Some(local_path) = env_roots.get(&root.id) else {
+        let Some(local_path) = root_map.get(&root.id) else {
             continue;
         };
         let Ok(canonical) = sandbox::canonical_existing_path(local_path) else {
             continue;
         };
+        if !canonical.is_dir() {
+            continue;
+        }
+        if crate::local_root_is_denied_sensitive(&canonical) {
+            return deny("path", "root_denied_sensitive");
+        }
         roots.push(canonical);
     }
     roots.sort_by_key(|path| path.to_string_lossy().to_string());
     roots.dedup();
-    roots
+    Ok(roots)
 }
 
-fn fs_allowed_root_map() -> HashMap<String, PathBuf> {
+fn fs_allowed_root_map() -> Option<HashMap<String, PathBuf>> {
     let mut out = HashMap::new();
     let Ok(raw) = std::env::var(FS_ALLOWED_ROOTS_ENV) else {
-        return out;
+        return None;
     };
     for item in raw.split([',', ';']) {
         let Some((id, path)) = item.split_once(':') else {
@@ -377,7 +383,26 @@ fn fs_allowed_root_map() -> HashMap<String, PathBuf> {
         }
         out.insert(id, PathBuf::from(path));
     }
-    out
+    Some(out)
+}
+
+fn fs_local_root_map(raw: &Value) -> HashMap<String, PathBuf> {
+    raw.get("_local_paths")
+        .and_then(Value::as_object)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|(id, path)| {
+                    let id = trim_nfc(id);
+                    let path = path.as_str()?.trim();
+                    if id.is_empty() || path.is_empty() {
+                        return None;
+                    }
+                    Some((id, PathBuf::from(path)))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn absolute_input_path(job: &BridgeJob) -> Result<PathBuf, ConnectorError> {
@@ -1462,6 +1487,97 @@ mod tests {
     }
 
     #[test]
+    fn fs_boundary_uses_local_paths_when_env_missing() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let old = std::env::var_os(FS_ALLOWED_ROOTS_ENV);
+        std::env::remove_var(FS_ALLOWED_ROOTS_ENV);
+        let base =
+            std::env::temp_dir().join(format!("panda-bridge-fs-local-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let root_a = base.join("a");
+        let root_w = base.join("w");
+        std::fs::create_dir_all(&root_a).unwrap();
+        std::fs::create_dir_all(&root_w).unwrap();
+        let mut policy = fs_policy();
+        policy["_local_paths"] = json!({
+            "root-a": root_a,
+            "root-w": root_w
+        });
+
+        let parsed = FsBoundary::parse(&policy).unwrap();
+        assert_eq!(
+            parsed.allowed_roots,
+            vec![std::fs::canonicalize(&root_a).unwrap()]
+        );
+        assert_eq!(
+            parsed.write_roots,
+            vec![std::fs::canonicalize(&root_w).unwrap()]
+        );
+
+        restore_env(FS_ALLOWED_ROOTS_ENV, old);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn fs_boundary_env_mapping_takes_precedence_over_local_paths() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let old = std::env::var_os(FS_ALLOWED_ROOTS_ENV);
+        let base = std::env::temp_dir().join(format!(
+            "panda-bridge-fs-env-priority-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        let env_root = base.join("env-root");
+        let local_root = base.join("local-root");
+        std::fs::create_dir_all(&env_root).unwrap();
+        std::fs::create_dir_all(&local_root).unwrap();
+        std::env::set_var(
+            FS_ALLOWED_ROOTS_ENV,
+            format!("root-a:{}", env_root.display()),
+        );
+        let mut policy = fs_policy();
+        policy["_local_paths"] = json!({ "root-a": local_root });
+
+        let parsed = FsBoundary::parse(&policy).unwrap();
+        assert_eq!(
+            parsed.allowed_roots,
+            vec![std::fs::canonicalize(&env_root).unwrap()]
+        );
+
+        restore_env(FS_ALLOWED_ROOTS_ENV, old);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn fs_boundary_rejects_sensitive_local_paths() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let old = std::env::var_os(FS_ALLOWED_ROOTS_ENV);
+        std::env::remove_var(FS_ALLOWED_ROOTS_ENV);
+        let mut policy = fs_policy();
+        policy["_local_paths"] = json!({ "root-a": "/" });
+
+        assert_eq!(
+            reason(FsBoundary::parse(&policy).unwrap_err()),
+            "root_denied_sensitive"
+        );
+
+        restore_env(FS_ALLOWED_ROOTS_ENV, old);
+    }
+
+    #[test]
+    fn fs_boundary_without_env_or_local_paths_fails_closed() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let old = std::env::var_os(FS_ALLOWED_ROOTS_ENV);
+        std::env::remove_var(FS_ALLOWED_ROOTS_ENV);
+
+        let parsed = FsBoundary::parse(&fs_policy()).unwrap();
+        assert!(parsed.allowed_roots.is_empty());
+        assert!(parsed.write_roots.is_empty());
+
+        restore_env(FS_ALLOWED_ROOTS_ENV, old);
+    }
+
+    #[test]
     fn fs_execute_rejects_guard_and_local_path_failures_before_reading() {
         let _guard = ENV_LOCK.lock().unwrap();
         let old = std::env::var_os(FS_ALLOWED_ROOTS_ENV);
@@ -1824,6 +1940,57 @@ mod tests {
                 .collect::<String>()
         );
         assert!(!result.to_string().contains("hello fs"));
+        assert!(events.iter().any(|event| event.event_type == "chunk"));
+
+        restore_env(FS_ALLOWED_ROOTS_ENV, old);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn fs_read_uses_injected_local_paths_without_env() {
+        if !sandbox::backend().available() {
+            return;
+        }
+        let _guard = ENV_LOCK.lock().unwrap();
+        let old = std::env::var_os(FS_ALLOWED_ROOTS_ENV);
+        std::env::remove_var(FS_ALLOWED_ROOTS_ENV);
+        let base =
+            std::env::temp_dir().join(format!("panda-bridge-fs-local-read-{}", std::process::id()));
+        let root = base.join("root");
+        std::fs::create_dir_all(&root).unwrap();
+        let file = root.join("ok.txt");
+        std::fs::write(&file, "hello fs").unwrap();
+        let boundary = boundary(
+            json!({
+                "type": "directory_whitelist",
+                "allowed_roots": [{ "id": "root-a", "path_display": "[local]/root" }],
+                "_local_paths": { "root-a": root.clone() },
+                "max_bytes": 1024,
+                "follow_symlinks": false
+            }),
+            vec!["fs.read"],
+        );
+        let mut connector = FsConnector::new();
+        let spec = connector
+            .sandbox_spec(&job(json!({ "path": file.clone() })), &boundary)
+            .unwrap();
+        let mut events = Vec::<ConnectorEvent>::new();
+        let mut emit = |event| events.push(event);
+        let is_cancelled = || false;
+        let mut ctx = ExecCtx {
+            emit: &mut emit,
+            is_cancelled: &is_cancelled,
+            deadline: Instant::now() + Duration::from_secs(10),
+            sandbox_spec: spec,
+        };
+
+        let result = connector
+            .execute(&job(json!({ "path": file.clone() })), &boundary, &mut ctx)
+            .unwrap()
+            .result;
+        assert_eq!(result["ok"], true);
+        assert_eq!(result["bytes"], 8);
         assert!(events.iter().any(|event| event.event_type == "chunk"));
 
         restore_env(FS_ALLOWED_ROOTS_ENV, old);
