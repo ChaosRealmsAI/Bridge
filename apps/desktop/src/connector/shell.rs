@@ -405,6 +405,9 @@ fn run_sandboxed_command(
                         .map_err(|error| ConnectorError::RuntimeFailed {
                             reason: format!("sandboxed shell.run wait failed: {error}"),
                         })?;
+                    // Reap any detached background children left in the group so a
+                    // `cmd & exit 0` cannot leave an uncontrolled orphan after success.
+                    kill_process_group(pgid, &mut child);
                     return Ok(shell_result(
                         status,
                         bytes_stdout,
@@ -421,6 +424,9 @@ fn run_sandboxed_command(
                             reason: format!("sandboxed shell.run poll failed: {error}"),
                         })?
                 {
+                    // Success path must also sweep the group: a foreground exit
+                    // can leave detached background children as orphans.
+                    kill_process_group(pgid, &mut child);
                     return Ok(shell_result(
                         status,
                         bytes_stdout,
@@ -1236,6 +1242,60 @@ mod tests {
         assert!(
             !alive,
             "background child process should be killed with its group"
+        );
+
+        restore_env(SHELL_CWD_ROOTS_ENV, old);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn shell_execute_success_path_kills_detached_background_children() {
+        // P1-1: a foreground `exit 0` must NOT leave a detached background child as
+        // an uncontrolled orphan; the success return path also sweeps the group.
+        if !sandbox::backend().available() {
+            return;
+        }
+        let _guard = ENV_LOCK.lock().unwrap();
+        let old = std::env::var_os(SHELL_CWD_ROOTS_ENV);
+        let root =
+            std::env::temp_dir().join(format!("panda-bridge-shell-orphan-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::env::set_var(SHELL_CWD_ROOTS_ENV, format!("root-a:{}", root.display()));
+        let mut policy = shell_policy("root-a");
+        policy["allow_exec_subtree"] = json!(true);
+        let granted = boundary(policy, vec!["shell.run"]);
+        let child_pid = root.join("child.pid");
+        let run = job(json!({
+            "argv": ["/bin/sh", "-c", format!("sleep 999 & echo $! > {}; exit 0", child_pid.display())]
+        }));
+        let mut connector = ShellConnector::new();
+        let spec = connector.sandbox_spec(&run, &granted).unwrap();
+        let mut events = Vec::<ConnectorEvent>::new();
+        let mut emit = |event| events.push(event);
+        let is_cancelled = || false;
+        let mut ctx = ExecCtx {
+            emit: &mut emit,
+            is_cancelled: &is_cancelled,
+            deadline: Instant::now() + Duration::from_secs(10),
+            sandbox_spec: spec,
+        };
+
+        let outcome = connector.execute(&run, &granted, &mut ctx);
+        assert!(
+            outcome.is_ok(),
+            "foreground exit 0 should succeed: {outcome:?}"
+        );
+        let pid = std::fs::read_to_string(&child_pid)
+            .unwrap()
+            .trim()
+            .parse::<i32>()
+            .unwrap();
+        thread::sleep(Duration::from_millis(150));
+        let alive = unsafe { libc::kill(pid, 0) == 0 };
+        assert!(
+            !alive,
+            "detached background child must be killed on the success path"
         );
 
         restore_env(SHELL_CWD_ROOTS_ENV, old);

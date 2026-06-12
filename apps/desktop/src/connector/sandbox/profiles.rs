@@ -195,7 +195,14 @@ fn render_shell_command(spec: &SandboxSpec) -> Result<String, SandboxError> {
     if exec_paths.is_empty() {
         return render_error("shell sandbox requires argv0 exec allow path");
     }
-    let argv0 = exec_paths[0].clone();
+    // The real argv0 is the first entry the connector placed in exec_allow, NOT
+    // the sorted/deduped exec_paths[0]: if an allowlist entry sorts earlier it
+    // would become the only permitted exec and the real command would be denied.
+    let argv0 = spec
+        .exec_allow
+        .first()
+        .cloned()
+        .unwrap_or_else(|| exec_paths[0].clone());
     let home = home_dir()?;
     let mut out = String::new();
     out.push_str("(version 1)\n");

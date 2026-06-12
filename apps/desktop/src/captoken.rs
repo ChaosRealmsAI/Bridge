@@ -317,8 +317,13 @@ fn normalize_shell_boundary(policy: &Value) -> Value {
         .filter(|item| !item.is_empty())
         .map(Value::String)
         .collect::<Vec<_>>();
-    cmd_allowlist.sort_by_key(canonical_json);
-    cmd_allowlist.dedup_by(|left, right| canonical_json(left) == canonical_json(right));
+    // Sort by raw code points (Rust str Ord = UTF-8 byte order = code-point order)
+    // to match the JS codePointCompare on the raw string. canonical_json sorts the
+    // escaped+quoted form, which diverges from JS on JSON-escapable chars (\t, ", \).
+    cmd_allowlist.sort_by(|left, right| {
+        left.as_str().unwrap_or_default().cmp(right.as_str().unwrap_or_default())
+    });
+    cmd_allowlist.dedup_by(|left, right| left.as_str() == right.as_str());
     let limits = shell.get("limits").unwrap_or(&Value::Null);
     json!({
         "type": "command_sandbox",
