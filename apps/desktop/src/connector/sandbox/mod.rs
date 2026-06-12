@@ -27,6 +27,7 @@ pub enum SandboxProfileKind {
     CodexWorkspace,
     DataKvDir,
     FsReadDir,
+    FsWriteDir,
 }
 
 impl SandboxProfileKind {
@@ -35,6 +36,7 @@ impl SandboxProfileKind {
             Self::CodexWorkspace => "codex_workspace",
             Self::DataKvDir => "data_kv_dir",
             Self::FsReadDir => "fs_read_dir",
+            Self::FsWriteDir => "fs_write_dir",
         }
     }
 }
@@ -114,6 +116,15 @@ impl ResourceLimits {
     }
 
     pub fn fs_read_default() -> Self {
+        Self {
+            cpu_seconds: 10,
+            address_space: 256 * 1024 * 1024,
+            open_files: 32,
+            processes: 2,
+        }
+    }
+
+    pub fn fs_write_default() -> Self {
         Self {
             cpu_seconds: 10,
             address_space: 256 * 1024 * 1024,

@@ -67,6 +67,13 @@ export const BRIDGE_RUNTIME_CAPABILITY_REGISTRY = Object.freeze({
     boundary_type: "directory_whitelist",
     description: "Read files from explicitly authorized local directories",
   }),
+  "fs.write": Object.freeze({
+    domain: "fs",
+    verb: "write",
+    danger: "high",
+    boundary_type: "directory_whitelist",
+    description: "Write files inside explicitly authorized local directories",
+  }),
   "saas.custom.run": Object.freeze({
     domain: "saas",
     verb: "custom.run",
@@ -77,7 +84,7 @@ export const BRIDGE_RUNTIME_CAPABILITY_REGISTRY = Object.freeze({
 });
 
 export const BRIDGE_RUNTIME_CAPABILITIES = Object.freeze(Object.keys(BRIDGE_RUNTIME_CAPABILITY_REGISTRY));
-export const HIGH_TIER_RUNTIME_CAPABILITIES = Object.freeze(["fs.read"]);
+export const HIGH_TIER_RUNTIME_CAPABILITIES = Object.freeze(["fs.read", "fs.write"]);
 export const NON_DATA_RUNTIME_CAPABILITIES = Object.freeze(BRIDGE_RUNTIME_CAPABILITIES.filter((kind) => !kind.startsWith("data.") && !HIGH_TIER_RUNTIME_CAPABILITIES.includes(kind)));
 export const OTHERLINE_RUNTIME_CAPABILITIES = Object.freeze([
   ...NON_DATA_RUNTIME_CAPABILITIES,

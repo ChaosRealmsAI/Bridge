@@ -7,6 +7,7 @@ pub fn render(spec: &SandboxSpec) -> Result<String, SandboxError> {
         SandboxProfileKind::CodexWorkspace => render_codex_workspace(spec),
         SandboxProfileKind::DataKvDir => render_data_kv_dir(spec),
         SandboxProfileKind::FsReadDir => render_fs_read_dir(spec),
+        SandboxProfileKind::FsWriteDir => render_fs_write_dir(spec),
     }
 }
 
@@ -132,17 +133,50 @@ fn render_fs_read_dir(spec: &SandboxSpec) -> Result<String, SandboxError> {
     }
     out.push_str(")\n");
     render_sensitive_denies(&mut out, &home);
-    out.push_str(&format!(
-        "(deny file-read* (subpath {}))\n",
-        sb_string(home.join("Library/Keychains"))
-    ));
-    out.push_str(&format!(
-        "(deny file-write* (subpath {}))\n",
-        sb_string(home.join("Library/Keychains"))
-    ));
     out.push_str("(deny network*)\n");
     out.push_str("(allow process-exec\n");
     out.push_str(&format!("  (literal {})\n", sb_string(&cat)));
+    out.push_str(")\n");
+    out.push_str("(deny process-exec)\n");
+    out.push_str("(deny process-fork)\n");
+    Ok(out)
+}
+
+fn render_fs_write_dir(spec: &SandboxSpec) -> Result<String, SandboxError> {
+    if spec.write_roots.is_empty() {
+        return render_error("fs.write sandbox requires at least one write root");
+    }
+    let exec_paths = unique_paths(spec.exec_allow.iter());
+    if exec_paths.len() != 1 {
+        return render_error("fs.write sandbox requires exactly one helper exec path");
+    }
+    let helper = exec_paths[0].clone();
+    let home = home_dir()?;
+    let write_roots = unique_paths(spec.write_roots.iter());
+    let mut out = String::new();
+    out.push_str("(version 1)\n");
+    out.push_str("(deny default)\n");
+    out.push_str("(import \"system.sb\")\n");
+    out.push_str("(allow file-read-metadata)\n");
+    out.push_str("(allow file-read*\n");
+    out.push_str("  (subpath \"/System\")\n");
+    out.push_str("  (subpath \"/usr/lib\")\n");
+    out.push_str("  (literal \"/dev/null\")\n");
+    out.push_str("  (literal \"/dev/urandom\")\n");
+    out.push_str(&format!("  (literal {})\n", sb_string(&helper)));
+    if let Some(parent) = helper.parent() {
+        out.push_str(&format!("  (subpath {})\n", sb_string(parent)));
+    }
+    out.push_str(")\n");
+    out.push_str("(allow file-write*\n");
+    for path in &write_roots {
+        out.push_str(&format!("  (subpath {})\n", sb_string(path)));
+    }
+    out.push_str(")\n");
+    render_sensitive_denies(&mut out, &home);
+    out.push_str("(deny network*)\n");
+    out.push_str("(allow process-exec\n");
+    out.push_str(&format!("  (literal {})\n", sb_string(&helper)));
     out.push_str(")\n");
     out.push_str("(deny process-exec)\n");
     out.push_str("(deny process-fork)\n");
@@ -175,6 +209,14 @@ fn render_sensitive_denies(out: &mut String, home: &Path) {
     out.push_str(&format!(
         "(deny file-write* (subpath {}))\n",
         sb_string(home.join(".aws"))
+    ));
+    out.push_str(&format!(
+        "(deny file-read* (subpath {}))\n",
+        sb_string(home.join("Library/Keychains"))
+    ));
+    out.push_str(&format!(
+        "(deny file-write* (subpath {}))\n",
+        sb_string(home.join("Library/Keychains"))
     ));
 }
 
@@ -233,6 +275,7 @@ pub fn sb_string(path: impl AsRef<Path>) -> String {
 mod tests {
     use super::*;
     use crate::connector::sandbox::{ResourceLimits, SandboxSpec};
+    use std::io::Write;
     use std::process::Command;
 
     fn spec(exec_allow: Vec<PathBuf>) -> SandboxSpec {
@@ -331,6 +374,59 @@ mod tests {
             Err(SandboxError::ProfileRenderFailed { .. })
         ));
         sandbox.read_roots.push(root);
+        sandbox.exec_allow.push(PathBuf::from("/bin/sh"));
+        assert!(matches!(
+            render(&sandbox),
+            Err(SandboxError::ProfileRenderFailed { .. })
+        ));
+    }
+
+    #[test]
+    fn fs_write_profile_is_deny_by_default_write_limited_and_helper_only() {
+        let root = std::env::temp_dir().join("panda-bridge-fs-write-profile-render-test");
+        let helper = crate::connector::fs::helper_exe_path().unwrap();
+        let profile = render(&SandboxSpec {
+            profile: SandboxProfileKind::FsWriteDir,
+            read_roots: Vec::new(),
+            write_roots: vec![root.clone()],
+            exec_allow: vec![helper.clone()],
+            net: NetPolicy::Deny,
+            limits: ResourceLimits::fs_write_default(),
+            env_allow: Vec::new(),
+            cwd: root.clone(),
+        })
+        .unwrap();
+        assert!(profile.starts_with("(version 1)\n(deny default)\n"));
+        assert!(profile.contains("(deny network*)"));
+        assert!(profile.contains("(allow file-write*\n"));
+        assert!(profile.contains(&format!("  (subpath {})", sb_string(&root))));
+        assert!(profile.contains("(allow process-exec\n"));
+        assert!(profile.contains(&format!("  (literal {})", sb_string(&helper))));
+        assert!(profile.contains("(deny process-exec)"));
+        assert!(profile.contains("(deny process-fork)"));
+        assert!(profile.contains("Library/Keychains"));
+        assert!(!profile.contains("(literal \"/bin/sh\")"));
+    }
+
+    #[test]
+    fn fs_write_profile_fails_closed_without_write_roots_or_with_extra_exec() {
+        let root = std::env::temp_dir().join("panda-bridge-fs-write-profile-render-test");
+        let helper = crate::connector::fs::helper_exe_path().unwrap();
+        let mut sandbox = SandboxSpec {
+            profile: SandboxProfileKind::FsWriteDir,
+            read_roots: Vec::new(),
+            write_roots: Vec::new(),
+            exec_allow: vec![helper.clone()],
+            net: NetPolicy::Deny,
+            limits: ResourceLimits::fs_write_default(),
+            env_allow: Vec::new(),
+            cwd: root.clone(),
+        };
+        assert!(matches!(
+            render(&sandbox),
+            Err(SandboxError::ProfileRenderFailed { .. })
+        ));
+        sandbox.write_roots.push(root);
         sandbox.exec_allow.push(PathBuf::from("/bin/sh"));
         assert!(matches!(
             render(&sandbox),
@@ -522,6 +618,176 @@ mod tests {
                 "unexpected symlink stderr: {stderr}"
             );
         }
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn fs_write_profile_enforces_write_boundaries_with_sandbox_exec() {
+        if !Path::new("/usr/bin/sandbox-exec").exists() {
+            return;
+        }
+        let base = std::env::temp_dir().join(format!(
+            "panda-bridge-fs-write-seatbelt-probe-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        let allowed_raw = base.join("allowed");
+        let outside_raw = base.join("outside");
+        std::fs::create_dir_all(&allowed_raw).unwrap();
+        std::fs::create_dir_all(&outside_raw).unwrap();
+        let allowed = std::fs::canonicalize(&allowed_raw).unwrap();
+        let outside = std::fs::canonicalize(&outside_raw).unwrap();
+        let helper = crate::connector::fs::helper_exe_path().unwrap();
+        let profile = render(&SandboxSpec {
+            profile: SandboxProfileKind::FsWriteDir,
+            read_roots: Vec::new(),
+            write_roots: vec![allowed.clone()],
+            exec_allow: vec![helper.clone()],
+            net: NetPolicy::Deny,
+            limits: ResourceLimits::fs_write_default(),
+            env_allow: Vec::new(),
+            cwd: allowed.clone(),
+        })
+        .unwrap();
+
+        let ok_file = allowed.join("ok.txt");
+        let ok = Command::new("/usr/bin/sandbox-exec")
+            .env_clear()
+            .args(["-p", &profile, "--"])
+            .arg(&helper)
+            .args([
+                crate::connector::fs::FS_WRITE_HELPER_ARG,
+                "--target",
+                ok_file.to_str().unwrap(),
+                "--mode",
+                "create_new",
+                "--max-bytes",
+                "1024",
+            ])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .and_then(|mut child| {
+                child.stdin.as_mut().unwrap().write_all(b"ok")?;
+                child.wait_with_output()
+            })
+            .unwrap();
+        assert!(ok.status.success(), "authorized helper write should pass");
+        assert_eq!(std::fs::read_to_string(&ok_file).unwrap(), "ok");
+        assert!(!String::from_utf8_lossy(&ok.stdout).contains("ok"));
+
+        let outside_file = outside.join("nope.txt");
+        let denied = Command::new("/usr/bin/sandbox-exec")
+            .env_clear()
+            .args(["-p", &profile, "--"])
+            .arg(&helper)
+            .args([
+                crate::connector::fs::FS_WRITE_HELPER_ARG,
+                "--target",
+                outside_file.to_str().unwrap(),
+                "--mode",
+                "create_new",
+                "--max-bytes",
+                "1024",
+            ])
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .and_then(|mut child| {
+                child.stdin.as_mut().unwrap().write_all(b"bad")?;
+                child.wait_with_output()
+            })
+            .unwrap();
+        assert!(!denied.status.success(), "outside write must fail");
+        assert!(!outside_file.exists());
+
+        let existing = Command::new("/usr/bin/sandbox-exec")
+            .env_clear()
+            .args(["-p", &profile, "--"])
+            .arg(&helper)
+            .args([
+                crate::connector::fs::FS_WRITE_HELPER_ARG,
+                "--target",
+                ok_file.to_str().unwrap(),
+                "--mode",
+                "create_new",
+                "--max-bytes",
+                "1024",
+            ])
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .and_then(|mut child| {
+                child.stdin.as_mut().unwrap().write_all(b"bad")?;
+                child.wait_with_output()
+            })
+            .unwrap();
+        assert!(!existing.status.success(), "CreateNew must not overwrite");
+        assert_eq!(std::fs::read_to_string(&ok_file).unwrap(), "ok");
+
+        let real = allowed.join("real.txt");
+        std::fs::write(&real, "real").unwrap();
+        let link = allowed.join("link.txt");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let symlink_denied = Command::new("/usr/bin/sandbox-exec")
+            .env_clear()
+            .args(["-p", &profile, "--"])
+            .arg(&helper)
+            .args([
+                crate::connector::fs::FS_WRITE_HELPER_ARG,
+                "--target",
+                link.to_str().unwrap(),
+                "--mode",
+                "overwrite",
+                "--max-bytes",
+                "1024",
+            ])
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .and_then(|mut child| {
+                child.stdin.as_mut().unwrap().write_all(b"bad")?;
+                child.wait_with_output()
+            })
+            .unwrap();
+        assert!(!symlink_denied.status.success(), "symlink target must fail");
+        assert_eq!(std::fs::read_to_string(&real).unwrap(), "real");
+
+        let outside_hard = outside.join("hard-source.txt");
+        let hardlink = allowed.join("hardlink.txt");
+        std::fs::write(&outside_hard, "outside").unwrap();
+        std::fs::hard_link(&outside_hard, &hardlink).unwrap();
+        let hardlink_denied = Command::new("/usr/bin/sandbox-exec")
+            .env_clear()
+            .args(["-p", &profile, "--"])
+            .arg(&helper)
+            .args([
+                crate::connector::fs::FS_WRITE_HELPER_ARG,
+                "--target",
+                hardlink.to_str().unwrap(),
+                "--mode",
+                "overwrite",
+                "--max-bytes",
+                "1024",
+            ])
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .and_then(|mut child| {
+                child.stdin.as_mut().unwrap().write_all(b"bad")?;
+                child.wait_with_output()
+            })
+            .unwrap();
+        assert!(
+            !hardlink_denied.status.success(),
+            "hardlink target must fail"
+        );
+        assert_eq!(std::fs::read_to_string(&outside_hard).unwrap(), "outside");
+
+        let sh_denied = Command::new("/usr/bin/sandbox-exec")
+            .env_clear()
+            .args(["-p", &profile, "--", "/bin/sh", "-c", "echo nope"])
+            .output()
+            .unwrap();
+        assert!(!sh_denied.status.success(), "sh must not be executable");
 
         let _ = std::fs::remove_dir_all(&base);
     }

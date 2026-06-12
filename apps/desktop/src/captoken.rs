@@ -349,9 +349,25 @@ fn normalize_data_boundary(policy: &Value, job: &BridgeJob) -> Value {
 
 fn normalize_fs_boundary(policy: &Value) -> Value {
     let fs = policy.pointer("/boundaries/fs").unwrap_or(&Value::Null);
-    let mut roots = fs
-        .get("allowed_roots")
-        .or_else(|| fs.get("allowedRoots"))
+    let mut roots = normalize_fs_display_roots(fs, "allowed_roots", "allowedRoots");
+    roots.sort_by_key(canonical_json);
+    roots.dedup_by(|left, right| canonical_json(left) == canonical_json(right));
+    let mut write_roots = normalize_fs_display_roots(fs, "write_roots", "writeRoots");
+    write_roots.sort_by_key(canonical_json);
+    write_roots.dedup_by(|left, right| canonical_json(left) == canonical_json(right));
+    json!({
+        "type": "directory_whitelist",
+        "allowed_roots": roots,
+        "write_roots": write_roots,
+        "writable": fs.get("writable").and_then(Value::as_bool).unwrap_or(false),
+        "max_bytes": bounded_usize_field(fs, "max_bytes", "maxBytes", 8_388_608, 1, 67_108_864),
+        "follow_symlinks": fs.get("follow_symlinks").or_else(|| fs.get("followSymlinks")).and_then(Value::as_bool).unwrap_or(false),
+    })
+}
+
+fn normalize_fs_display_roots(fs: &Value, snake_key: &str, camel_key: &str) -> Vec<Value> {
+    fs.get(snake_key)
+        .or_else(|| fs.get(camel_key))
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default()
@@ -372,15 +388,7 @@ fn normalize_fs_boundary(policy: &Value) -> Value {
                 .unwrap_or_default();
             json!({ "id": id, "path_display": path_display })
         })
-        .collect::<Vec<_>>();
-    roots.sort_by_key(canonical_json);
-    roots.dedup_by(|left, right| canonical_json(left) == canonical_json(right));
-    json!({
-        "type": "directory_whitelist",
-        "allowed_roots": roots,
-        "max_bytes": bounded_usize_field(fs, "max_bytes", "maxBytes", 8_388_608, 1, 67_108_864),
-        "follow_symlinks": fs.get("follow_symlinks").or_else(|| fs.get("followSymlinks")).and_then(Value::as_bool).unwrap_or(false),
-    })
+        .collect::<Vec<_>>()
 }
 
 fn canonical_json(value: &Value) -> String {

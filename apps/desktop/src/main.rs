@@ -506,6 +506,9 @@ fn next_event_seq() -> u128 {
 }
 
 fn main() {
+    if connector::fs::is_fs_write_helper_invocation() {
+        std::process::exit(connector::fs::run_fs_write_helper());
+    }
     if let Some(code) = run_headless_if_requested() {
         std::process::exit(code);
     }
@@ -3836,7 +3839,7 @@ fn validate_high_tier_scope_locally(policy: &Value, job: &BridgeJob) -> Result<(
     let Some((domain, danger, _boundary_type)) = capability_metadata(&job.kind) else {
         return Ok(());
     };
-    if danger != "high" || job.kind != "fs.read" {
+    if danger != "high" || domain != "fs" {
         return Ok(());
     }
     if policy.get("version").and_then(Value::as_str) != Some("AUTH-SCOPE-v2") {
@@ -3916,6 +3919,8 @@ fn fs_boundary_policy_slice(policy: &Value) -> Value {
             json!({
                 "type": "directory_whitelist",
                 "allowed_roots": [],
+                "write_roots": [],
+                "writable": false,
                 "max_bytes": connector::fs::DEFAULT_MAX_BYTES,
                 "follow_symlinks": false
             })
@@ -6596,6 +6601,14 @@ mod tests {
             false
         );
         assert_eq!(
+            preview["capabilities"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item.as_str() == Some("fs.write")),
+            false
+        );
+        assert_eq!(
             preview["workspace_roots"],
             json!([{ "id": "default", "path_display": "[local]/default" }])
         );
@@ -6624,7 +6637,8 @@ mod tests {
                 "data.get",
                 "data.put",
                 "data.query",
-                "fs.read"
+                "fs.read",
+                "fs.write"
             ])
         );
     }
@@ -6894,6 +6908,16 @@ mod tests {
             workspace_ref: None,
             ..test_job(json!({}))
         };
+        let write_job = BridgeJob {
+            kind: "fs.write".to_string(),
+            input: json!({
+                "path": "/tmp/panda-bridge-fs-write-test.txt",
+                "text": "hello",
+                "mode": "create_new"
+            }),
+            workspace_ref: None,
+            ..test_job(json!({}))
+        };
 
         let mut v1_credentials = test_credentials(vec!["fs.read"]);
         v1_credentials.authorized_products[0].policy["capabilities"] = json!(["fs.read"]);
@@ -6902,6 +6926,15 @@ mod tests {
         assert_eq!(v1_result["ok"], false);
         assert_eq!(v1_result["denied"], "tier");
         assert_eq!(v1_result["reason"], "tier_not_granted_locally");
+
+        let mut v1_write_credentials = test_credentials(vec!["fs.write"]);
+        v1_write_credentials.authorized_products[0].policy["capabilities"] = json!(["fs.write"]);
+        let mut registry = declaration_registry();
+        let v1_write_result =
+            execute_via_registry(&mut registry, &v1_write_credentials, &write_job).unwrap();
+        assert_eq!(v1_write_result["ok"], false);
+        assert_eq!(v1_write_result["denied"], "tier");
+        assert_eq!(v1_write_result["reason"], "tier_not_granted_locally");
 
         let mut v2_missing_tier = test_credentials(vec!["fs.read"]);
         v2_missing_tier.authorized_products[0].policy = json!({
@@ -6918,6 +6951,8 @@ mod tests {
                 "fs": {
                     "type": "directory_whitelist",
                     "allowed_roots": [{ "id": "root-a", "path_display": "[local]/root" }],
+                    "write_roots": [{ "id": "root-w", "path_display": "[local]/write" }],
+                    "writable": true,
                     "max_bytes": 8388608,
                     "follow_symlinks": false
                 }
