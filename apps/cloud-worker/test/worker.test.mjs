@@ -854,6 +854,24 @@ const delegatedStatus = await delegatedApi("GET", "/v1/products/otherline/delega
 assert.equal(delegatedStatus.ready, true);
 assert.equal(delegatedStatus.selected_device.id, delegatedScopedClaim.device.id);
 assert.equal(delegatedStatus.authorized_devices.length, 1);
+
+// AUTH-005/006 account-level pause/resume: the caller signs the "account"
+// placeholder device id (no concrete device named) and the worker resolves the
+// live authorization device instead of returning device_not_found.
+const accountLevelAuthPath = "/v1/products/otherline/delegated/authorization";
+const accountPaused = await delegatedApi("PATCH", accountLevelAuthPath, { status: "paused" }, otherlineClaim.account.id, "account");
+assert.equal(accountPaused.authorization.status, "paused", "AUTH-005 account-level pause resolves device");
+assert.equal(accountPaused.device.id, delegatedScopedClaim.device.id, "AUTH-005 account-level pause acts on the live device");
+const accountResumed = await delegatedApi("PATCH", accountLevelAuthPath, { status: "active" }, otherlineClaim.account.id, "account");
+assert.equal(accountResumed.authorization.status, "active", "AUTH-006 account-level resume resolves device");
+// A device-scoped signed device_id still acts on that exact device.
+const deviceScopedPaused = await delegatedApi("PATCH", `${accountLevelAuthPath}?device_id=${encodeURIComponent(delegatedScopedClaim.device.id)}`, { status: "paused" }, otherlineClaim.account.id, delegatedScopedClaim.device.id);
+assert.equal(deviceScopedPaused.authorization.status, "paused", "AUTH-005 device-scoped pause still works");
+await delegatedApi("PATCH", `${accountLevelAuthPath}?device_id=${encodeURIComponent(delegatedScopedClaim.device.id)}`, { status: "active" }, otherlineClaim.account.id, delegatedScopedClaim.device.id);
+// No live authorization device for an unknown account → product_not_authorized (not device_not_found).
+const accountNoAuth = await delegatedApiRaw("PATCH", accountLevelAuthPath, { status: "paused" }, `delegated-no-auth-${randomUUID()}`, "account");
+assert.equal(accountNoAuth.response.status, 403, "AUTH-005 account-level pause without authorization is 403");
+assert.equal(accountNoAuth.payload.error, "product_not_authorized", "AUTH-005 clear account-level error, not device_not_found");
 const delegatedIntentInspect = await delegatedApi("GET", `/v1/products/otherline/delegated/connect-intents/${encodeURIComponent(delegatedIntent.token)}`, null, otherlineClaim.account.id, "pending");
 assert.ok(delegatedIntentInspect.connect_intent.consumed_at);
 assert.equal(delegatedIntentInspect.connect_intent.device_id, delegatedIntentClaim.device.id);
@@ -961,6 +979,29 @@ await nativeClaimIntent(delegatedReconnect.token, {
   device_name: "Delegated Intent Device",
   capabilities: { codex: ["codex.chat"] },
 }, delegatedScopedClaim.device_token);
+
+// AUTH-004 account-level remove on a clean single-device delegated account: the
+// caller signs the "account" placeholder, the worker resolves the live device,
+// revokes it, and the account drops out of delegated state (no revoked residue).
+const accountRemoveUser = `delegated-account-remove-${randomUUID()}`;
+const accountRemoveIntent = await delegatedApi("POST", "/v1/products/otherline/delegated/connect-intents", {
+  account: { display_name: "Account Remove User" },
+  device_name: "Account Remove Device",
+}, accountRemoveUser, "pending");
+const accountRemoveClaim = await nativeClaimIntent(accountRemoveIntent.token, {
+  device_name: "Account Remove Device",
+  install_id: `install-account-remove-${randomUUID()}`,
+  capabilities: { codex: ["codex.chat"] },
+}, delegatedScopedClaim.device_token);
+const accountRemovePaused = await delegatedApi("PATCH", "/v1/products/otherline/delegated/authorization", { status: "paused" }, accountRemoveUser, "account");
+assert.equal(accountRemovePaused.authorization.status, "paused", "AUTH-005 account-level pause on clean account");
+assert.equal(accountRemovePaused.device.id, accountRemoveClaim.device.id, "AUTH-005 resolves the only live device");
+await delegatedApi("PATCH", "/v1/products/otherline/delegated/authorization", { status: "active" }, accountRemoveUser, "account");
+const accountRemove = await delegatedApi("DELETE", "/v1/products/otherline/delegated/authorization", null, accountRemoveUser, "account");
+assert.equal(accountRemove.authorization.status, "revoked", "AUTH-004 account-level remove revokes the resolved device");
+assert.equal(accountRemove.device.id, accountRemoveClaim.device.id, "AUTH-004 account-level remove resolves the live device");
+const accountRemoveState = await delegatedApi("GET", "/v1/products/otherline/delegated/state", null, accountRemoveUser, "account");
+assert.deepEqual(accountRemoveState.accounts, [], "AUTH-004 removed account disappears from state.accounts");
 
 const otherlineOwnerCookie = jar.cookie;
 jar.cookie = "";

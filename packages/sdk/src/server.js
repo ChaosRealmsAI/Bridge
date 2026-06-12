@@ -3,6 +3,9 @@ import {
   bridgeStateModel,
 } from "./index.js";
 
+// BridgeError maps known codes to human-readable messages when the worker did
+// not return one, so the duplicated message-fallback logic stays in one place.
+
 export function createBridgeServerClient(options = {}) {
   const apiBase = stringValue(options.apiBase).replace(/\/$/, "");
   const productId = stringValue(options.productId, 120);
@@ -227,7 +230,9 @@ function deviceOnline(device = {}) {
 function bridgeErrorFromResponse(status, payload = {}) {
   const data = objectValue(payload);
   const code = stringValue(data.error || data.code || data.message, 160) || `bridge_http_${status}`;
-  return new BridgeError(stringValue(data.message, 300) || code || `Bridge API ${status}`, {
+  // Pass the worker-provided message when present; otherwise BridgeError maps the
+  // code to a human-readable message so `.message` is never just the raw code.
+  return new BridgeError(stringValue(data.message, 300), {
     code,
     status,
     payload: data,

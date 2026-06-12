@@ -177,6 +177,14 @@ try {
   deviceToken = restoreClaim.device_token;
   const restoredAuthorization = await owner.call("authorization.list", (client) => client.authorization.list({ deviceId }));
   assert.equal(restoredAuthorization.authorization.status, "active");
+
+  // Account-level pause/resume against the REAL worker (no deviceId): the worker
+  // resolves the live authorization device for (account, product). Proves the
+  // account-level action no longer 404s with device_not_found.
+  const accountPaused = await owner.call("authorization.pause", (client) => client.authorization.pause());
+  assert.equal(accountPaused.authorization.status, "paused");
+  const accountResumed = await owner.call("authorization.resume", (client) => client.authorization.resume());
+  assert.equal(accountResumed.authorization.status, "active");
   const readyPreflight = await owner.call("preflight", (client) => client.preflight({ deviceId }));
   assert.equal(readyPreflight.ready, true);
   assert.equal(readyPreflight.selected_device.id, deviceId);

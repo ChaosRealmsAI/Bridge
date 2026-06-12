@@ -5,24 +5,30 @@ export type BridgeErrorCode =
   | "already_authorized"
   | "authorization_import_proof_required"
   | "authorization_paused"
+  | "authorization_revoked"
   | "authorization_scope_denied"
   | "bridge_cloud_unavailable"
   | "connect_intent_not_found"
   | "delegated_authorization_proof_mismatch"
   | "delegated_device_mismatch"
+  | "desktop_authorization_required"
   | "desktop_claim_required"
   | "device_not_found"
+  | "device_offline"
   | "device_queue_full"
   | "idempotency_key_conflict"
   | "install_id_required"
   | "invalid_authorization_import_proof"
   | "invalid_authorization_policy"
+  | "invalid_authorization_status"
   | "invalid_connect_intent"
   | "invalid_content_type"
+  | "invalid_job"
   | "invalid_json"
   | "invalid_origin"
   | "job_not_found"
   | "local_policy_denied"
+  | "not_found"
   | "product_delegation_body_hash_invalid"
   | "product_delegation_not_configured"
   | "product_delegation_replay"
@@ -35,11 +41,14 @@ export type BridgeErrorCode =
   | "request_body_too_large"
   | "scope_insufficient"
   | "unauthorized"
+  | "unsupported_job_kind"
   | "bridge_error"
   | "bridge_ready_timeout";
 
 export const BRIDGE_SDK_VERSION: string;
 export const BridgeErrorCodes: Readonly<Partial<Record<BridgeErrorCode, BridgeErrorCode>>>;
+export const BRIDGE_ERROR_MESSAGES: Readonly<Partial<Record<BridgeErrorCode, string>>>;
+export function bridgeErrorMessageForCode(code: BridgeErrorCode | string, status?: number): string;
 
 export class BridgeError extends Error {
   code: BridgeErrorCode | string;

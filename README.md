@@ -168,6 +168,8 @@ node apps/connector-cli/src/cli.mjs doctor --api http://127.0.0.1:8787 --state ~
 
 SDK 调用方可在创建 job 前执行：
 
+> 前置条件：下面的 `bridge` 是 `createBridgeClient({ apiBase, productId })` 的实例；浏览器调用需**已建立会话**（`bridge.auth.*` 登录后带 `pb_session` cookie）且请求来自**已注册的产品 origin**，否则会 `unauthorized` / `invalid_origin`。可本地验证的最小闭环见 `examples/minimal-caller/`（in-process worker，`npm run verify:minimal-caller`）。
+
 ```js
 const preflight = await bridge.preflight();
 if (!preflight.ready) {

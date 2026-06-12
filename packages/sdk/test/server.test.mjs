@@ -95,6 +95,59 @@ assert.equal(fallbackState.ready, true);
 assert.equal(fallbackState.accounts[0].current_device.id, "dev_1");
 assert.equal(fallbackState.bridge_state, undefined);
 
+// Account-level pause/resume/remove sign the "account" placeholder device id, so
+// the signing path carries no concrete device and the worker resolves it.
+const accountLevelCalls = [];
+const accountLevelServer = createBridgeServerClient({
+  apiBase: "https://api.example.test",
+  productId: "otherline",
+  secret,
+  timestamp,
+  nonce,
+  fetch: async (url, init) => {
+    const parsed = new URL(url);
+    accountLevelCalls.push({ path: `${parsed.pathname}${parsed.search}`, method: init.method, deviceHeader: new Headers(init.headers).get("x-panda-bridge-device-id") });
+    if (init.method === "DELETE") {
+      return jsonResponse({ authorization: { id: "auth_1", device_id: "dev_1", status: "revoked" }, device: { id: "dev_1", status: "online" }, cancelled_jobs: 2 });
+    }
+    const body = init.body ? JSON.parse(init.body) : {};
+    return jsonResponse({ authorization: { id: "auth_1", device_id: "dev_1", status: body.status || "active" }, device: { id: "dev_1", status: "online" } });
+  },
+});
+const acctPaused = await accountLevelServer.authorization.pause({ userId: "user_1" });
+assert.equal(acctPaused.authorization.status, "paused");
+const acctResumed = await accountLevelServer.authorization.resume({ userId: "user_1" });
+assert.equal(acctResumed.authorization.status, "active");
+const acctRemoved = await accountLevelServer.authorization.remove({ userId: "user_1" });
+assert.equal(acctRemoved.cancelled_jobs, 2);
+// No concrete device_id in the path; the "account" placeholder rides in the signed header only.
+assert.deepEqual(accountLevelCalls.map((c) => [c.method, c.path]), [
+  ["PATCH", "/v1/products/otherline/delegated/authorization"],
+  ["PATCH", "/v1/products/otherline/delegated/authorization"],
+  ["DELETE", "/v1/products/otherline/delegated/authorization"],
+]);
+assert.ok(accountLevelCalls.every((c) => c.deviceHeader === "account"), "account-level calls sign the account placeholder device id");
+
+// BridgeError fills a human-readable message when the worker returns only a code.
+const erroringServer = createBridgeServerClient({
+  apiBase: "https://api.example.test",
+  productId: "otherline",
+  secret,
+  timestamp,
+  nonce: () => `nonce-${Math.random()}`,
+  fetch: async () => jsonResponse({ error: "product_not_authorized" }, 403),
+});
+await assert.rejects(
+  () => erroringServer.authorization.pause({ userId: "user_1" }),
+  (error) => {
+    assert.equal(error.code, "product_not_authorized");
+    assert.notEqual(error.message, "product_not_authorized");
+    assert.match(error.message, /授权/);
+    assert.equal(error.status, 403);
+    return true;
+  },
+);
+
 console.log("[server.test] pass");
 
 function jsonResponse(body, status = 200) {

@@ -4,24 +4,30 @@ export const BridgeErrorCodes = Object.freeze({
   already_authorized: "already_authorized",
   authorization_import_proof_required: "authorization_import_proof_required",
   authorization_paused: "authorization_paused",
+  authorization_revoked: "authorization_revoked",
   authorization_scope_denied: "authorization_scope_denied",
   bridge_cloud_unavailable: "bridge_cloud_unavailable",
   connect_intent_not_found: "connect_intent_not_found",
   delegated_authorization_proof_mismatch: "delegated_authorization_proof_mismatch",
   delegated_device_mismatch: "delegated_device_mismatch",
+  desktop_authorization_required: "desktop_authorization_required",
   desktop_claim_required: "desktop_claim_required",
   device_not_found: "device_not_found",
+  device_offline: "device_offline",
   device_queue_full: "device_queue_full",
   idempotency_key_conflict: "idempotency_key_conflict",
   install_id_required: "install_id_required",
   invalid_authorization_import_proof: "invalid_authorization_import_proof",
   invalid_authorization_policy: "invalid_authorization_policy",
+  invalid_authorization_status: "invalid_authorization_status",
   invalid_connect_intent: "invalid_connect_intent",
   invalid_content_type: "invalid_content_type",
+  invalid_job: "invalid_job",
   invalid_json: "invalid_json",
   invalid_origin: "invalid_origin",
   job_not_found: "job_not_found",
   local_policy_denied: "local_policy_denied",
+  not_found: "not_found",
   product_delegation_body_hash_invalid: "product_delegation_body_hash_invalid",
   product_delegation_not_configured: "product_delegation_not_configured",
   product_delegation_replay: "product_delegation_replay",
@@ -34,14 +40,73 @@ export const BridgeErrorCodes = Object.freeze({
   request_body_too_large: "request_body_too_large",
   scope_insufficient: "scope_insufficient",
   unauthorized: "unauthorized",
+  unsupported_job_kind: "unsupported_job_kind",
 });
+
+// Human-readable fallback messages, keyed by error code. Used when the worker
+// did not return a `message` so BridgeError.message is not just a copy of the
+// code. `.code` always stays the raw machine code.
+export const BRIDGE_ERROR_MESSAGES = Object.freeze({
+  already_authorized: "该账号已授权，无需再次授权",
+  authorization_import_proof_required: "缺少授权导入凭证（proof_token）",
+  authorization_paused: "该账号授权已被用户暂停，请引导用户恢复授权",
+  authorization_revoked: "该账号授权已被移除，请重新走授权流程",
+  authorization_scope_denied: "本次任务超出了该授权允许的范围",
+  bridge_cloud_unavailable: "Bridge 云端暂时不可用，请稍后重试",
+  bridge_ready_timeout: "等待设备就绪超时",
+  connect_intent_not_found: "找不到该连接意图（可能已消费或过期）",
+  delegated_authorization_proof_mismatch: "授权凭证与当前账号/设备不匹配",
+  delegated_device_mismatch: "请求的设备与签名中的设备不一致",
+  desktop_claim_required: "该连接意图只能由桌面端 claim，浏览器不能 claim",
+  device_not_found: "找不到该设备（可能不存在或已撤销）",
+  device_offline: "目标设备当前离线，正在重连，请稍后重试",
+  device_queue_full: "该设备的任务队列已满，请稍后重试",
+  idempotency_key_conflict: "相同 requestKey 但请求体不同，请换新的 requestKey",
+  install_id_required: "桌面端 claim 缺少 install_id",
+  invalid_authorization_import_proof: "授权导入凭证无效、已使用或已过期",
+  invalid_authorization_policy: "授权策略参数不合法",
+  invalid_authorization_status: "授权状态值不合法（只能是 active 或 paused）",
+  invalid_connect_intent: "连接意图不存在、已消费或已过期，请重新创建",
+  invalid_content_type: "写请求必须使用 application/json",
+  invalid_job: "任务参数不合法",
+  invalid_json: "请求体不是合法 JSON",
+  invalid_origin: "请求来源不在该产品的 origin 白名单内",
+  job_not_found: "找不到该任务",
+  local_policy_denied: "桌面端本地策略拒绝了该越权任务",
+  not_found: "请求的资源不存在",
+  product_delegation_body_hash_invalid: "请求体哈希与实际请求体不一致",
+  product_delegation_not_configured: "云端未为该产品配置委托 secret",
+  product_delegation_replay: "该 nonce 已被使用，请用新的 nonce 重试",
+  product_delegation_signature_invalid: "委托签名校验失败，请逐字段核对 8 行（注意 path 含 query）与 secret",
+  product_delegation_timestamp_invalid: "委托请求时间戳超出允许偏移，请同步后端时钟",
+  product_delegation_unauthorized: "委托签名头缺失或身份无效",
+  product_not_authorized: "该产品对此账号没有 active 授权，请走授权流程",
+  product_origin_mismatch: "Origin 与 product_id 不匹配",
+  product_queue_full: "该产品的任务队列已满，请稍后重试",
+  request_body_too_large: "请求体超出大小限制",
+  scope_insufficient: "该任务类型不在产品能力范围内",
+  unsupported_job_kind: "不支持的任务类型（kind）",
+  unauthorized: "未登录或会话无效",
+});
+
+export function bridgeErrorMessageForCode(code, status = 0) {
+  return BRIDGE_ERROR_MESSAGES[code] || (status ? `Bridge API ${status}` : "bridge_error");
+}
 
 export class BridgeError extends Error {
   constructor(message, options = {}) {
-    super(message || "bridge_error");
+    const code = stringValue(options.code, 160) || "bridge_error";
+    const status = Number.isFinite(Number(options.status)) ? Number(options.status) : 0;
+    const text = stringValue(message, 300);
+    // Fall back to a human-readable, code-mapped message when the caller passed
+    // nothing or just a copy of the code itself.
+    const resolved = text && text !== code
+      ? text
+      : (BRIDGE_ERROR_MESSAGES[code] || text || (status ? `Bridge API ${status}` : "bridge_error"));
+    super(resolved);
     this.name = "BridgeError";
-    this.code = stringValue(options.code, 160) || "bridge_error";
-    this.status = Number.isFinite(Number(options.status)) ? Number(options.status) : 0;
+    this.code = code;
+    this.status = status;
     this.payload = options.payload ?? null;
   }
 }
@@ -389,6 +454,11 @@ function normalizeBridgeStateAccounts(data = {}) {
     .map(normalizeBridgeStateAccount)
     .filter((account) => account.account || account.authorization || account.current_device);
   if (directAccounts.length) return directAccounts;
+  // An explicit (present) accounts array is authoritative — even when empty.
+  // The worker returns accounts: [] after a removed/revoked authorization, and
+  // the account must then disappear from state instead of being re-synthesized
+  // from a still-online device row. Only synthesize when accounts is absent.
+  if (Array.isArray(value.accounts)) return [];
 
   const rootDevice = normalizeStateDevice(value.device);
   const devices = [
@@ -750,7 +820,9 @@ function deviceOnline(device = {}) {
 function bridgeErrorFromResponse(status, payload = {}) {
   const data = objectValue(payload);
   const code = stringValue(data.error || data.code || data.message, 160) || `bridge_http_${status}`;
-  return new BridgeError(stringValue(data.message, 300) || code || `Bridge API ${status}`, {
+  // Pass the worker-provided message when present; otherwise BridgeError maps the
+  // code to a human-readable message so `.message` is never just the raw code.
+  return new BridgeError(stringValue(data.message, 300), {
     code,
     status,
     payload: data,

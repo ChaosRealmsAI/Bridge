@@ -9,6 +9,39 @@
 
 ---
 
+## 0. 获取 SDK
+
+> ⚠️ **`@panda-bridge/sdk` 目前未发布到 npm。直接 `npm install @panda-bridge/sdk` 会撞 `E404`。** 用下面两种方式之一引入。
+
+**方式 A · 本地 file: 路径**（同 monorepo 或本地 checkout 最省事）：
+
+```json
+{
+  "dependencies": {
+    "@panda-bridge/sdk": "file:../panda-bridge/packages/sdk"
+  }
+}
+```
+
+**方式 B · git 依赖**（指向私有仓库 / 子目录）：
+
+```bash
+npm install "git+ssh://git@<your-host>/panda-bridge.git#dev"
+# 或在 package.json 里固定到某个 commit：
+#   "@panda-bridge/sdk": "git+https://<token>@<host>/panda-bridge.git#<sha>"
+```
+
+> SDK 是纯 ESM，依赖 WebCrypto（`globalThis.crypto.subtle`）；Node ≥ 18、Workers、现代浏览器都满足。无第三方运行时依赖。
+
+导入方式：
+
+```js
+import { createBridgeClient } from "@panda-bridge/sdk";           // 浏览器/前端
+import { createBridgeServerClient } from "@panda-bridge/sdk/server"; // 后端委托签名
+```
+
+---
+
 ## 1. 心智模型：账号级双开关 + 自动连接
 
 每个 `(产品, 账号)` 只有两个**正交**维度：
@@ -34,6 +67,8 @@
 
 前端用浏览器 client。它的唯一职责是渲染 `state()` 并暴露三个授权动作。
 
+> **前置条件**（否则下面的请求会 401 / 403）：①浏览器已有有效 Bridge 会话（`bridge.auth.*` 登录后带 `pb_session` cookie，`createBridgeClient` 默认 `credentials: "include"`）；②请求来自该产品**注册过的 origin**（见 §7），否则返回 `invalid_origin`。
+
 ```js
 import { createBridgeClient } from "@panda-bridge/sdk";
 
@@ -55,11 +90,16 @@ for (const item of state.accounts) {
   });
 }
 
-// 3. 三个用户动作
+// 3. 三个用户动作（账号级——不必指定设备；后端按 (账号, 产品) 解析当前授权设备）
 await bridge.authorization.pause({ accountId });   // 暂停
 await bridge.authorization.resume({ accountId });  // 恢复
-await bridge.authorization.remove({ accountId });  // 删除
+await bridge.authorization.remove({ accountId });  // 删除（remove 后该账号从 state.accounts 消失）
+
+// 也支持精确到某台设备（多 Mac 时）：传 deviceId 即按设备处理。
+// await bridge.authorization.pause({ deviceId });
 ```
+
+> **账号级 vs 设备级**：`pause/resume/remove` 既可只传 `accountId`（或干脆什么都不传，按当前会话账号 + 产品解析），也可传 `deviceId` 精确到设备。不指定设备时，后端解析该 `(账号, 产品)` 当前 active/paused 的授权设备并作用其上；真的没有任何授权设备时返回 `product_not_authorized`（不是 `device_not_found`）。
 
 `bridge.state()` 返回的账号级模型：
 
@@ -121,13 +161,18 @@ const bridge = createBridgeServerClient({
 // 查询某用户的账号级状态
 const state = await bridge.state({ userId: user.id });
 
-// 授权管理（与前端等价，但走委托签名）
-await bridge.authorization.pause({ userId: user.id, accountId });
-await bridge.authorization.resume({ userId: user.id, accountId });
-await bridge.authorization.remove({ userId: user.id, accountId });
+// 授权管理（账号级——只传 userId 即可，后端按 (账号, 产品) 解析授权设备）
+await bridge.authorization.pause({ userId: user.id });
+await bridge.authorization.resume({ userId: user.id });
+await bridge.authorization.remove({ userId: user.id }); // remove 后该账号从 state().accounts 消失
+
+// 多 Mac 时可精确到设备：
+// await bridge.authorization.pause({ userId: user.id, deviceId });
 ```
 
 `userId` 是你自己产品侧的用户 ID；Bridge 内部按产品命名空间隔离，不同产品的同名 `userId` 互不相干。
+
+> **`deviceId` 是可选的。** 不传时 server client 在签名里用约定占位 `"account"`，后端据此解析该 `(账号, 产品)` 当前 active/paused 的授权设备；传了具体 `deviceId` 就按设备处理。没有任何授权设备时返回 `product_not_authorized`。
 
 ### 委托 HMAC 8 字段签名规范（逐字段）
 
@@ -164,6 +209,25 @@ content-type:                     application/json
 **nonce 规则**：每次请求必须唯一（一次性）。同产品重放同一 nonce 返回 `product_delegation_replay`。server client 默认用 `crypto.randomUUID()`。
 
 **timestamp 规则**：ISO 字符串，必须落在服务端允许的时钟偏移内，超出返回 `product_delegation_timestamp_invalid`。请保证后端时钟同步。
+
+### 委托端点路径表（以 `apps/cloud-worker/src/index.js` 实际路由为准）
+
+`<id>` = 你的 `product_id`。手写签名时第 2 行 path 必须**含 query**。
+
+| 用途 | 方法 + 路径 | SDK 方法 | 签名设备占位 |
+| --- | --- | --- | --- |
+| 账号级状态 | `GET /v1/products/<id>/delegated/state` | `state({ userId })` | `account` |
+| 创建连接意图 | `POST /v1/products/<id>/delegated/connect-intents` | `createConnectIntent({ userId, … })` | `pending` |
+| 查询连接意图 | `GET /v1/products/<id>/delegated/connect-intents/<token>` | `intentStatus(token, { userId })` | `pending` |
+| 暂停/恢复授权 | `PATCH /v1/products/<id>/delegated/authorization` | `authorization.pause/resume({ userId })` | `account`（或具体 deviceId） |
+| 删除授权 | `DELETE /v1/products/<id>/delegated/authorization` | `authorization.remove({ userId })` | `account`（或具体 deviceId） |
+| 查询授权（需具体设备） | `GET /v1/products/<id>/delegated/authorization?device_id=<dev>` | — | 必须 = 该 deviceId |
+| 创建任务 | `POST /v1/products/<id>/delegated/jobs` | `createJob({ userId, deviceId, … })` | 必须 = 该 deviceId |
+| 取任务事件 | `GET /v1/products/<id>/delegated/jobs/<jobId>/events?after=<seq>` | `jobEvents(jobId, { userId, deviceId, after })` | 该 deviceId |
+| 读取单个任务 | `GET /v1/products/<id>/delegated/jobs/<jobId>` | — | 该 deviceId |
+| 取消任务 | `POST /v1/products/<id>/delegated/jobs/<jobId>/cancel` | — | 该 deviceId |
+
+> `PATCH`/`DELETE /authorization` **支持账号级**：不带 `?device_id`（签名设备用 `account` 占位）时，后端解析该 `(账号, 产品)` 的授权设备；带 `?device_id=<dev>` 时按设备处理，且 query 里的 device_id 必须与签名设备一致，否则 `delegated_device_mismatch`。`jobs` / `authorization` GET 仍要求具体设备。
 
 生产代码一律用 `createBridgeServerClient`；手写签名只用于诊断或非 JS 后端移植。
 
@@ -206,6 +270,26 @@ const created = await bridge.createJob({
 const events = await bridge.jobEvents(created.job.id, { userId: user.id, deviceId });
 ```
 
+### 怎么从 events 取回复文本
+
+每个事件是 `{ job_id, seq, type, payload, created_at }`。任务完成时会有一条 `type: "completed"` 事件，其 `payload` 就是桌面端 ack 上来的 `result`（连接器 ack `result: { ok, reply, … }`）。取最终回复：
+
+```js
+const events = await bridge.jobEvents(created.job.id, { userId: user.id, deviceId });
+const completed = events.items.find((e) => e.type === "completed");
+const reply = completed?.payload?.reply ?? null;       // 最终回复文本
+// 流式增量在 text_delta 事件里：
+const stream = events.items.filter((e) => e.type === "text_delta").map((e) => e.payload.delta).join("");
+// 失败：type === "failed"，payload.error 是失败原因（可能是 local_policy_denied）。
+```
+
+事件类型：`queued → claimed → started → text_delta*（流式）→ completed`（或 `failed` / `cancelled`）。轮询用 `after=<上次最大 seq>` 取增量。
+
+### 链路断点排查
+
+- codex 调用在**设备未知**（deviceId 不存在/已撤销）时先返回 `device_not_found`，**不是** `product_not_authorized`——别把这两个混为一谈：前者是「没这台设备」，后者是「这台设备没 active 授权」。设备在线但未授权 → `product_not_authorized`；授权被暂停 → `authorization_paused`；设备离线 → `device_offline`。
+- `remove` 之后，该账号**从 `state().accounts` 消失**（不是变成 `revoked` 残留在列表里）。所以渲染空态的判断是 `accounts.length === 0`，而不是去找 `status === "revoked"`。
+
 ---
 
 ## 5. 错误码全表
@@ -217,11 +301,13 @@ const events = await bridge.jobEvents(created.job.id, { userId: user.id, deviceI
 | Code | HTTP | 含义 | 怎么处理 |
 | --- | --- | --- | --- |
 | `authorization_paused` | 403 | 该账号授权被用户暂停 | 引导用户「恢复授权」，不要重发意图 |
-| `product_not_authorized` | 403 | 该产品对此账号无 active 授权 | 走第 4 节授权请求流程 |
+| `authorization_revoked` | 409 | 对已删除（revoked）授权做 pause/resume | 重新走第 4 节授权请求流程 |
+| `product_not_authorized` | 403 | 该产品对此账号无 active 授权（含账号级动作找不到授权设备） | 走第 4 节授权请求流程 |
 | `already_authorized` | 200 | 已授权的幂等快路径 | 直接进入就绪态，不显示授权按钮 |
 | `invalid_connect_intent` | 400 | 意图不存在、已消费或过期 | 重新创建 connect intent |
 | `desktop_claim_required` | 403 | 浏览器尝试 claim 原生意图 | 移除浏览器侧 claim 代码；claim 只能桌面端做 |
-| `device_not_found` | 404 | 设备不存在或已撤销 | 刷新设备 / 重新走授权流程 |
+| `device_not_found` | 404 | 设备不存在或已撤销（设备未知时优先于 product_not_authorized） | 刷新设备 / 重新走授权流程 |
+| `device_offline` | 409 | 目标设备当前离线（正在重连） | 等待自动重连，不要重发授权 |
 
 ### 委托签名类（后端最常见）
 
@@ -242,11 +328,16 @@ const events = await bridge.jobEvents(created.job.id, { userId: user.id, deviceI
 | Code | HTTP | 含义 | 怎么处理 |
 | --- | --- | --- | --- |
 | `local_policy_denied` | job result | 桌面端本地拒绝了越权任务 | 缩小本地请求或重新授权 |
+| `unsupported_job_kind` | 400 | `kind` 不在 Bridge 支持的任务类型集内 | 用受支持的 kind（codex.chat / codex.run / codex.rpc / saas.custom.run） |
+| `scope_insufficient` | 403 | kind 不在该产品能力范围内 | 用该产品已注册能力内的 kind |
 | `idempotency_key_conflict` | 409 | 同 requestKey 但 body 不同 | 换新的 requestKey，或确保 body 一致 |
 | `request_body_too_large` | 413 | JSON body 超限 | 缩小请求 |
 | `invalid_json` | 400 | body 不是合法 JSON | 修正序列化 |
 | `invalid_content_type` | 415 | 写请求不是 JSON | 设置 `content-type: application/json` |
+| `not_found` | 404 | 路径/资源不存在（路由未命中等） | 核对请求路径与方法 |
 | `unauthorized` | 401 | 无有效会话 | 让用户登录 |
+
+> SDK 还导出 `BridgeErrorCodes`（机器码常量）与 `BRIDGE_ERROR_MESSAGES`（码→中文可读说明）。`BridgeError.code` 始终是原始机器码；`BridgeError.message` 在 worker 未回 `message` 时按码填一句可读说明（不再等于 code）。
 
 错误处理范式：
 
@@ -326,12 +417,90 @@ curl "https://api.bridge.otherline.cc/v1/products/otherline/delegated/jobs" \
 
 ---
 
-## 7. 注册产品（前置）
+## 7. 本地开发（in-process worker，零外部依赖）
 
-接入前先在 Bridge Cloud 注册：
+不需要起真实服务器：Cloud Worker 是一个标准 `fetch` handler，可直接 `import` 进你的测试/脚本，用内存存储跑通整条链路。`examples/minimal-caller/run-local.mjs` 就是这么做的。
 
-- `product_id`：稳定 ID，例如 `otherline`、`panda-chat`。
-- official origins：产品真实浏览器来源；浏览器请求必须来自该产品自己的 origin。
-- delegation secret：服务端 HMAC secret，只放后端 / Worker secret。
+```js
+import worker from "@panda-bridge/cloud-worker"; // 本仓内为 apps/cloud-worker/src/index.js
+import { createBridgeServerClient } from "@panda-bridge/sdk/server";
 
-参考实现：Worker 的委托签名校验在 `apps/cloud-worker/test/worker.test.mjs`（`delegatedApiRawText`），8 字段顺序与本文逐字段一致。
+const apiBase = "http://localhost.test";
+const env = {
+  BRIDGE_LOCAL_MEMORY: "1",                                  // 用内存存储（不连 Supabase）
+  BRIDGE_WEB_ORIGIN: apiBase,                                // 浏览器写请求允许的来源（cookie Secure 也据此判定）
+  BRIDGE_PUBLIC_API_BASE: apiBase,                           // 回链给客户端的公网 API base（deep_link 等用）
+  SESSION_COOKIE_NAME: "pb_session",                         // 会话 cookie 名（默认 pb_session）
+  BRIDGE_OTHERLINE_DELEGATION_SECRET: "dev-otherline-secret",// 该产品的委托 secret（命名见下）
+  BRIDGE_PRODUCT_ALLOWED_ORIGINS: JSON.stringify({ otherline: [apiBase] }), // 各产品的 origin 白名单
+};
+
+// SDK 只看到一个普通 fetch；这里把请求喂给 worker.fetch。
+const bridge = createBridgeServerClient({
+  apiBase,
+  productId: "otherline",
+  secret: env.BRIDGE_OTHERLINE_DELEGATION_SECRET,
+  fetch: (url, init = {}) => worker.fetch(
+    new Request(url, { method: init.method || "GET", headers: new Headers(init.headers || {}), body: init.body }),
+    env,
+  ),
+});
+```
+
+### 六个关键 env（逐个）
+
+| env | 作用 |
+| --- | --- |
+| `BRIDGE_LOCAL_MEMORY` | 设为 `"1"` 用进程内内存存储；不设且配了 Supabase 时走 Supabase。本地开发/测试一律设 `"1"`。 |
+| `BRIDGE_WEB_ORIGIN` | 桌面壳/控制台的 Web 来源。决定浏览器写请求的允许来源，以及会话 cookie 是否带 `Secure`（`https://` 才加）。 |
+| `BRIDGE_PUBLIC_API_BASE` | 对外公网 API base，用于回链（如 connect intent 的 `deep_link` 里的 `api=`）。本地填你的 `apiBase`。 |
+| `SESSION_COOKIE_NAME` | 浏览器会话 cookie 名，默认 `pb_session`。 |
+| `BRIDGE_<大写PRODUCTID>_DELEGATION_SECRET` | 单个产品的委托 HMAC secret，见下方命名约定。 |
+| `BRIDGE_PRODUCT_ALLOWED_ORIGINS` | JSON，`{ "<productId>": ["<origin>", …] }`，每个产品的浏览器 origin 白名单；不在表内 → `invalid_origin` / `product_origin_mismatch`。 |
+
+### secret 环境变量命名约定
+
+- **单产品变量**：`BRIDGE_<大写PRODUCTID>_DELEGATION_SECRET`。productId 取**大写**，例如 `otherline` → `BRIDGE_OTHERLINE_DELEGATION_SECRET`、`pandart` → `BRIDGE_PANDART_DELEGATION_SECRET`。
+- **集中 JSON 变量**（多产品一处配）：`BRIDGE_PRODUCT_DELEGATION_SECRETS = {"<productId>":"<secret>", …}`（注意里面的 key 用原始小写 productId）。
+- 两者都配时，单产品变量优先。secret 只放后端 / Worker，绝不进前端。
+
+### 在测试里模拟桌面 claim（connector 端点）
+
+委托流程的「桌面端确认」那一步，本地用 **public connector API** 模拟。浏览器永远不能 claim（会 `desktop_claim_required`），要带本地客户端头：
+
+```js
+// 后端先建意图（SDK 帮你签名）
+const intent = await bridge.createConnectIntent({ userId, account: { display_name: "Dev" }, deviceName: "Dev Mac" });
+
+// 模拟桌面端原生 claim：带 x-panda-bridge-local-client + install_id
+const claimRes = await worker.fetch(new Request(`${apiBase}/v1/connect-intents/${encodeURIComponent(intent.token)}/claim`, {
+  method: "POST",
+  headers: {
+    "content-type": "application/json",
+    "x-panda-bridge-local-client": "connector-cli", // 标记本地桌面客户端
+    "x-panda-bridge-install-id": "dev-install-id",   // install_id 必填，缺失 → install_id_required
+  },
+  body: JSON.stringify({ device_name: "Dev Mac", install_id: "dev-install-id", capabilities: { codex: ["codex.chat"] } }),
+}), env);
+const claim = await claimRes.json(); // claim.device.id / claim.device_token
+```
+
+claim 成功后该 `(产品, 账号)` 授权变 `active`，设备上线。之后用 `claim.device_token` 当连接器（GET `/v1/connectors/jobs` 取队列、POST `…/events`、`…/ack` 回结果）就能闭环跑完一个 codex 任务——完整可运行示例见 `examples/minimal-caller/run-local.mjs`。
+
+---
+
+## 8. 注册产品（前置 + 下一步）
+
+接入前需要在 Bridge Cloud 为你的产品登记三样东西：
+
+- `product_id`：稳定 ID，例如 `otherline`、`pandart`。
+- official origins：产品真实浏览器来源（写进 `BRIDGE_PRODUCT_ALLOWED_ORIGINS`）；浏览器请求必须来自该产品自己的 origin。
+- delegation secret：服务端 HMAC secret（按上面的命名约定配成 env），只放后端 / Worker。
+
+**实际下一步怎么做**：
+
+1. **本地自助先跑通**（推荐先做）：按 §7 用 in-process worker + 自己的 productId/secret/origin 把整条链路（建意图 → 模拟 claim → 任务 → events）在本地验证一遍，确认接入代码无误，再申请线上。`examples/minimal-caller/` 是现成模板，改 `productId` / secret / origin 即可。
+2. **申请线上登记**：把 `product_id`、official origins、以及希望使用的 delegation secret（或请云端代生成）提交给 Bridge Cloud 维护者，由其写入云端的 `BRIDGE_<PRODUCT>_DELEGATION_SECRET`（或 `BRIDGE_PRODUCT_DELEGATION_SECRETS`）与 `BRIDGE_PRODUCT_ALLOWED_ORIGINS`。当前没有自助注册门户。
+3. **联系方式 / 入口**：通过本仓库 issue 或团队内部渠道联系 Bridge 维护者；登记完成后云端 `product_delegation_not_configured` 即消失，委托调用可用。
+
+参考实现：Worker 的委托签名校验在 `apps/cloud-worker/test/worker.test.mjs`（`delegatedApiRawText`），8 字段顺序与本文逐字段一致；委托端点路径见 §3 路径表。

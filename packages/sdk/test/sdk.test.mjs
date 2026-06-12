@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {
+  BRIDGE_ERROR_MESSAGES,
   BridgeError,
   BridgeErrorCodes,
   bridgeDelegatedAccountStatusModel,
@@ -376,9 +377,14 @@ await assert.rejects(
   (error) => {
     assert.equal(error instanceof BridgeError, true);
     assert.equal(BridgeErrorCodes.authorization_paused, "authorization_paused");
-    assert.equal(BridgeErrorCodes.device_offline, undefined);
+    assert.equal(BridgeErrorCodes.device_offline, "device_offline");
+    assert.equal(BridgeErrorCodes.unsupported_job_kind, "unsupported_job_kind");
+    assert.equal(BridgeErrorCodes.not_found, "not_found");
     assert.equal(error.code, "authorization_paused");
-    assert.equal(error.message, "authorization_paused");
+    // .code stays the raw code; .message is a human-readable mapping when the
+    // worker did not provide a useful message (here it just echoed the code).
+    assert.notEqual(error.message, "authorization_paused");
+    assert.equal(error.message, BRIDGE_ERROR_MESSAGES.authorization_paused);
     assert.equal(error.status, 403);
     assert.deepEqual(error.payload, { error: "authorization_paused", message: "authorization_paused" });
     return true;

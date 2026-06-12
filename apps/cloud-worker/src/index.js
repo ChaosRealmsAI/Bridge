@@ -914,9 +914,9 @@ async function updateAuthorization(request, env, productId) {
   const originError = rejectProductOrigin(product, sourceOrigin(env), env);
   if (originError) return originError;
   const session = await requireSession(request, env);
-  const url = new URL(request.url);
-  const device = await ownedDevice(env, session.user.id, url.searchParams.get("device_id") || "");
-  if (!device || device.status === "revoked") return json({ error: "device_not_found" }, env, 404);
+  const resolved = await resolveSessionAuthorizationDevice(request, env, product, session);
+  if (resolved.error) return json({ error: resolved.error }, env, resolved.status);
+  const device = resolved.device;
   const body = await readJson(request, env);
   const result = await updateAuthorizationStatus(env, {
     userId: session.user.id,
@@ -939,9 +939,9 @@ async function revokeAuthorization(request, env, productId) {
   const originError = rejectProductOrigin(product, sourceOrigin(env), env);
   if (originError) return originError;
   const session = await requireSession(request, env);
-  const url = new URL(request.url);
-  const device = await ownedDevice(env, session.user.id, url.searchParams.get("device_id") || "");
-  if (!device) return json({ error: "device_not_found" }, env, 404);
+  const resolved = await resolveSessionAuthorizationDevice(request, env, product, session);
+  if (resolved.error) return json({ error: resolved.error }, env, resolved.status);
+  const device = resolved.device;
   const authorization = (await storage(env).select("bridge_authorizations", {
     user_id: session.user.id,
     device_id: device.id,
@@ -1171,11 +1171,9 @@ async function updateDelegatedProductAuthorization(request, env, productId) {
   const rawBody = await readJsonText(request, env);
   const delegation = await requireProductDelegation(request, env, product, rawBody);
   const body = rawBody ? parseJsonText(rawBody) : {};
-  const url = new URL(request.url);
-  const deviceId = clean(url.searchParams.get("device_id") || delegation.deviceId, 120);
-  if (deviceId !== delegation.deviceId) return json({ error: "delegated_device_mismatch" }, env, 403);
-  const device = await ownedDevice(env, delegation.bridgeUserId, deviceId);
-  if (!device || device.status === "revoked") return json({ error: "device_not_found" }, env, 404);
+  const resolved = await resolveDelegatedAuthorizationDevice(request, env, product, delegation);
+  if (resolved.error) return json({ error: resolved.error }, env, resolved.status);
+  const device = resolved.device;
   const result = await updateAuthorizationStatus(env, {
     userId: delegation.bridgeUserId,
     deviceId: device.id,
@@ -1197,11 +1195,9 @@ async function revokeDelegatedProductAuthorization(request, env, productId) {
   const product = requireOfficialProduct(productId, env);
   const rawBody = await readJsonText(request, env);
   const delegation = await requireProductDelegation(request, env, product, rawBody);
-  const url = new URL(request.url);
-  const deviceId = clean(url.searchParams.get("device_id") || delegation.deviceId, 120);
-  if (deviceId !== delegation.deviceId) return json({ error: "delegated_device_mismatch" }, env, 403);
-  const device = await ownedDevice(env, delegation.bridgeUserId, deviceId);
-  if (!device || device.status === "revoked") return json({ error: "device_not_found" }, env, 404);
+  const resolved = await resolveDelegatedAuthorizationDevice(request, env, product, delegation);
+  if (resolved.error) return json({ error: resolved.error }, env, resolved.status);
+  const device = resolved.device;
   const authorization = (await storage(env).select("bridge_authorizations", {
     user_id: delegation.bridgeUserId,
     device_id: device.id,
@@ -1746,6 +1742,79 @@ async function authorizationRowsForProduct(env, userId, productId) {
     product_id: productId,
   }, { order: "updated_at", desc: true });
   return rows.sort(compareAuthorizationRows);
+}
+
+// Account-level device placeholders the SDK signs when the caller targets a
+// (user, product) without naming a specific device. The value is still part of
+// the HMAC payload, so the signature is verified as-is; only the resolution is
+// account-scoped.
+const ACCOUNT_LEVEL_DEVICE_IDS = new Set(["account", "pending", ""]);
+
+function isAccountLevelDeviceId(deviceId) {
+  return ACCOUNT_LEVEL_DEVICE_IDS.has(clean(deviceId, 120));
+}
+
+// Resolves the device an account-level authorization action should act on:
+// the current active (preferred) or paused authorization device for this
+// (user, product). Returns null when there is no live authorization device.
+async function accountAuthorizationDevice(env, userId, productId) {
+  const rows = await authorizationRowsForProduct(env, userId, productId);
+  for (const row of rows) {
+    if (row.status !== "active" && row.status !== "paused") continue;
+    const device = await ownedDevice(env, userId, row.device_id);
+    if (device && device.status !== "revoked") return device;
+  }
+  return null;
+}
+
+// Resolves the device a session (browser) authorization PATCH/DELETE targets.
+// A concrete device_id stays device-scoped; an account_id (or no params at all)
+// resolves the live authorization device for this (user, product) so account-
+// level pause/resume/remove work without naming a device.
+async function resolveSessionAuthorizationDevice(request, env, product, session) {
+  const url = new URL(request.url);
+  const deviceId = clean(url.searchParams.get("device_id"), 120);
+  if (deviceId && !isAccountLevelDeviceId(deviceId)) {
+    const device = await ownedDevice(env, session.user.id, deviceId);
+    if (!device || device.status === "revoked") return { error: "device_not_found", status: 404 };
+    return { device };
+  }
+  const device = await accountAuthorizationDevice(env, session.user.id, product.id);
+  if (!device) return { error: "product_not_authorized", status: 403 };
+  return { device };
+}
+
+// Resolves the device a delegated authorization PATCH/DELETE targets. When the
+// caller signs a concrete device_id it stays device-scoped (and must match the
+// signed device). When the caller signs an account-level placeholder
+// ("account"/"pending"/empty) it resolves the live authorization device for the
+// (user, product) so account-level pause/resume/remove work without naming a
+// device. Returns { device } on success or { error, status } otherwise.
+async function resolveDelegatedAuthorizationDevice(request, env, product, delegation) {
+  const url = new URL(request.url);
+  const requestedDeviceId = clean(url.searchParams.get("device_id"), 120);
+  const signedAccountLevel = isAccountLevelDeviceId(delegation.deviceId);
+
+  if (!signedAccountLevel) {
+    // Device-scoped: the signed device_id wins; any query device_id must match.
+    if (requestedDeviceId && requestedDeviceId !== delegation.deviceId) {
+      return { error: "delegated_device_mismatch", status: 403 };
+    }
+    const device = await ownedDevice(env, delegation.bridgeUserId, delegation.deviceId);
+    if (!device || device.status === "revoked") return { error: "device_not_found", status: 404 };
+    return { device };
+  }
+
+  // Account-level: a query device_id (when present) must still be a real owned
+  // device for this account; otherwise resolve the live authorization device.
+  if (requestedDeviceId && !isAccountLevelDeviceId(requestedDeviceId)) {
+    const device = await ownedDevice(env, delegation.bridgeUserId, requestedDeviceId);
+    if (!device || device.status === "revoked") return { error: "device_not_found", status: 404 };
+    return { device };
+  }
+  const device = await accountAuthorizationDevice(env, delegation.bridgeUserId, product.id);
+  if (!device) return { error: "product_not_authorized", status: 403 };
+  return { device };
 }
 
 function selectAuthorizationRow(rows) {
