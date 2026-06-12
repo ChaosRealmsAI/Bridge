@@ -36,6 +36,7 @@ const KEYCHAIN_SERVICE: &str = "cc.otherline.panda-bridge";
 const KEYCHAIN_USER: &str = "device";
 const DEFAULT_API: &str = "https://api.bridge.otherline.cc";
 const DEFAULT_WEB: &str = "https://bridge.otherline.cc";
+const LOW_TIER_CAPABILITIES: &[&str] = &["codex.chat", "codex.run", "codex.rpc"];
 #[cfg(windows)]
 const WINDOWS_SINGLE_INSTANCE_ADDR: &str = "127.0.0.1:52321";
 #[cfg(windows)]
@@ -3611,8 +3612,11 @@ fn local_job_policy_for_credentials(
             job.product_id, job.kind
         ));
     }
-    if grant.policy.get("version").and_then(Value::as_str) != Some("AUTH-SCOPE-v1") {
-        return Err("authorization_scope_missing_locally".to_string());
+    match grant.policy.get("version").and_then(Value::as_str) {
+        Some("AUTH-SCOPE-v1") | Some("AUTH-SCOPE-v2") => {}
+        _ => {
+            return Err("authorization_scope_missing_locally".to_string());
+        }
     }
     validate_authorization_scope(&grant.policy, job)?;
     effective_job_policy(job, Some(&grant.policy))
@@ -4395,8 +4399,7 @@ fn parse_response<T: for<'de> Deserialize<'de>>(
 
 fn capabilities() -> Value {
     json!({
-        "runtime": ["codex.chat", "codex.run"],
-        "reserved_runtime": ["codex.rpc"],
+        "runtime": LOW_TIER_CAPABILITIES,
         "app_server": true,
         "desktop": "tao-wry",
         "platform": env::consts::OS
@@ -4411,27 +4414,125 @@ fn local_state() -> Value {
     })
 }
 
-fn local_policy_preview() -> Value {
-    json!({
-        "version": "AUTH-SCOPE-v1",
-        "preset": "full-access",
-        "request_source": "desktop_fallback_full_access",
-        "capabilities": ["codex.chat", "codex.run", "codex.rpc", "saas.custom.run"],
-        "workspace_roots": [{
-            "id": "all",
-            "path_display": "All local files",
-            "allow_all": true
-        }],
-        "sandbox_floor": "danger-full-access",
-        "approval_policy_floor": "never",
-        "allow_approval_never": true,
-        "allow_developer_instructions": true,
-        "display": {
-            "workspace": "All local files",
-            "sandbox": "danger-full-access",
-            "approval": "never",
-            "developer_instructions": "allowed"
+fn low_tier_capabilities() -> Vec<String> {
+    LOW_TIER_CAPABILITIES
+        .iter()
+        .map(|item| (*item).to_string())
+        .collect()
+}
+
+fn capability_metadata(kind: &str) -> Option<(&'static str, &'static str, &'static str)> {
+    match kind {
+        "codex.chat" | "codex.run" | "codex.rpc" => Some(("codex", "low", "workspace_sandbox")),
+        "saas.custom.run" => Some(("saas", "high", "opaque_runtime")),
+        _ => None,
+    }
+}
+
+fn scope_domain_boundaries_from_capabilities(capabilities: &[String]) -> Value {
+    let mut domain_boundaries = serde_json::Map::new();
+    for capability in capabilities {
+        if let Some((domain, danger, boundary_type)) = capability_metadata(capability) {
+            domain_boundaries.insert(
+                domain.to_string(),
+                json!({
+                    "granted": true,
+                    "danger": danger,
+                    "boundary_type": boundary_type
+                }),
+            );
         }
+    }
+    Value::Object(domain_boundaries)
+}
+
+fn scope_danger_metadata_from_capabilities(capabilities: &[String]) -> (Value, Value) {
+    let mut low = HashSet::new();
+    let mut medium = HashSet::new();
+    let mut high = HashSet::new();
+    for capability in capabilities {
+        if let Some((domain, danger, _)) = capability_metadata(capability) {
+            match danger {
+                "low" => {
+                    low.insert(domain.to_string());
+                }
+                "medium" => {
+                    medium.insert(domain.to_string());
+                }
+                "high" => {
+                    high.insert(domain.to_string());
+                }
+                _ => {}
+            }
+        }
+    }
+    let danger_tiers = json!({
+        "low": tier_metadata_value(&low),
+        "medium": tier_metadata_value(&medium),
+        "high": tier_metadata_value(&high)
+    });
+    (
+        danger_tiers,
+        scope_domain_boundaries_from_capabilities(capabilities),
+    )
+}
+
+fn tier_metadata_value(domains: &HashSet<String>) -> Value {
+    let mut sorted = domains.iter().cloned().collect::<Vec<_>>();
+    sorted.sort();
+    json!({
+        "granted": !sorted.is_empty(),
+        "domains": sorted
+    })
+}
+
+fn project_v1_scope_to_v2(scope: &Value) -> Value {
+    let mut projected = scope.clone();
+    if let Some(map) = projected.as_object_mut() {
+        map.insert("version".to_string(), json!("AUTH-SCOPE-v2"));
+        let capabilities = map
+            .get("capabilities")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(ToOwned::to_owned)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let (danger_tiers, domain_boundaries) =
+            scope_danger_metadata_from_capabilities(&capabilities);
+        map.insert("danger_tiers".to_string(), danger_tiers);
+        map.insert("domain_boundaries".to_string(), domain_boundaries);
+    }
+    projected
+}
+
+fn local_policy_preview() -> Value {
+    let capabilities = low_tier_capabilities();
+    let (danger_tiers, domain_boundaries) = scope_danger_metadata_from_capabilities(&capabilities);
+    json!({
+        "version": "AUTH-SCOPE-v2",
+        "preset": "workspace-default",
+        "request_source": "desktop_fallback_low_tier",
+        "capabilities": capabilities,
+        "workspace_roots": [{
+            "id": "default",
+            "path_display": "[local]/default"
+        }],
+        "sandbox_floor": "workspace-write",
+        "approval_policy_floor": "on-request",
+        "allow_approval_never": false,
+        "allow_developer_instructions": false,
+        "display": {
+            "workspace": "[local]/default",
+            "sandbox": "workspace-write",
+            "approval": "on-request",
+            "developer_instructions": "denied"
+        },
+        "danger_tiers": danger_tiers,
+        "domain_boundaries": domain_boundaries
     })
 }
 
@@ -4459,38 +4560,65 @@ fn intent_authorization_policy(
     };
     if let Some(map) = policy.as_object_mut() {
         map.entry("version".to_string())
-            .or_insert_with(|| json!("AUTH-SCOPE-v1"));
+            .or_insert_with(|| json!("AUTH-SCOPE-v2"));
         map.entry("preset".to_string())
-            .or_insert_with(|| json!("full-access"));
+            .or_insert_with(|| json!("workspace-default"));
         map.entry("request_source".to_string())
-            .or_insert_with(|| json!("desktop_fallback_full_access"));
+            .or_insert_with(|| json!("desktop_fallback_low_tier"));
         map.insert("product_id".to_string(), json!(product_id));
         map.insert("source_origin".to_string(), json!(source_origin));
         if !map.contains_key("capabilities") {
-            map.insert("capabilities".to_string(), json!(product_capabilities));
+            let defaults = if product_capabilities.is_empty() {
+                low_tier_capabilities()
+            } else {
+                low_tier_capabilities()
+                    .into_iter()
+                    .filter(|capability| product_capabilities.iter().any(|item| item == capability))
+                    .collect::<Vec<_>>()
+            };
+            map.insert("capabilities".to_string(), json!(defaults));
         }
         if !map.contains_key("workspace_roots") {
             map.insert(
                 "workspace_roots".to_string(),
-                json!([{ "id": "all", "path_display": "All local files", "allow_all": true }]),
+                json!([{ "id": "default", "path_display": "[local]/default" }]),
             );
         }
         map.entry("sandbox_floor".to_string())
-            .or_insert_with(|| json!("danger-full-access"));
+            .or_insert_with(|| json!("workspace-write"));
         map.entry("approval_policy_floor".to_string())
-            .or_insert_with(|| json!("never"));
+            .or_insert_with(|| json!("on-request"));
         map.entry("allow_approval_never".to_string())
-            .or_insert_with(|| json!(true));
+            .or_insert_with(|| json!(false));
         map.entry("allow_developer_instructions".to_string())
-            .or_insert_with(|| json!(true));
+            .or_insert_with(|| json!(false));
         map.entry("display".to_string()).or_insert_with(|| {
             json!({
-                "workspace": "All local files",
-                "sandbox": "danger-full-access",
-                "approval": "never",
-                "developer_instructions": "allowed"
+                "workspace": "[local]/default",
+                "sandbox": "workspace-write",
+                "approval": "on-request",
+                "developer_instructions": "denied"
             })
         });
+        if map.get("version").and_then(Value::as_str) == Some("AUTH-SCOPE-v2") {
+            let capabilities = map
+                .get("capabilities")
+                .and_then(Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(ToOwned::to_owned)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            let (danger_tiers, domain_boundaries) =
+                scope_danger_metadata_from_capabilities(&capabilities);
+            map.entry("danger_tiers".to_string())
+                .or_insert(danger_tiers);
+            map.entry("domain_boundaries".to_string())
+                .or_insert(domain_boundaries);
+        }
     }
     policy
 }
@@ -4560,7 +4688,11 @@ fn update_settings(params: &Value) -> Result<DesktopSettings, String> {
         };
     }
     save_settings(&settings)?;
-    if params.get("launch_at_login").and_then(Value::as_bool).is_some() {
+    if params
+        .get("launch_at_login")
+        .and_then(Value::as_bool)
+        .is_some()
+    {
         if let Err(error) = apply_launch_at_login(settings.launch_at_login) {
             eprintln!("[launch-at-login] {error}");
         }
@@ -5563,6 +5695,10 @@ mod tests {
         })
     }
 
+    fn test_auth_scope_v2() -> Value {
+        project_v1_scope_to_v2(&test_auth_scope())
+    }
+
     fn test_credentials_for_device(
         device_id: &str,
         account_id: &str,
@@ -5873,6 +6009,89 @@ mod tests {
     }
 
     #[test]
+    fn local_policy_preview_defaults_to_low_tier_v2() {
+        let preview = local_policy_preview();
+        assert_eq!(preview["version"], "AUTH-SCOPE-v2");
+        assert_eq!(preview["preset"], "workspace-default");
+        assert_eq!(preview["request_source"], "desktop_fallback_low_tier");
+        assert_eq!(
+            preview["capabilities"],
+            json!(["codex.chat", "codex.run", "codex.rpc"])
+        );
+        assert_eq!(
+            preview["capabilities"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item.as_str() == Some("saas.custom.run")),
+            false
+        );
+        assert_eq!(
+            preview["workspace_roots"],
+            json!([{ "id": "default", "path_display": "[local]/default" }])
+        );
+        assert_eq!(preview["sandbox_floor"], "workspace-write");
+        assert_eq!(preview["approval_policy_floor"], "on-request");
+        assert_eq!(preview["allow_approval_never"], false);
+        assert_eq!(preview["allow_developer_instructions"], false);
+        assert_eq!(preview["danger_tiers"]["low"]["granted"], true);
+        assert_eq!(preview["danger_tiers"]["medium"]["granted"], false);
+        assert_eq!(preview["danger_tiers"]["high"]["granted"], false);
+        assert_eq!(
+            preview["domain_boundaries"]["codex"],
+            json!({
+                "granted": true,
+                "danger": "low",
+                "boundary_type": "workspace_sandbox"
+            })
+        );
+        assert_eq!(
+            capabilities()["runtime"],
+            json!(["codex.chat", "codex.run", "codex.rpc"])
+        );
+    }
+
+    #[test]
+    fn intent_authorization_policy_defaults_to_low_tier_v2() {
+        let intent = ConnectIntent {
+            product_id: "panda-chat".to_string(),
+            product: None,
+            policy: json!({}),
+            source_origin: Some("http://local.test".to_string()),
+            device_name: Some("Device".to_string()),
+            expires_at: "2099-01-01T00:00:00Z".to_string(),
+            user: None,
+        };
+        let product_capabilities = vec![
+            "codex.chat".to_string(),
+            "codex.run".to_string(),
+            "codex.rpc".to_string(),
+            "saas.custom.run".to_string(),
+        ];
+        let policy = intent_authorization_policy(
+            &intent,
+            "panda-chat",
+            "http://local.test",
+            &product_capabilities,
+        );
+        assert_eq!(policy["version"], "AUTH-SCOPE-v2");
+        assert_eq!(policy["preset"], "workspace-default");
+        assert_eq!(policy["request_source"], "desktop_fallback_low_tier");
+        assert_eq!(
+            policy["capabilities"],
+            json!(["codex.chat", "codex.run", "codex.rpc"])
+        );
+        assert_eq!(
+            policy["workspace_roots"],
+            json!([{ "id": "default", "path_display": "[local]/default" }])
+        );
+        assert_eq!(policy["sandbox_floor"], "workspace-write");
+        assert_eq!(policy["approval_policy_floor"], "on-request");
+        assert_eq!(policy["allow_approval_never"], false);
+        assert_eq!(policy["allow_developer_instructions"], false);
+    }
+
+    #[test]
     fn default_policy_is_allowed_for_authorized_capability() {
         let _guard = ENV_LOCK.lock().unwrap();
         reset_policy_env();
@@ -5883,6 +6102,78 @@ mod tests {
         assert_eq!(policy.sandbox, "workspace-write");
         assert_eq!(policy.approval_policy, "on-request");
         validate_local_job_authorization(&test_credentials(vec!["codex.chat"]), &job).unwrap();
+    }
+
+    #[test]
+    fn v2_auth_scope_is_accepted_locally_without_weakening_floors() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        reset_policy_env();
+        let job = test_job(json!({}));
+        let mut credentials = test_credentials(vec!["codex.chat"]);
+        credentials.authorized_products[0].policy = test_auth_scope_v2();
+        let policy =
+            effective_job_policy(&job, Some(&credentials.authorized_products[0].policy)).unwrap();
+        assert_eq!(policy.sandbox, "workspace-write");
+        assert_eq!(policy.approval_policy, "on-request");
+        validate_local_job_authorization(&credentials, &job).unwrap();
+
+        assert_eq!(
+            effective_job_policy(
+                &test_job(json!({ "sandbox": "danger-full-access" })),
+                Some(&credentials.authorized_products[0].policy)
+            )
+            .unwrap_err(),
+            "sandbox_not_allowed_locally: danger-full-access"
+        );
+        assert_eq!(
+            effective_job_policy(
+                &test_job(json!({ "approvalPolicy": "never" })),
+                Some(&credentials.authorized_products[0].policy)
+            )
+            .unwrap_err(),
+            "approval_policy_not_allowed_locally: never"
+        );
+    }
+
+    #[test]
+    fn v1_auth_scope_still_uses_legacy_flat_path_locally() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        reset_policy_env();
+        let job = test_job(json!({}));
+        let credentials = test_credentials(vec!["codex.chat"]);
+        assert_eq!(
+            credentials.authorized_products[0].policy["version"],
+            "AUTH-SCOPE-v1"
+        );
+        validate_local_job_authorization(&credentials, &job).unwrap();
+    }
+
+    #[test]
+    fn v2_scope_does_not_grant_custom_runtime_by_default_locally() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        reset_policy_env();
+        let mut credentials = test_credentials(vec!["codex.chat", "saas.custom.run"]);
+        credentials.authorized_products[0].policy = test_auth_scope_v2();
+        let job = BridgeJob {
+            kind: "saas.custom.run".to_string(),
+            ..test_job(json!({}))
+        };
+        let error = validate_local_job_authorization(&credentials, &job).unwrap_err();
+        assert_eq!(
+            error,
+            "capability_not_authorized_locally: panda-chat:saas.custom.run"
+        );
+    }
+
+    #[test]
+    fn unknown_auth_scope_version_is_rejected_locally() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        reset_policy_env();
+        let mut credentials = test_credentials(vec!["codex.chat"]);
+        credentials.authorized_products[0].policy["version"] = json!("AUTH-SCOPE-v3");
+        let error =
+            validate_local_job_authorization(&credentials, &test_job(json!({}))).unwrap_err();
+        assert_eq!(error, "authorization_scope_missing_locally");
     }
 
     #[test]

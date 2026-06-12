@@ -1,5 +1,13 @@
 import { BRIDGE_PROTOCOL_VERSION, EVENT_TYPES, bridgeEvent, validateBridgeJob } from "@panda-bridge/protocol";
-import { BRIDGE_RUNTIME_CAPABILITY_REGISTRY, allProducts, officialProductOrigins, productById } from "./products.js";
+import {
+  BRIDGE_RUNTIME_CAPABILITY_REGISTRY,
+  allProducts,
+  capabilityDanger,
+  capabilityDomain,
+  officialProductOrigins,
+  productById,
+  scopeDangerMetadataFromCapabilities,
+} from "./products.js";
 
 const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 30;
 const SESSION_LINK_TTL_MS = 1000 * 60 * 10;
@@ -2697,8 +2705,13 @@ function authorizationImportProofTtlMs(env) {
 function normalizeAuthorizationPolicy(input, product, source_origin) {
   const policy = object(input);
   const hasExplicitInput = Object.keys(policy).length > 0;
-  const requested = Object.keys(policy).length ? policy : fullAccessAuthorizationPolicy();
-  const workspaceRoots = Array.isArray(policy.workspace_roots) && policy.workspace_roots.length
+  const explicitFullAccess = policy.fullAccess === true
+    || policy.full_access === true
+    || clean(policy.preset || policy.permission_preset, 80) === "full-access";
+  const requested = hasExplicitInput
+    ? explicitFullAccess ? { ...fullAccessAuthorizationPolicy(), ...policy } : policy
+    : defaultLowTierAuthorizationPolicy();
+  const workspaceRoots = Array.isArray(requested.workspace_roots) && requested.workspace_roots.length
     ? requested.workspace_roots.map((item, index) => {
         const root = object(item);
         return {
@@ -2707,17 +2720,18 @@ function normalizeAuthorizationPolicy(input, product, source_origin) {
           ...(root.allow_all === true || root.allowAll === true ? { allow_all: true } : {}),
         };
       })
-    : [{ id: "all", path_display: "All local files", allow_all: true }];
+    : [{ id: "default", path_display: "[local]/default" }];
   const capabilities = normalizedPolicyCapabilities(requested);
   const sandboxFloor = clean(requested.sandbox_floor || requested.sandboxFloor, 80);
   const approvalFloor = clean(requested.approval_policy_floor || requested.approvalPolicyFloor, 80);
-  const normalizedSandboxFloor = ["danger-full-access", "workspace-write", "read-only"].includes(sandboxFloor) ? sandboxFloor : "danger-full-access";
-  const normalizedApprovalFloor = ["never", "on-request", "on-failure", "untrusted"].includes(approvalFloor) ? approvalFloor : "never";
-  const allowDeveloperInstructions = requested.allow_developer_instructions !== false && requested.allowDeveloperInstructions !== false;
+  const normalizedSandboxFloor = ["danger-full-access", "workspace-write", "read-only"].includes(sandboxFloor) ? sandboxFloor : "workspace-write";
+  const normalizedApprovalFloor = ["never", "on-request", "on-failure", "untrusted"].includes(approvalFloor) ? approvalFloor : "on-request";
+  const allowDeveloperInstructions = requested.allow_developer_instructions === true || requested.allowDeveloperInstructions === true;
+  const tierMetadata = scopeDangerMetadataFromCapabilities(capabilities);
   return {
-    version: "AUTH-SCOPE-v1",
-    preset: clean(requested.preset || requested.permission_preset, 80) || "full-access",
-    request_source: clean(requested.request_source, 120) || (hasExplicitInput ? "caller_request" : "worker_default_full_access"),
+    version: "AUTH-SCOPE-v2",
+    preset: clean(requested.preset || requested.permission_preset, 80) || (hasExplicitInput ? "custom" : "workspace-default"),
+    request_source: clean(requested.request_source, 120) || (hasExplicitInput ? "caller_request" : "worker_default_low_tier"),
     product_id: product.id,
     source_origin: clean(requested.source_origin, 300) || source_origin || product.official_origin || product.origin || null,
     capabilities,
@@ -2727,11 +2741,12 @@ function normalizeAuthorizationPolicy(input, product, source_origin) {
     allow_approval_never: requested.allow_approval_never === true || requested.allowApprovalNever === true || normalizedApprovalFloor === "never",
     allow_developer_instructions: allowDeveloperInstructions,
     display: authorizationPolicyDisplay(workspaceRoots, normalizedSandboxFloor, normalizedApprovalFloor, allowDeveloperInstructions),
+    ...tierMetadata,
   };
 }
 
 function normalizedPolicyCapabilities(requested) {
-  if (!Object.hasOwn(requested, "capabilities")) return [...SUPPORTED_JOB_KINDS];
+  if (!Object.hasOwn(requested, "capabilities")) return lowTierCapabilities();
   if (!Array.isArray(requested.capabilities)) throw httpError("invalid_authorization_policy", 400);
   const capabilities = [...new Set(requested.capabilities.map((item) => clean(item, 120)).filter(Boolean))];
   const unsupported = capabilities.filter((item) => !SUPPORTED_JOB_KINDS.includes(item));
@@ -2754,10 +2769,14 @@ function authorizationPolicyDisplay(workspaceRoots, sandboxFloor, approvalFloor,
   };
 }
 
-function authorizationScopeDenial(scopeInput, job) {
+export function authorizationScopeDenial(scopeInput, job) {
   const scope = object(scopeInput);
-  if (scope.version !== "AUTH-SCOPE-v1") {
+  if (!["AUTH-SCOPE-v1", "AUTH-SCOPE-v2"].includes(scope.version)) {
     return { denied: "authorization", reason: "authorization_scope_missing" };
+  }
+  if (scope.version === "AUTH-SCOPE-v2" && scope.danger_tiers && scope.domain_boundaries) {
+    const tierDenial = authorizationScopeTierDenial(scope, job.kind);
+    if (tierDenial) return tierDenial;
   }
   if (!Array.isArray(scope.capabilities) || !scope.capabilities.includes(job.kind)) {
     return { denied: "capability", reason: "capability_not_authorized" };
@@ -2778,6 +2797,22 @@ function authorizationScopeDenial(scopeInput, job) {
   }
   if (clean(job.policy?.developerInstructions, 1000) && scope.allow_developer_instructions !== true) {
     return { denied: "developerInstructions", reason: "developer_instructions_not_authorized" };
+  }
+  return null;
+}
+
+function authorizationScopeTierDenial(scope, kind) {
+  const danger = capabilityDanger(kind);
+  const domain = capabilityDomain(kind);
+  if (!danger || !domain) return null;
+  const tier = object(scope.danger_tiers?.[danger]);
+  const boundary = object(scope.domain_boundaries?.[domain]);
+  const tierDomains = Array.isArray(tier.domains) ? tier.domains : [];
+  if (tier.granted !== true || !tierDomains.includes(domain) || boundary.granted !== true) {
+    return { denied: "tier", reason: "tier_not_granted" };
+  }
+  if (boundary.danger && boundary.danger !== danger) {
+    return { denied: "tier", reason: "tier_not_granted" };
   }
   return null;
 }
@@ -2823,6 +2858,29 @@ function fullAccessAuthorizationPolicy() {
       developer_instructions: "allowed",
     },
   };
+}
+
+function defaultLowTierAuthorizationPolicy() {
+  return {
+    preset: "workspace-default",
+    request_source: "worker_default_low_tier",
+    capabilities: lowTierCapabilities(),
+    workspace_roots: [{ id: "default", path_display: "[local]/default" }],
+    sandbox_floor: "workspace-write",
+    approval_policy_floor: "on-request",
+    allow_approval_never: false,
+    allow_developer_instructions: false,
+    display: {
+      workspace: "[local]/default",
+      sandbox: "workspace-write",
+      approval: "on-request",
+      developer_instructions: "denied",
+    },
+  };
+}
+
+function lowTierCapabilities() {
+  return SUPPORTED_JOB_KINDS.filter((kind) => capabilityDanger(kind) === "low");
 }
 
 async function upsertAuthorization(env, userId, deviceId, productId, policy, sourceOrigin = "") {

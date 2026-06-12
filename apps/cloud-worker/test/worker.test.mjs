@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash, createHmac, randomUUID } from "node:crypto";
-import worker from "../src/index.js";
+import worker, { authorizationScopeDenial } from "../src/index.js";
+import { assertRegistryWellFormed, scopeDangerMetadataFromCapabilities } from "../src/products.js";
 
 const assetRequests = [];
 const tokenInstallIds = new Map();
@@ -212,6 +213,12 @@ assert.equal(diagnostics.protocol, "panda-bridge-protocol-v0.1");
 assert.equal(diagnostics.storage, "memory");
 assert.ok(diagnostics.products.some((item) => item.id === "panda-chat" && item.capabilities.includes("codex.chat")));
 assert.ok(diagnostics.jobs.supported_kinds.includes("saas.custom.run"));
+assert.equal(diagnostics.jobs.registry["codex.chat"].verb, "chat");
+assert.equal(diagnostics.jobs.registry["codex.chat"].danger, "low");
+assert.equal(diagnostics.jobs.registry["codex.chat"].boundary_type, "workspace_sandbox");
+assert.equal(diagnostics.jobs.registry["saas.custom.run"].verb, "custom.run");
+assert.equal(diagnostics.jobs.registry["saas.custom.run"].danger, "high");
+assert.equal(diagnostics.jobs.registry["saas.custom.run"].boundary_type, "opaque_runtime");
 assert.ok(diagnostics.jobs.event_types.includes("queued"));
 assert.equal(diagnostics.jobs.queue_limits.device_max_running, 1);
 assert.equal(diagnostics.connector.device_token_prefix, "pbd_");
@@ -224,6 +231,57 @@ assert.equal(diagnostics.realtime.route_template, "/v1/realtime/devices/{device_
 const diagnosticsText = JSON.stringify(diagnostics);
 assert.doesNotMatch(diagnosticsText, /device_token"\s*:/);
 assert.doesNotMatch(diagnosticsText, /session_cookie/i);
+assert.equal(assertRegistryWellFormed(), true);
+assert.throws(() => assertRegistryWellFormed({
+  "codex.chat": { domain: "codex", verb: "typo", danger: "low", boundary_type: "workspace_sandbox" },
+}, {}), /invalid capability registry key/);
+assert.throws(() => assertRegistryWellFormed({
+  "codex.chat": { domain: "codex", verb: "chat", danger: "critical", boundary_type: "workspace_sandbox" },
+}, {}), /invalid capability danger/);
+assert.throws(() => assertRegistryWellFormed({
+  "codex.chat": { domain: "codex", verb: "chat", danger: "low", boundary_type: "unknown" },
+}, {}), /invalid capability boundary_type/);
+const mixedMetadata = scopeDangerMetadataFromCapabilities(["codex.chat", "saas.custom.run"]);
+assert.equal(mixedMetadata.danger_tiers.low.granted, true);
+assert.deepEqual(mixedMetadata.danger_tiers.low.domains, ["codex"]);
+assert.equal(mixedMetadata.danger_tiers.medium.granted, false);
+assert.deepEqual(mixedMetadata.danger_tiers.medium.domains, []);
+assert.equal(mixedMetadata.danger_tiers.high.granted, true);
+assert.deepEqual(mixedMetadata.danger_tiers.high.domains, ["saas"]);
+assert.deepEqual(mixedMetadata.domain_boundaries.codex, {
+  granted: true,
+  danger: "low",
+  boundary_type: "workspace_sandbox",
+});
+assert.deepEqual(mixedMetadata.domain_boundaries.saas, {
+  granted: true,
+  danger: "high",
+  boundary_type: "opaque_runtime",
+});
+const v1Scope = {
+  version: "AUTH-SCOPE-v1",
+  capabilities: ["codex.chat"],
+  workspace_roots: [{ id: "default", path_display: "[local]/default" }],
+  sandbox_floor: "workspace-write",
+  approval_policy_floor: "on-request",
+  allow_approval_never: false,
+  allow_developer_instructions: false,
+};
+assert.equal(authorizationScopeDenial(v1Scope, {
+  kind: "codex.chat",
+  workspace_ref: "default",
+  policy: { sandbox: "workspace-write", approvalPolicy: "on-request" },
+}), null);
+const v2LowScope = {
+  ...v1Scope,
+  version: "AUTH-SCOPE-v2",
+  ...scopeDangerMetadataFromCapabilities(["codex.chat"]),
+};
+assert.deepEqual(authorizationScopeDenial(v2LowScope, {
+  kind: "saas.custom.run",
+  workspace_ref: "default",
+  policy: { sandbox: "workspace-write", approvalPolicy: "on-request" },
+}), { denied: "tier", reason: "tier_not_granted" });
 
 const unauthenticatedQueueSummary = await apiRaw("GET", "/v1/queue/summary");
 assert.equal(unauthenticatedQueueSummary.response.status, 401);
@@ -465,13 +523,94 @@ assert.ok(oldExecutorHeartbeat.payload.devices.some((item) => item.id === intent
 assert.equal(intentClaim.account.display_name, "Tester");
 assert.equal(intentClaim.product.id, "panda-chat");
 assert.equal(intentClaim.authorization.source_origin, "http://chat.local.test");
-assert.equal(intentClaim.authorization.policy.version, "AUTH-SCOPE-v1");
+assert.equal(intentClaim.authorization.policy.version, "AUTH-SCOPE-v2");
 assert.equal(intentClaim.authorization.policy.product_id, "panda-chat");
-assert.ok(intentClaim.authorization.policy.capabilities.includes("saas.custom.run"));
-assert.equal(intentClaim.authorization.policy.workspace_roots[0].allow_all, true);
-assert.equal(intentClaim.authorization.policy.allow_approval_never, true);
+assert.deepEqual(intentClaim.authorization.policy.capabilities, ["codex.chat", "codex.run", "codex.rpc"]);
+assert.equal(intentClaim.authorization.policy.capabilities.includes("saas.custom.run"), false);
+assert.deepEqual(intentClaim.authorization.policy.workspace_roots, [{ id: "default", path_display: "[local]/default" }]);
+assert.equal(intentClaim.authorization.policy.sandbox_floor, "workspace-write");
+assert.equal(intentClaim.authorization.policy.approval_policy_floor, "on-request");
+assert.equal(intentClaim.authorization.policy.allow_approval_never, false);
+assert.equal(intentClaim.authorization.policy.allow_developer_instructions, false);
+assert.equal(intentClaim.authorization.policy.danger_tiers.low.granted, true);
+assert.deepEqual(intentClaim.authorization.policy.danger_tiers.low.domains, ["codex"]);
+assert.equal(intentClaim.authorization.policy.danger_tiers.medium.granted, false);
+assert.equal(intentClaim.authorization.policy.danger_tiers.high.granted, false);
+assert.deepEqual(intentClaim.authorization.policy.domain_boundaries, {
+  codex: { granted: true, danger: "low", boundary_type: "workspace_sandbox" },
+});
 assert.match(intentClaim.device_token, /^pbd_/);
 assert.ok(intentClaim.token_expires_at);
+
+const defaultSaasDenied = await apiRaw("POST", "/v1/products/panda-chat/jobs", {
+  kind: "saas.custom.run",
+  device_id: intentClaim.device.id,
+  product_id: "panda-chat",
+  workspace_ref: "default",
+  input: { task: "default must not grant high-tier custom runtime" },
+  request_key: "default-saas-denied",
+  policy: { token_budget: 1000, timeout_ms: 60000 },
+}, "", { origin: "http://chat.local.test" });
+assert.equal(defaultSaasDenied.response.status, 403);
+assert.equal(defaultSaasDenied.payload.error, "authorization_scope_denied");
+assert.ok(["tier", "capability"].includes(defaultSaasDenied.payload.denied));
+
+const fullAccessIntent = await api("POST", "/v1/connect-intents", {
+  product_id: "panda-chat",
+  device_name: "Explicit Full Access Device",
+  policy: { preset: "full-access" },
+}, "", { origin: "http://chat.local.test" });
+const fullAccessClaim = await nativeClaimIntent(fullAccessIntent.token, {
+  device_name: "Explicit Full Access Device",
+  install_id: "install-explicit-full-access",
+  capabilities: { codex: ["codex.chat"] },
+});
+assert.equal(fullAccessClaim.authorization.policy.version, "AUTH-SCOPE-v2");
+assert.equal(fullAccessClaim.authorization.policy.preset, "full-access");
+assert.ok(fullAccessClaim.authorization.policy.capabilities.includes("saas.custom.run"));
+assert.equal(fullAccessClaim.authorization.policy.workspace_roots[0].allow_all, true);
+assert.equal(fullAccessClaim.authorization.policy.sandbox_floor, "danger-full-access");
+assert.equal(fullAccessClaim.authorization.policy.approval_policy_floor, "never");
+assert.equal(fullAccessClaim.authorization.policy.allow_approval_never, true);
+assert.equal(fullAccessClaim.authorization.policy.allow_developer_instructions, true);
+assert.equal(fullAccessClaim.authorization.policy.danger_tiers.high.granted, true);
+assert.deepEqual(fullAccessClaim.authorization.policy.domain_boundaries.saas, {
+  granted: true,
+  danger: "high",
+  boundary_type: "opaque_runtime",
+});
+await api("DELETE", `/v1/products/panda-chat/authorization?device_id=${encodeURIComponent(fullAccessClaim.device.id)}`, null, "", { origin: "http://chat.local.test" });
+
+const explicitSaasIntent = await api("POST", "/v1/connect-intents", {
+  product_id: "panda-chat",
+  device_name: "Explicit SaaS Capability Device",
+  policy: {
+    capabilities: ["codex.chat", "saas.custom.run"],
+    workspace_roots: [{ id: "default", path_display: "[local]/default" }],
+    sandbox_floor: "workspace-write",
+    approval_policy_floor: "on-request",
+    allow_approval_never: false,
+    allow_developer_instructions: false,
+  },
+}, "", { origin: "http://chat.local.test" });
+const explicitSaasClaim = await nativeClaimIntent(explicitSaasIntent.token, {
+  device_name: "Explicit SaaS Capability Device",
+  install_id: "install-explicit-saas-capability",
+  capabilities: { codex: ["codex.chat"] },
+});
+assert.deepEqual(explicitSaasClaim.authorization.policy.capabilities, ["codex.chat", "saas.custom.run"]);
+assert.equal(explicitSaasClaim.authorization.policy.danger_tiers.high.granted, true);
+const explicitSaasJob = await apiRaw("POST", "/v1/products/panda-chat/jobs", {
+  kind: "saas.custom.run",
+  device_id: explicitSaasClaim.device.id,
+  product_id: "panda-chat",
+  workspace_ref: "default",
+  input: { task: "explicit high-tier custom runtime" },
+  request_key: "explicit-saas-allowed",
+  policy: { token_budget: 1000, timeout_ms: 60000 },
+}, "", { origin: "http://chat.local.test" });
+assert.equal(explicitSaasJob.response.status, 201);
+await api("DELETE", `/v1/products/panda-chat/authorization?device_id=${encodeURIComponent(explicitSaasClaim.device.id)}`, null, "", { origin: "http://chat.local.test" });
 await new Promise((resolve) => setTimeout(resolve, 5));
 env.BRIDGE_DEVICE_ONLINE_GRACE_MS = "0";
 const authorizedOfflineState = await api("GET", "/v1/bridge/state?product_id=panda-chat");
@@ -715,7 +854,7 @@ const emptyCapabilitiesDenied = await apiRaw("POST", "/v1/products/panda-spec/jo
 }, "", { origin: "http://spec.local.test" });
 assert.equal(emptyCapabilitiesDenied.response.status, 403);
 assert.equal(emptyCapabilitiesDenied.payload.error, "authorization_scope_denied");
-assert.equal(emptyCapabilitiesDenied.payload.denied, "capability");
+assert.ok(["tier", "capability"].includes(emptyCapabilitiesDenied.payload.denied));
 
 const unauthorizedDevJob = await apiRaw("POST", "/v1/products/panda-dev/jobs", {
   kind: "codex.run",
@@ -825,7 +964,7 @@ const delegatedIntentClaim = await nativeClaimIntent(delegatedIntent.token, {
 }, otherlineClaim.device_token);
 assert.notEqual(delegatedIntentClaim.device.id, otherlineClaim.device.id);
 assert.equal(delegatedIntentClaim.authorization.product_id, "otherline");
-assert.equal(delegatedIntentClaim.authorization.policy.version, "AUTH-SCOPE-v1");
+assert.equal(delegatedIntentClaim.authorization.policy.version, "AUTH-SCOPE-v2");
 assert.equal(delegatedIntentClaim.authorization.policy.source_origin, "https://otherline.cc");
 await delegatedApi("DELETE", `/v1/products/otherline/delegated/authorization?device_id=${encodeURIComponent(delegatedIntentClaim.device.id)}`, null, otherlineClaim.account.id, delegatedIntentClaim.device.id);
 const delegatedScopedIntent = await delegatedApi("POST", "/v1/products/otherline/delegated/connect-intents", {

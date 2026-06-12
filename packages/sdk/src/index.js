@@ -392,7 +392,27 @@ export function createBridgeClient(options = {}) {
 
 function bridgeDefaultAuthorizationPolicy(overrides = {}) {
   const policy = {
-    version: "AUTH-SCOPE-v1",
+    version: "AUTH-SCOPE-v2",
+    preset: "workspace-default",
+    request_source: "sdk_default_low_tier",
+    capabilities: ["codex.chat", "codex.run", "codex.rpc"],
+    workspace_roots: [{
+      id: "default",
+      path_display: "[local]/default",
+    }],
+    sandbox_floor: "workspace-write",
+    approval_policy_floor: "on-request",
+    allow_approval_never: false,
+    allow_developer_instructions: false,
+    ...objectValue(overrides),
+  };
+  delete policy.display;
+  return policy;
+}
+
+function bridgeFullAccessAuthorizationPolicy(overrides = {}) {
+  const policy = {
+    version: "AUTH-SCOPE-v2",
     preset: "full-access",
     request_source: "sdk_default_full_access",
     capabilities: ["codex.chat", "codex.run", "codex.rpc", "saas.custom.run"],
@@ -1035,7 +1055,7 @@ function normalizeAuthorizationPolicyRequest(input = {}) {
   const policy = objectValue(input);
   if (!Object.keys(policy).length) return bridgeDefaultAuthorizationPolicy();
   if (policy.fullAccess === true || policy.full_access === true || policy.preset === "full-access") {
-    return bridgeDefaultAuthorizationPolicy(policy);
+    return bridgeFullAccessAuthorizationPolicy(policy);
   }
   return policy;
 }

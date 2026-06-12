@@ -144,10 +144,40 @@ assert.equal(bridgeSnapshotStatusForDevice({ status: "offline" }), "reconnecting
 await client.connect.createIntent({ deviceName: "Mac" });
 assert.equal(calls[1].url, "https://api.example.test/v1/connect-intents");
 assert.equal(JSON.parse(calls[1].init.body).product_id, "panda-chat");
-assert.equal(JSON.parse(calls[1].init.body).policy.workspace_roots[0].allow_all, true);
-assert.equal(JSON.parse(calls[1].init.body).policy.sandbox_floor, "danger-full-access");
-assert.equal(JSON.parse(calls[1].init.body).policy.approval_policy_floor, "never");
-assert.equal(JSON.parse(calls[1].init.body).policy.display, undefined);
+const defaultIntentPolicy = JSON.parse(calls[1].init.body).policy;
+assert.equal(defaultIntentPolicy.version, "AUTH-SCOPE-v2");
+assert.equal(defaultIntentPolicy.preset, "workspace-default");
+assert.equal(defaultIntentPolicy.request_source, "sdk_default_low_tier");
+assert.deepEqual(defaultIntentPolicy.capabilities, ["codex.chat", "codex.run", "codex.rpc"]);
+assert.deepEqual(defaultIntentPolicy.workspace_roots, [{ id: "default", path_display: "[local]/default" }]);
+assert.equal(defaultIntentPolicy.sandbox_floor, "workspace-write");
+assert.equal(defaultIntentPolicy.approval_policy_floor, "on-request");
+assert.equal(defaultIntentPolicy.allow_approval_never, false);
+assert.equal(defaultIntentPolicy.allow_developer_instructions, false);
+assert.equal(defaultIntentPolicy.display, undefined);
+
+const fullAccessCalls = [];
+const fullAccessClient = createBridgeClient({
+  apiBase: "https://api.example.test",
+  productId: "panda-chat",
+  fetch: async (url, init) => {
+    fullAccessCalls.push({ url, init });
+    return new Response(JSON.stringify({ token: "pbi_full_access" }), {
+      status: 201,
+      headers: { "content-type": "application/json" },
+    });
+  },
+});
+await fullAccessClient.connect.createIntent({ permissions: { fullAccess: true } });
+const explicitFullAccessPolicy = JSON.parse(fullAccessCalls[0].init.body).policy;
+assert.equal(explicitFullAccessPolicy.version, "AUTH-SCOPE-v2");
+assert.equal(explicitFullAccessPolicy.preset, "full-access");
+assert.ok(explicitFullAccessPolicy.capabilities.includes("saas.custom.run"));
+assert.equal(explicitFullAccessPolicy.workspace_roots[0].allow_all, true);
+assert.equal(explicitFullAccessPolicy.sandbox_floor, "danger-full-access");
+assert.equal(explicitFullAccessPolicy.approval_policy_floor, "never");
+assert.equal(explicitFullAccessPolicy.allow_approval_never, true);
+assert.equal(explicitFullAccessPolicy.allow_developer_instructions, true);
 
 await client.auth.share();
 assert.equal(calls[2].url, "https://api.example.test/v1/sessions/share");

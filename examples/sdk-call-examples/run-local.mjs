@@ -666,7 +666,10 @@ async function optionalJob(createOperation, completeOperation, kind, owner) {
     };
   } catch (error) {
     assert.equal(error.status, 403);
-    assert.equal(error.payload?.error, "scope_insufficient");
+    assert.ok(
+      ["authorization_scope_denied", "scope_insufficient"].includes(error.payload?.error),
+      `unexpected scope-denial code: ${error.payload?.error}`,
+    );
     return {
       error,
       summary: deniedJobSummary(kind, kind, error),
