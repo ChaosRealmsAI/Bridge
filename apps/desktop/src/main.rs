@@ -1,7 +1,7 @@
 use keyring::Entry;
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -26,6 +26,7 @@ use tao::{
     window::WindowBuilder,
 };
 use tungstenite::{client::IntoClientRequest, connect, http::HeaderValue, Message};
+use unicode_normalization::UnicodeNormalization;
 #[cfg(windows)]
 use window_vibrancy::{apply_acrylic, apply_mica};
 #[cfg(target_os = "macos")]
@@ -132,7 +133,31 @@ struct ProductGrant {
     epoch: u64,
     #[serde(default)]
     accounts: Vec<ProductGrantAccount>,
+    #[serde(default, skip_serializing_if = "LocalRootBindings::is_empty")]
+    local_roots: LocalRootBindings,
     authorized_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+struct LocalRootBindings {
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    fs_roots: HashMap<String, LocalRootBinding>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    shell_cwd: HashMap<String, LocalRootBinding>,
+}
+
+impl LocalRootBindings {
+    fn is_empty(&self) -> bool {
+        self.fs_roots.is_empty() && self.shell_cwd.is_empty()
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct LocalRootBinding {
+    real_path: String,
+    path_display: String,
+    bound_at: String,
+    bound_device_id: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -1413,6 +1438,23 @@ fn handle_ipc(raw: String, state: AppState, proxy: EventLoopProxy<UserEvent>) {
             return;
         }
     };
+    if message.command == "pick_local_root" {
+        let result = run_command(&message.command, &message.params, &state, proxy.clone());
+        let event = match result {
+            Ok(payload) => UserEvent::Respond {
+                id: message.id,
+                ok: true,
+                payload,
+            },
+            Err(error) => UserEvent::Respond {
+                id: message.id,
+                ok: false,
+                payload: Value::String(error),
+            },
+        };
+        let _ = proxy.send_event(event);
+        return;
+    }
     thread::spawn(move || {
         let result = run_command(&message.command, &message.params, &state, proxy.clone());
         let event = match result {
@@ -1470,6 +1512,7 @@ fn run_command(
                 device_id.as_deref(),
             )
         }
+        "pick_local_root" => pick_local_root(params),
         "settings" => {
             let api_base = load_credentials()
                 .map(|credentials| credentials.api_base)
@@ -2122,7 +2165,7 @@ fn claim_intent(api: &str, intent: &str, device_name: &str) -> Result<ClaimResul
         product_id,
         product_name,
         cloud_origin,
-        authorized_products,
+        authorized_products: public_product_grants(&authorized_products),
     })
 }
 
@@ -2402,6 +2445,387 @@ fn redact_local_path(path: &str) -> String {
         .unwrap_or_else(|| "[local]".to_string())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LocalRootDomain {
+    FsRead,
+    FsWrite,
+    ShellCwd,
+}
+
+impl LocalRootDomain {
+    fn parse(value: &str) -> Option<Self> {
+        match value.trim() {
+            "fs_read" => Some(Self::FsRead),
+            "fs_write" => Some(Self::FsWrite),
+            "shell_cwd" => Some(Self::ShellCwd),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DeclaredLocalRoot {
+    id: String,
+    path_display: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LocalRootSafety {
+    Allowed,
+    WarnBroad,
+    DeniedSensitive,
+}
+
+fn pick_local_root(params: &Value) -> Result<Value, String> {
+    let picked = rfd::FileDialog::new()
+        .set_title("Select local folder")
+        .pick_folder();
+    let Some(path) = picked else {
+        return Ok(json!({ "cancelled": true }));
+    };
+    bind_local_root_path(params, &path)
+}
+
+fn bind_local_root_path(params: &Value, selected_path: &Path) -> Result<Value, String> {
+    let product_id = product_param(params)?;
+    let account = required_param(params, "account")?;
+    let domain = LocalRootDomain::parse(&required_param(params, "domain")?)
+        .ok_or_else(|| "unknown_root_domain".to_string())?;
+    let root_id = normalize_local_root_id(domain, &required_param(params, "root_id")?);
+    let requested_path_display = string_param(params, "path_display").unwrap_or_default();
+    let canonical = sandbox::canonical_existing_path(selected_path)
+        .map_err(|_| "path_not_found_locally".to_string())?;
+    if !canonical.is_dir() {
+        return Err("path_not_directory".to_string());
+    }
+    match classify_local_root_path(&canonical) {
+        LocalRootSafety::DeniedSensitive => return Err("root_denied_sensitive".to_string()),
+        LocalRootSafety::WarnBroad if !bool_param(params, "confirm") => {
+            return Err("root_warn_broad".to_string())
+        }
+        LocalRootSafety::Allowed | LocalRootSafety::WarnBroad => {}
+    }
+
+    let binding = upsert_local_root_binding(
+        &product_id,
+        &account,
+        domain,
+        &root_id,
+        &requested_path_display,
+        &canonical,
+    )?;
+    Ok(json!({
+        "root_id": root_id,
+        "path_display": binding.path_display,
+        "redacted_real_path": redact_local_path(&binding.real_path)
+    }))
+}
+
+fn upsert_local_root_binding(
+    product_id: &str,
+    account: &str,
+    domain: LocalRootDomain,
+    root_id: &str,
+    requested_path_display: &str,
+    canonical: &Path,
+) -> Result<LocalRootBinding, String> {
+    let credentials = load_credentials()?;
+    let mut connections = credentials_connections(&credentials);
+    let connection_index =
+        local_root_connection_index(&connections, product_id, account, &credentials.device_id)?;
+    if connections[connection_index].authorized_products.is_empty() {
+        connections[connection_index].authorized_products =
+            connection_products(&connections[connection_index]);
+    }
+    let device_id = connections[connection_index].device_id.clone();
+    let grant = connections[connection_index]
+        .authorized_products
+        .iter_mut()
+        .find(|grant| product_matches_target(grant, product_id))
+        .ok_or_else(|| "authorization_not_found".to_string())?;
+    let declared = declared_local_root_for_policy(
+        &grant.policy,
+        domain,
+        root_id,
+        Some(requested_path_display),
+    )
+    .ok_or_else(|| "unknown_root_id".to_string())?;
+    let binding = LocalRootBinding {
+        real_path: canonical.to_string_lossy().to_string(),
+        path_display: declared.path_display,
+        bound_at: now_string(),
+        bound_device_id: device_id,
+    };
+    match domain {
+        LocalRootDomain::FsRead | LocalRootDomain::FsWrite => {
+            grant
+                .local_roots
+                .fs_roots
+                .insert(declared.id, binding.clone());
+        }
+        LocalRootDomain::ShellCwd => {
+            grant
+                .local_roots
+                .shell_cwd
+                .insert(declared.id, binding.clone());
+        }
+    }
+    let preferred = connections[connection_index].clone();
+    let next = credentials_from_connections(connections, Some(&preferred), Some(&credentials));
+    save_credentials(&next)?;
+    write_connector_state(&next)?;
+    Ok(binding)
+}
+
+fn local_root_connection_index(
+    connections: &[Credentials],
+    product_id: &str,
+    account: &str,
+    preferred_device_id: &str,
+) -> Result<usize, String> {
+    let matches = connections
+        .iter()
+        .enumerate()
+        .filter(|(_, connection)| {
+            connection_matches_account(connection, Some(account))
+                && connection_products(connection)
+                    .iter()
+                    .any(|grant| product_matches_target(grant, product_id))
+        })
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    if matches.is_empty() {
+        return Err("authorization_not_found".to_string());
+    }
+    if let Some(index) = matches.iter().copied().find(|index| {
+        !preferred_device_id.trim().is_empty()
+            && connections[*index].device_id == preferred_device_id
+    }) {
+        return Ok(index);
+    }
+    if matches.len() == 1 {
+        return Ok(matches[0]);
+    }
+    Err("ambiguous_authorization_target".to_string())
+}
+
+fn declared_local_root_for_policy(
+    policy: &Value,
+    domain: LocalRootDomain,
+    root_id: &str,
+    fallback_path_display: Option<&str>,
+) -> Option<DeclaredLocalRoot> {
+    match domain {
+        LocalRootDomain::FsRead => declared_fs_roots(policy, "allowed_roots", "allowedRoots")
+            .into_iter()
+            .find(|root| root.id == root_id),
+        LocalRootDomain::FsWrite => declared_fs_roots(policy, "write_roots", "writeRoots")
+            .into_iter()
+            .find(|root| root.id == root_id),
+        LocalRootDomain::ShellCwd => {
+            declared_shell_cwd_root(policy, root_id, fallback_path_display)
+        }
+    }
+}
+
+fn declared_fs_roots(policy: &Value, snake_key: &str, camel_key: &str) -> Vec<DeclaredLocalRoot> {
+    let fs = policy.pointer("/boundaries/fs").unwrap_or(&Value::Null);
+    declared_fs_roots_from_raw(fs, snake_key, camel_key)
+}
+
+fn declared_fs_roots_from_raw(
+    raw: &Value,
+    snake_key: &str,
+    camel_key: &str,
+) -> Vec<DeclaredLocalRoot> {
+    raw.get(snake_key)
+        .or_else(|| raw.get(camel_key))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, item)| {
+            let id = item
+                .get("id")
+                .and_then(Value::as_str)
+                .map(trim_nfc_no_trailing_slash)
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| format!("root-{}", index + 1));
+            let path_display = item
+                .get("path_display")
+                .or_else(|| item.get("pathDisplay"))
+                .and_then(Value::as_str)
+                .map(trim_nfc_no_trailing_slash)
+                .filter(|value| !value.is_empty())?;
+            Some(DeclaredLocalRoot { id, path_display })
+        })
+        .collect()
+}
+
+fn declared_shell_cwd_root(
+    policy: &Value,
+    root_id: &str,
+    fallback_path_display: Option<&str>,
+) -> Option<DeclaredLocalRoot> {
+    let shell = policy.pointer("/boundaries/shell").unwrap_or(&Value::Null);
+    declared_shell_cwd_root_from_raw(shell, root_id, fallback_path_display)
+}
+
+fn declared_shell_cwd_root_from_raw(
+    shell: &Value,
+    root_id: &str,
+    fallback_path_display: Option<&str>,
+) -> Option<DeclaredLocalRoot> {
+    let id = shell
+        .get("cwd_root_id")
+        .or_else(|| shell.get("cwdRootId"))
+        .and_then(Value::as_str)
+        .map(trim_nfc_keep_slash_local)
+        .filter(|value| !value.is_empty())?;
+    if id != root_id {
+        return None;
+    }
+    let path_display = shell
+        .get("cwd_root")
+        .or_else(|| shell.get("cwdRoot"))
+        .and_then(|value| {
+            if value
+                .get("id")
+                .and_then(Value::as_str)
+                .map(trim_nfc_keep_slash_local)
+                .as_deref()
+                .unwrap_or(root_id)
+                != root_id
+            {
+                return None;
+            }
+            value
+                .get("path_display")
+                .or_else(|| value.get("pathDisplay"))
+                .and_then(Value::as_str)
+        })
+        .or_else(|| {
+            shell
+                .get("path_display")
+                .or_else(|| shell.get("pathDisplay"))
+                .and_then(Value::as_str)
+        })
+        .or_else(|| {
+            shell
+                .get("cwd_path_display")
+                .or_else(|| shell.get("cwdPathDisplay"))
+                .and_then(Value::as_str)
+        })
+        .or_else(|| {
+            shell
+                .get("cwd_root_path_display")
+                .or_else(|| shell.get("cwdRootPathDisplay"))
+                .and_then(Value::as_str)
+        })
+        .or(fallback_path_display)
+        .map(trim_nfc_keep_slash_local)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| root_id.to_string());
+    Some(DeclaredLocalRoot { id, path_display })
+}
+
+fn normalize_local_root_id(domain: LocalRootDomain, value: &str) -> String {
+    match domain {
+        LocalRootDomain::ShellCwd => trim_nfc_keep_slash_local(value),
+        LocalRootDomain::FsRead | LocalRootDomain::FsWrite => trim_nfc_no_trailing_slash(value),
+    }
+}
+
+fn bool_param(params: &Value, key: &str) -> bool {
+    params.get(key).and_then(Value::as_bool).unwrap_or(false)
+}
+
+fn trim_nfc_no_trailing_slash(value: impl AsRef<str>) -> String {
+    value
+        .as_ref()
+        .trim()
+        .nfc()
+        .collect::<String>()
+        .trim_end_matches('/')
+        .to_string()
+}
+
+fn trim_nfc_keep_slash_local(value: impl AsRef<str>) -> String {
+    value.as_ref().trim().nfc().collect::<String>()
+}
+
+fn classify_local_root_path(path: &Path) -> LocalRootSafety {
+    if local_root_is_denied_sensitive(path) {
+        return LocalRootSafety::DeniedSensitive;
+    }
+    if local_root_is_broad(path) {
+        return LocalRootSafety::WarnBroad;
+    }
+    LocalRootSafety::Allowed
+}
+
+pub(crate) fn local_root_is_denied_sensitive(path: &Path) -> bool {
+    let canonical = canonical_for_safety(path);
+    if canonical.parent().is_none() {
+        return true;
+    }
+    if let Ok(home) = home_dir().map(|path| canonical_for_safety(&path)) {
+        if canonical == home {
+            return true;
+        }
+        let home_sensitive = [
+            home.join(".ssh"),
+            home.join(".aws"),
+            home.join(".gnupg"),
+            home.join("Library").join("Keychains"),
+        ];
+        if home_sensitive
+            .iter()
+            .any(|prefix| path_is_or_under(&canonical, &canonical_for_safety(prefix)))
+        {
+            return true;
+        }
+    }
+    [
+        PathBuf::from("/System"),
+        PathBuf::from("/private/etc"),
+        PathBuf::from("/Library"),
+        PathBuf::from("/etc"),
+    ]
+    .iter()
+    .any(|prefix| path_is_or_under(&canonical, &canonical_for_safety(prefix)))
+}
+
+fn local_root_is_broad(path: &Path) -> bool {
+    let canonical = canonical_for_safety(path);
+    let Ok(home) = home_dir().map(|path| canonical_for_safety(&path)) else {
+        return false;
+    };
+    let mut broad = vec![
+        home.join("Desktop"),
+        home.join("Documents"),
+        home.join("Downloads"),
+        home.join("Movies"),
+        home.join("Music"),
+        home.join("Pictures"),
+    ];
+    if let Some(parent) = home.parent() {
+        broad.push(parent.to_path_buf());
+    }
+    broad
+        .iter()
+        .any(|prefix| canonical == canonical_for_safety(prefix))
+}
+
+fn canonical_for_safety(path: &Path) -> PathBuf {
+    sandbox::canonical_existing_path(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+fn path_is_or_under(path: &Path, prefix: &Path) -> bool {
+    path == prefix || path.starts_with(prefix)
+}
+
 fn start_worker(state: &AppState, proxy: EventLoopProxy<UserEvent>) -> Result<Value, String> {
     prepare_connections_for_worker(state, &proxy)?;
     let already_running = state.worker_running.swap(true, Ordering::SeqCst);
@@ -2471,7 +2895,20 @@ fn start_worker(state: &AppState, proxy: EventLoopProxy<UserEvent>) -> Result<Va
 }
 
 fn credentials_products(credentials: &Credentials) -> Vec<ProductGrant> {
-    aggregate_authorized_products(&credentials_connections(credentials))
+    public_product_grants(&aggregate_authorized_products(&credentials_connections(
+        credentials,
+    )))
+}
+
+fn public_product_grants(products: &[ProductGrant]) -> Vec<ProductGrant> {
+    products
+        .iter()
+        .cloned()
+        .map(|mut product| {
+            product.local_roots = LocalRootBindings::default();
+            product
+        })
+        .collect()
 }
 
 fn connection_products(credentials: &Credentials) -> Vec<ProductGrant> {
@@ -2493,6 +2930,7 @@ fn connection_products(credentials: &Credentials) -> Vec<ProductGrant> {
             policy: Value::Null,
             epoch: 1,
             accounts: Vec::new(),
+            local_roots: LocalRootBindings::default(),
             authorized_at: credentials.claimed_at.clone(),
         }],
         _ => Vec::new(),
@@ -2581,6 +3019,7 @@ fn aggregate_authorized_products(connections: &[Credentials]) -> Vec<ProductGran
                 existing.origin = product.origin.clone().or_else(|| existing.origin.clone());
                 existing.capabilities = product.capabilities.clone();
                 existing.authorized_at = product.authorized_at.clone();
+                existing.local_roots = LocalRootBindings::default();
                 if let Some(existing_account) = existing
                     .accounts
                     .iter_mut()
@@ -2618,6 +3057,7 @@ fn aggregate_authorized_products(connections: &[Credentials]) -> Vec<ProductGran
                 }
             } else {
                 let mut next = product_without_accounts(product);
+                next.local_roots = LocalRootBindings::default();
                 next.accounts.push(account);
                 products.push(next);
             }
@@ -2756,7 +3196,7 @@ fn merge_authorized_products(
     let mut products = existing.map(connection_products).unwrap_or_default();
     if let Some(id) = product_id {
         let name = product_name.unwrap_or_else(|| id.clone());
-        let grant = ProductGrant {
+        let mut grant = ProductGrant {
             id: id.clone(),
             name,
             origin: cloud_origin,
@@ -2765,9 +3205,11 @@ fn merge_authorized_products(
             policy,
             epoch: epoch.max(1),
             accounts: Vec::new(),
+            local_roots: LocalRootBindings::default(),
             authorized_at: now_string(),
         };
         if let Some(index) = products.iter().position(|item| item.id == id) {
+            grant.local_roots = products[index].local_roots.clone();
             products[index] = grant;
         } else {
             products.push(grant);
@@ -3721,7 +4163,7 @@ fn execute_via_registry(
             return Ok(result);
         }
     };
-    let boundary = match build_granted_boundary(registry, &grant, job) {
+    let boundary = match build_granted_boundary(registry, &grant, job, &credentials.device_id) {
         Ok(boundary) => boundary,
         Err(error) => {
             let result = local_policy_denial_result(job, &error);
@@ -3889,6 +4331,7 @@ fn build_granted_boundary(
     registry: &ConnectorRegistry,
     grant: &ProductGrant,
     job: &BridgeJob,
+    current_device_id: &str,
 ) -> Result<GrantedBoundary, String> {
     let declaration = registry.kind_declaration(&job.kind).ok_or_else(|| {
         format!(
@@ -3903,8 +4346,16 @@ fn build_granted_boundary(
     let capabilities = effective_grant_capabilities(grant);
     let raw = match domain.as_str() {
         "data" => data_boundary_policy_slice(&grant.policy, &job.product_id),
-        "fs" => fs_boundary_policy_slice(&grant.policy),
-        "shell" => shell_boundary_policy_slice(&grant.policy),
+        "fs" => inject_local_fs_paths(
+            fs_boundary_policy_slice(&grant.policy),
+            grant,
+            current_device_id,
+        ),
+        "shell" => inject_local_shell_cwd(
+            shell_boundary_policy_slice(&grant.policy),
+            grant,
+            current_device_id,
+        ),
         _ => grant.policy.clone(),
     };
     Ok(GrantedBoundary {
@@ -3915,6 +4366,90 @@ fn build_granted_boundary(
         capabilities,
         raw,
     })
+}
+
+fn inject_local_fs_paths(mut raw: Value, grant: &ProductGrant, current_device_id: &str) -> Value {
+    let declared = declared_fs_roots_from_raw(&raw, "allowed_roots", "allowedRoots")
+        .into_iter()
+        .chain(declared_fs_roots_from_raw(
+            &raw,
+            "write_roots",
+            "writeRoots",
+        ))
+        .map(|root| (root.id, root.path_display))
+        .collect::<HashMap<_, _>>();
+    if declared.is_empty() || grant.local_roots.fs_roots.is_empty() {
+        return raw;
+    }
+    let mut local_paths = Map::new();
+    for (root_id, binding) in &grant.local_roots.fs_roots {
+        if binding.bound_device_id != current_device_id {
+            continue;
+        }
+        let Some(path_display) = declared.get(root_id) else {
+            continue;
+        };
+        if path_display != &binding.path_display {
+            continue;
+        }
+        let path = PathBuf::from(&binding.real_path);
+        let Ok(canonical) = sandbox::canonical_existing_path(&path) else {
+            continue;
+        };
+        if !canonical.is_dir() || local_root_is_denied_sensitive(&canonical) {
+            continue;
+        }
+        local_paths.insert(
+            root_id.clone(),
+            Value::String(canonical.to_string_lossy().to_string()),
+        );
+    }
+    if !local_paths.is_empty() {
+        if let Some(map) = raw.as_object_mut() {
+            map.insert("_local_paths".to_string(), Value::Object(local_paths));
+        }
+    }
+    raw
+}
+
+fn inject_local_shell_cwd(mut raw: Value, grant: &ProductGrant, current_device_id: &str) -> Value {
+    let cwd_root_id = raw
+        .get("cwd_root_id")
+        .or_else(|| raw.get("cwdRootId"))
+        .and_then(Value::as_str)
+        .map(trim_nfc_keep_slash_local)
+        .filter(|value| !value.is_empty());
+    let Some(cwd_root_id) = cwd_root_id else {
+        return raw;
+    };
+    let Some(binding) = grant.local_roots.shell_cwd.get(&cwd_root_id) else {
+        return raw;
+    };
+    if binding.bound_device_id != current_device_id {
+        return raw;
+    }
+    let Some(declared) =
+        declared_shell_cwd_root_from_raw(&raw, &cwd_root_id, Some(&binding.path_display))
+    else {
+        return raw;
+    };
+    if declared.path_display != binding.path_display {
+        return raw;
+    }
+    let path = PathBuf::from(&binding.real_path);
+    let Ok(canonical) = sandbox::canonical_existing_path(&path) else {
+        return raw;
+    };
+    if !canonical.is_dir() || local_root_is_denied_sensitive(&canonical) {
+        return raw;
+    }
+    if let Some(map) = raw.as_object_mut() {
+        map.insert(
+            "_local_cwd".to_string(),
+            Value::String(canonical.to_string_lossy().to_string()),
+        );
+    }
+    raw
 }
 
 fn fs_boundary_policy_slice(policy: &Value) -> Value {
@@ -4291,6 +4826,8 @@ fn local_policy_denial(error: &str) -> (&'static str, &'static str) {
         ("path", "path_not_found_locally")
     } else if error.starts_with("path_outside_allowlist_locally") {
         ("path", "path_outside_allowlist_locally")
+    } else if error.starts_with("root_denied_sensitive") {
+        ("path", "root_denied_sensitive")
     } else if error.starts_with("path_denied_by_sandbox_local") {
         ("path", "path_denied_by_sandbox_local")
     } else if error.starts_with("file_too_large_locally") {
@@ -6087,6 +6624,7 @@ mod tests {
                 policy: test_auth_scope(),
                 epoch: 1,
                 accounts: Vec::new(),
+                local_roots: LocalRootBindings::default(),
                 authorized_at: now_string(),
             }],
             device_token_expires_at: None,
@@ -6303,6 +6841,84 @@ mod tests {
         project_v1_scope_to_v2(&test_auth_scope())
     }
 
+    fn high_risk_root_scope() -> Value {
+        json!({
+            "version": "AUTH-SCOPE-v2",
+            "preset": "high-risk-test",
+            "request_source": "test",
+            "product_id": "panda-chat",
+            "source_origin": "http://local.test",
+            "capabilities": ["fs.read", "fs.write", "shell.run"],
+            "danger_tiers": {
+                "low": { "granted": false, "domains": [] },
+                "medium": { "granted": false, "domains": [] },
+                "high": { "granted": true, "domains": ["fs"] },
+                "critical": { "granted": true, "domains": ["shell"] }
+            },
+            "domain_boundaries": {
+                "fs": { "granted": true, "danger": "high", "boundary_type": "directory_whitelist" },
+                "shell": { "granted": true, "danger": "critical", "boundary_type": "command_sandbox" }
+            },
+            "boundaries": {
+                "fs": {
+                    "type": "directory_whitelist",
+                    "allowed_roots": [{ "id": "root-a", "path_display": "[local]/Read" }],
+                    "write_roots": [{ "id": "root-w", "path_display": "[local]/Write" }],
+                    "writable": true,
+                    "max_bytes": 8388608,
+                    "follow_symlinks": false
+                },
+                "shell": {
+                    "type": "command_sandbox",
+                    "cwd_root_id": "root-shell",
+                    "cwd_root": { "id": "root-shell", "path_display": "[local]/Shell" },
+                    "net": "deny",
+                    "allow_exec_subtree": false,
+                    "cmd_allowlist": [],
+                    "max_output_bytes": 1024,
+                    "deadline_ms": 1000,
+                    "limits": connector::shell::default_limits_json()
+                }
+            }
+        })
+    }
+
+    fn test_high_risk_credentials() -> Credentials {
+        let mut credentials = test_credentials(vec!["fs.read", "fs.write", "shell.run"]);
+        credentials.authorized_products[0].capabilities = vec![
+            "fs.read".to_string(),
+            "fs.write".to_string(),
+            "shell.run".to_string(),
+        ];
+        credentials.authorized_products[0].policy = high_risk_root_scope();
+        credentials
+    }
+
+    fn fs_read_job_for(path: &Path) -> BridgeJob {
+        BridgeJob {
+            kind: "fs.read".to_string(),
+            input: json!({ "path": path.to_string_lossy().to_string() }),
+            workspace_ref: None,
+            ..test_job(json!({}))
+        }
+    }
+
+    fn local_root_params(domain: &str, root_id: &str, path_display: &str) -> Value {
+        json!({
+            "product_id": "panda-chat",
+            "account": "user_1",
+            "domain": domain,
+            "root_id": root_id,
+            "path_display": path_display
+        })
+    }
+
+    fn with_state_file(name: &str) -> PathBuf {
+        let state_path = env::temp_dir().join(format!("{name}-{}.json", next_event_seq()));
+        env::set_var("PANDA_BRIDGE_DESKTOP_STATE", &state_path);
+        state_path
+    }
+
     fn test_credentials_for_device(
         device_id: &str,
         account_id: &str,
@@ -6443,6 +7059,269 @@ mod tests {
 
         reset_credentials_env();
         let _ = fs::remove_file(state_path);
+    }
+
+    #[test]
+    fn pick_local_root_binding_persists_and_injects_fs_path() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        reset_credentials_env();
+        env::remove_var(connector::fs::FS_ALLOWED_ROOTS_ENV);
+        let state_path = with_state_file("panda-bridge-root-bind-test");
+        let base = env::temp_dir().join(format!("panda-bridge-root-bind-{}", next_event_seq()));
+        let root = base.join("project");
+        let file = root.join("hello.txt");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(&file, "hello").unwrap();
+        save_credentials(&test_high_risk_credentials()).unwrap();
+
+        let response = bind_local_root_path(
+            &local_root_params("fs_read", "root-a", "[local]/Read"),
+            &root,
+        )
+        .unwrap();
+        assert_eq!(response["root_id"], "root-a");
+        assert_eq!(response["path_display"], "[local]/Read");
+        assert_eq!(response["redacted_real_path"], "[local]/project");
+        assert!(!response
+            .to_string()
+            .contains(root.to_string_lossy().as_ref()));
+
+        let loaded = load_credentials().unwrap();
+        let connection = &loaded.connections[0];
+        let grant = &connection.authorized_products[0];
+        let binding = grant.local_roots.fs_roots.get("root-a").unwrap();
+        assert_eq!(
+            binding.real_path,
+            fs::canonicalize(&root)
+                .unwrap()
+                .to_string_lossy()
+                .to_string()
+        );
+        let registry = declaration_registry();
+        let boundary = build_granted_boundary(
+            &registry,
+            grant,
+            &fs_read_job_for(&file),
+            &connection.device_id,
+        )
+        .unwrap();
+        assert_eq!(
+            boundary.raw["_local_paths"]["root-a"],
+            fs::canonicalize(&root)
+                .unwrap()
+                .to_string_lossy()
+                .to_string()
+        );
+        assert!(!serde_json::to_string(&credentials_products(&loaded))
+            .unwrap()
+            .contains("real_path"));
+
+        reset_credentials_env();
+        let _ = fs::remove_file(state_path);
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn pick_local_root_binding_persists_and_injects_shell_cwd() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        reset_credentials_env();
+        env::remove_var(connector::shell::SHELL_CWD_ROOTS_ENV);
+        let state_path = with_state_file("panda-bridge-shell-root-bind-test");
+        let root =
+            env::temp_dir().join(format!("panda-bridge-shell-root-bind-{}", next_event_seq()));
+        fs::create_dir_all(&root).unwrap();
+        save_credentials(&test_high_risk_credentials()).unwrap();
+
+        let response = bind_local_root_path(
+            &local_root_params("shell_cwd", "root-shell", "[local]/Shell"),
+            &root,
+        )
+        .unwrap();
+        assert_eq!(response["root_id"], "root-shell");
+        assert_eq!(response["path_display"], "[local]/Shell");
+        assert!(response["redacted_real_path"]
+            .as_str()
+            .unwrap()
+            .starts_with("[local]/panda-bridge-shell-root-bind-"));
+
+        let loaded = load_credentials().unwrap();
+        let connection = &loaded.connections[0];
+        let grant = &connection.authorized_products[0];
+        let registry = declaration_registry();
+        let job = BridgeJob {
+            kind: "shell.run".to_string(),
+            input: json!({ "argv": ["/bin/echo", "ok"] }),
+            workspace_ref: None,
+            ..test_job(json!({}))
+        };
+        let boundary =
+            build_granted_boundary(&registry, grant, &job, &connection.device_id).unwrap();
+        assert_eq!(
+            boundary.raw["_local_cwd"],
+            fs::canonicalize(&root)
+                .unwrap()
+                .to_string_lossy()
+                .to_string()
+        );
+
+        reset_credentials_env();
+        let _ = fs::remove_file(state_path);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn pick_local_root_rejects_sensitive_unknown_and_broad_without_confirm() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        reset_credentials_env();
+        let old_home = env::var_os("HOME");
+        let state_path = with_state_file("panda-bridge-root-deny-test");
+        let base = env::temp_dir().join(format!("panda-bridge-root-deny-{}", next_event_seq()));
+        let normal = base.join("normal");
+        let home = base.join("home");
+        let documents = home.join("Documents");
+        fs::create_dir_all(&normal).unwrap();
+        fs::create_dir_all(&documents).unwrap();
+        env::set_var("HOME", &home);
+        save_credentials(&test_high_risk_credentials()).unwrap();
+
+        assert_eq!(
+            bind_local_root_path(
+                &local_root_params("fs_read", "root-a", "[local]/Read"),
+                Path::new("/")
+            )
+            .unwrap_err(),
+            "root_denied_sensitive"
+        );
+        assert_eq!(
+            bind_local_root_path(
+                &local_root_params("fs_read", "missing-root", "[local]/Read"),
+                &normal,
+            )
+            .unwrap_err(),
+            "unknown_root_id"
+        );
+        assert_eq!(
+            bind_local_root_path(
+                &local_root_params("fs_read", "root-a", "[local]/Read"),
+                &documents
+            )
+            .unwrap_err(),
+            "root_warn_broad"
+        );
+        let mut confirmed = local_root_params("fs_read", "root-a", "[local]/Read");
+        confirmed["confirm"] = json!(true);
+        assert!(bind_local_root_path(&confirmed, &documents).is_ok());
+
+        let loaded = load_credentials().unwrap();
+        assert!(loaded.connections[0].authorized_products[0]
+            .local_roots
+            .fs_roots
+            .contains_key("root-a"));
+
+        if let Some(value) = old_home {
+            env::set_var("HOME", value);
+        } else {
+            env::remove_var("HOME");
+        }
+        reset_credentials_env();
+        let _ = fs::remove_file(state_path);
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn local_root_injection_requires_device_and_current_path_display() {
+        let base =
+            env::temp_dir().join(format!("panda-bridge-root-injection-{}", next_event_seq()));
+        let root = base.join("root");
+        fs::create_dir_all(&root).unwrap();
+        let credentials = test_high_risk_credentials();
+        let mut grant = credentials.authorized_products[0].clone();
+        grant.local_roots.fs_roots.insert(
+            "root-a".to_string(),
+            LocalRootBinding {
+                real_path: fs::canonicalize(&root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .to_string(),
+                path_display: "[local]/Read".to_string(),
+                bound_at: now_string(),
+                bound_device_id: "other-device".to_string(),
+            },
+        );
+        let registry = declaration_registry();
+        let job = fs_read_job_for(&root.join("file.txt"));
+        let no_device_match =
+            build_granted_boundary(&registry, &grant, &job, &credentials.device_id).unwrap();
+        assert!(no_device_match.raw.get("_local_paths").is_none());
+
+        grant
+            .local_roots
+            .fs_roots
+            .get_mut("root-a")
+            .unwrap()
+            .bound_device_id = credentials.device_id.clone();
+        grant
+            .local_roots
+            .fs_roots
+            .get_mut("root-a")
+            .unwrap()
+            .path_display = "[local]/Old".to_string();
+        let drifted =
+            build_granted_boundary(&registry, &grant, &job, &credentials.device_id).unwrap();
+        assert!(drifted.raw.get("_local_paths").is_none());
+
+        grant
+            .local_roots
+            .fs_roots
+            .get_mut("root-a")
+            .unwrap()
+            .path_display = "[local]/Read".to_string();
+        let injected =
+            build_granted_boundary(&registry, &grant, &job, &credentials.device_id).unwrap();
+        assert!(injected.raw.get("_local_paths").is_some());
+
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn remove_authorization_clears_local_root_bindings_with_grant() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        reset_credentials_env();
+        let state_path = with_state_file("panda-bridge-root-revoke-test");
+        env::set_var("PANDA_BRIDGE_SKIP_REMOTE_REVOKE", "1");
+        let base = env::temp_dir().join(format!("panda-bridge-root-revoke-{}", next_event_seq()));
+        let root = base.join("project");
+        fs::create_dir_all(&root).unwrap();
+        let mut credentials = test_high_risk_credentials();
+        credentials.api_base = "http://127.0.0.1:9".to_string();
+        credentials.authorized_products[0]
+            .local_roots
+            .fs_roots
+            .insert(
+                "root-a".to_string(),
+                LocalRootBinding {
+                    real_path: fs::canonicalize(&root)
+                        .unwrap()
+                        .to_string_lossy()
+                        .to_string(),
+                    path_display: "[local]/Read".to_string(),
+                    bound_at: now_string(),
+                    bound_device_id: credentials.device_id.clone(),
+                },
+            );
+        save_credentials(&credentials).unwrap();
+
+        let removed = revoke_authorization("otherline", Some("user@example.test"), None).unwrap();
+        assert_eq!(removed["ok"], true);
+        let loaded = load_credentials().unwrap();
+        assert!(credentials_products(&loaded).is_empty());
+        let text = fs::read_to_string(&state_path).unwrap();
+        assert!(!text.contains("local_roots"));
+        assert!(!text.contains(root.to_string_lossy().as_ref()));
+
+        reset_credentials_env();
+        let _ = fs::remove_file(state_path);
+        let _ = fs::remove_dir_all(base);
     }
 
     #[test]
