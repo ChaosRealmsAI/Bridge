@@ -9,6 +9,7 @@ pub mod data;
 pub mod fs;
 pub mod registry;
 pub mod sandbox;
+pub mod shell;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -16,6 +17,7 @@ pub enum ConnectorDanger {
     Low,
     Medium,
     High,
+    Critical,
 }
 
 impl ConnectorDanger {
@@ -24,6 +26,7 @@ impl ConnectorDanger {
             Self::Low => "low",
             Self::Medium => "medium",
             Self::High => "high",
+            Self::Critical => "critical",
         }
     }
 }

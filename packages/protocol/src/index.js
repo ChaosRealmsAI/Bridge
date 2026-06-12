@@ -5,6 +5,7 @@ export const EVENT_TYPES = Object.freeze([
   "claimed",
   "started",
   "status",
+  "chunk",
   "text_delta",
   "app_server_event",
   "completed",

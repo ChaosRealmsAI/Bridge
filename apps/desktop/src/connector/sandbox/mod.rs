@@ -16,6 +16,7 @@ pub struct SandboxSpec {
     pub read_roots: Vec<PathBuf>,
     pub write_roots: Vec<PathBuf>,
     pub exec_allow: Vec<PathBuf>,
+    pub allow_exec_subtree: bool,
     pub net: NetPolicy,
     pub limits: ResourceLimits,
     pub env_allow: Vec<(String, String)>,
@@ -28,6 +29,7 @@ pub enum SandboxProfileKind {
     DataKvDir,
     FsReadDir,
     FsWriteDir,
+    ShellCommand,
 }
 
 impl SandboxProfileKind {
@@ -37,6 +39,7 @@ impl SandboxProfileKind {
             Self::DataKvDir => "data_kv_dir",
             Self::FsReadDir => "fs_read_dir",
             Self::FsWriteDir => "fs_write_dir",
+            Self::ShellCommand => "shell_command",
         }
     }
 }
@@ -94,6 +97,7 @@ pub struct ResourceLimits {
     pub address_space: u64,
     pub open_files: u64,
     pub processes: u64,
+    pub file_size: u64,
 }
 
 impl ResourceLimits {
@@ -103,6 +107,7 @@ impl ResourceLimits {
             address_space: 4 * 1024 * 1024 * 1024,
             open_files: 512,
             processes: 64,
+            file_size: 1024 * 1024 * 1024,
         }
     }
 
@@ -112,6 +117,7 @@ impl ResourceLimits {
             address_space: 512 * 1024 * 1024,
             open_files: 64,
             processes: 8,
+            file_size: 64 * 1024 * 1024,
         }
     }
 
@@ -121,6 +127,7 @@ impl ResourceLimits {
             address_space: 256 * 1024 * 1024,
             open_files: 32,
             processes: 2,
+            file_size: 64 * 1024 * 1024,
         }
     }
 
@@ -130,6 +137,17 @@ impl ResourceLimits {
             address_space: 256 * 1024 * 1024,
             open_files: 32,
             processes: 2,
+            file_size: 64 * 1024 * 1024,
+        }
+    }
+
+    pub fn shell_default() -> Self {
+        Self {
+            cpu_seconds: 30,
+            address_space: 1024 * 1024 * 1024,
+            open_files: 128,
+            processes: 16,
+            file_size: 64 * 1024 * 1024,
         }
     }
 }
@@ -192,6 +210,7 @@ pub fn spec_fingerprint(spec: &SandboxSpec, product_id: &str) -> String {
     hasher.update(spec.limits.address_space.to_le_bytes());
     hasher.update(spec.limits.open_files.to_le_bytes());
     hasher.update(spec.limits.processes.to_le_bytes());
+    hasher.update(spec.limits.file_size.to_le_bytes());
     let digest = hasher.finalize();
     digest[..16]
         .iter()
@@ -234,6 +253,7 @@ mod tests {
             read_roots: vec![PathBuf::from("/tmp/ws")],
             write_roots: vec![PathBuf::from("/tmp/ws")],
             exec_allow: vec![PathBuf::from("/usr/bin/true")],
+            allow_exec_subtree: false,
             net: NetPolicy::Deny,
             limits: ResourceLimits::codex_default(),
             env_allow: Vec::new(),
@@ -251,6 +271,7 @@ mod tests {
             read_roots: vec![PathBuf::from("/tmp/a")],
             write_roots: vec![PathBuf::from("/tmp/a")],
             exec_allow: vec![PathBuf::from("/usr/bin/true")],
+            allow_exec_subtree: false,
             net: NetPolicy::Deny,
             limits: ResourceLimits::codex_default(),
             env_allow: Vec::new(),

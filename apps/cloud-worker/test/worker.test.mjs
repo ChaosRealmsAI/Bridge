@@ -214,15 +214,20 @@ assert.equal(diagnostics.storage, "memory");
 assert.ok(diagnostics.products.some((item) => item.id === "panda-chat" && item.capabilities.includes("codex.chat")));
 assert.equal(diagnostics.products.find((item) => item.id === "panda-chat").capabilities.includes("fs.read"), false);
 assert.equal(diagnostics.products.find((item) => item.id === "panda-chat").capabilities.includes("fs.write"), false);
+assert.equal(diagnostics.products.find((item) => item.id === "panda-chat").capabilities.includes("shell.run"), false);
 assert.equal(diagnostics.products.find((item) => item.id === "panda-spec").capabilities.includes("fs.read"), false);
 assert.equal(diagnostics.products.find((item) => item.id === "panda-spec").capabilities.includes("fs.write"), false);
+assert.equal(diagnostics.products.find((item) => item.id === "panda-spec").capabilities.includes("shell.run"), false);
 assert.equal(diagnostics.products.find((item) => item.id === "panda-dev").capabilities.includes("fs.read"), true);
 assert.equal(diagnostics.products.find((item) => item.id === "panda-dev").capabilities.includes("fs.write"), true);
+assert.equal(diagnostics.products.find((item) => item.id === "panda-dev").capabilities.includes("shell.run"), false);
 assert.equal(diagnostics.products.find((item) => item.id === "otherline").capabilities.includes("fs.read"), true);
 assert.equal(diagnostics.products.find((item) => item.id === "otherline").capabilities.includes("fs.write"), true);
+assert.equal(diagnostics.products.find((item) => item.id === "otherline").capabilities.includes("shell.run"), false);
 assert.ok(diagnostics.jobs.supported_kinds.includes("saas.custom.run"));
 assert.ok(diagnostics.jobs.supported_kinds.includes("fs.read"));
 assert.ok(diagnostics.jobs.supported_kinds.includes("fs.write"));
+assert.ok(diagnostics.jobs.supported_kinds.includes("shell.run"));
 assert.equal(diagnostics.jobs.registry["codex.chat"].verb, "chat");
 assert.equal(diagnostics.jobs.registry["codex.chat"].danger, "low");
 assert.equal(diagnostics.jobs.registry["codex.chat"].boundary_type, "workspace_sandbox");
@@ -232,6 +237,9 @@ assert.equal(diagnostics.jobs.registry["fs.read"].boundary_type, "directory_whit
 assert.equal(diagnostics.jobs.registry["fs.write"].verb, "write");
 assert.equal(diagnostics.jobs.registry["fs.write"].danger, "high");
 assert.equal(diagnostics.jobs.registry["fs.write"].boundary_type, "directory_whitelist");
+assert.equal(diagnostics.jobs.registry["shell.run"].verb, "run");
+assert.equal(diagnostics.jobs.registry["shell.run"].danger, "critical");
+assert.equal(diagnostics.jobs.registry["shell.run"].boundary_type, "command_sandbox");
 assert.equal(diagnostics.jobs.registry["saas.custom.run"].verb, "custom.run");
 assert.equal(diagnostics.jobs.registry["saas.custom.run"].danger, "high");
 assert.equal(diagnostics.jobs.registry["saas.custom.run"].boundary_type, "opaque_runtime");
@@ -254,7 +262,7 @@ assert.throws(() => assertRegistryWellFormed({
   "codex.chat": { domain: "codex", verb: "typo", danger: "low", boundary_type: "workspace_sandbox" },
 }, {}), /invalid capability registry key/);
 assert.throws(() => assertRegistryWellFormed({
-  "codex.chat": { domain: "codex", verb: "chat", danger: "critical", boundary_type: "workspace_sandbox" },
+  "codex.chat": { domain: "codex", verb: "chat", danger: "extreme", boundary_type: "workspace_sandbox" },
 }, {}), /invalid capability danger/);
 assert.throws(() => assertRegistryWellFormed({
   "codex.chat": { domain: "codex", verb: "chat", danger: "low", boundary_type: "unknown" },
@@ -266,6 +274,8 @@ assert.equal(mixedMetadata.danger_tiers.medium.granted, false);
 assert.deepEqual(mixedMetadata.danger_tiers.medium.domains, []);
 assert.equal(mixedMetadata.danger_tiers.high.granted, true);
 assert.deepEqual(mixedMetadata.danger_tiers.high.domains, ["saas"]);
+assert.equal(mixedMetadata.danger_tiers.critical.granted, false);
+assert.deepEqual(mixedMetadata.danger_tiers.critical.domains, []);
 assert.deepEqual(mixedMetadata.domain_boundaries.codex, {
   granted: true,
   danger: "low",
@@ -279,6 +289,7 @@ assert.deepEqual(mixedMetadata.domain_boundaries.saas, {
 const dataMetadata = scopeDangerMetadataFromCapabilities(["data.put", "data.get"]);
 assert.equal(dataMetadata.danger_tiers.medium.granted, true);
 assert.deepEqual(dataMetadata.danger_tiers.medium.domains, ["data"]);
+assert.equal(dataMetadata.danger_tiers.critical.granted, false);
 assert.deepEqual(dataMetadata.domain_boundaries.data, {
   granted: true,
   danger: "medium",
@@ -316,6 +327,15 @@ assert.deepEqual(authorizationScopeDenial({
   input: { path: "/tmp/a.txt", text: "x" },
   policy: {},
 }), { denied: "tier", reason: "tier_not_granted" });
+assert.deepEqual(authorizationScopeDenial({
+  ...v1Scope,
+  capabilities: ["shell.run"],
+}, {
+  kind: "shell.run",
+  product_id: "panda-dev",
+  input: { argv: ["/bin/echo", "hi"] },
+  policy: {},
+}), { denied: "tier", reason: "tier_not_granted" });
 const v2LowScope = {
   ...v1Scope,
   version: "AUTH-SCOPE-v2",
@@ -342,6 +362,15 @@ assert.deepEqual(authorizationScopeDenial(v2LowScope, {
   kind: "fs.write",
   product_id: "panda-dev",
   input: { path: "/tmp/a.txt", text: "x" },
+  policy: {},
+}), { denied: "tier", reason: "tier_not_granted" });
+assert.deepEqual(authorizationScopeDenial({
+  ...v2LowScope,
+  capabilities: ["shell.run"],
+}, {
+  kind: "shell.run",
+  product_id: "panda-dev",
+  input: { argv: ["/bin/echo", "hi"] },
   policy: {},
 }), { denied: "tier", reason: "tier_not_granted" });
 const v2DataScope = {
@@ -418,6 +447,58 @@ assert.deepEqual(authorizationScopeDenial({
   input: { path: "/tmp/a.txt" },
   policy: {},
 }), { denied: "path", reason: "boundary_type_mismatch" });
+const v2ShellScope = {
+  ...v1Scope,
+  version: "AUTH-SCOPE-v2",
+  capabilities: ["shell.run"],
+  ...scopeDangerMetadataFromCapabilities(["shell.run"]),
+  boundaries: {
+    shell: {
+      type: "command_sandbox",
+      cwd_root_id: "root-a",
+      net: "deny",
+      allow_exec_subtree: false,
+      cmd_allowlist: [],
+      max_output_bytes: 1048576,
+      deadline_ms: 30000,
+      limits: {
+        cpu_seconds: 30,
+        address_space: 1073741824,
+        open_files: 128,
+        processes: 16,
+        file_size: 67108864,
+      },
+    },
+  },
+};
+assert.equal(authorizationScopeDenial(v2ShellScope, {
+  kind: "shell.run",
+  product_id: "panda-dev",
+  input: { argv: ["/bin/echo", "hi"] },
+  policy: {},
+}), null);
+assert.deepEqual(authorizationScopeDenial({
+  ...v2ShellScope,
+  danger_tiers: {
+    low: { granted: false, domains: [] },
+    medium: { granted: false, domains: [] },
+    high: { granted: false, domains: [] },
+  },
+}, {
+  kind: "shell.run",
+  product_id: "panda-dev",
+  input: { argv: ["/bin/echo", "hi"] },
+  policy: {},
+}), { denied: "tier", reason: "tier_not_granted" });
+assert.deepEqual(authorizationScopeDenial({
+  ...v2ShellScope,
+  boundaries: { shell: { ...v2ShellScope.boundaries.shell, cwd_root_id: "" } },
+}, {
+  kind: "shell.run",
+  product_id: "panda-dev",
+  input: { argv: ["/bin/echo", "hi"] },
+  policy: {},
+}), { denied: "cwd_root", reason: "cwd_root_not_granted" });
 
 const unauthenticatedQueueSummary = await apiRaw("GET", "/v1/queue/summary");
 assert.equal(unauthenticatedQueueSummary.response.status, 401);
@@ -562,6 +643,12 @@ const busyAccept = await api("POST", `/v1/connectors/jobs/${queuedBehind.job.id}
 assert.equal(busyAccept.accepted, false);
 assert.equal(busyAccept.reason, "device_busy");
 await api("POST", `/v1/connectors/jobs/${created.job.id}/events`, { type: "text_delta", payload: { delta: "hi" } }, localIntentClaim.device_token);
+const transientChunk = await api("POST", `/v1/connectors/jobs/${created.job.id}/events`, {
+  type: "chunk",
+  payload: { persist: false, stream: "stdout", bytes: 11, data_base64: "aGVsbG8gc2hlbGw=" },
+}, localIntentClaim.device_token);
+assert.equal(transientChunk.items[0].type, "chunk");
+assert.equal(transientChunk.items[0].transient, true);
 await api("POST", `/v1/connectors/jobs/${created.job.id}/ack`, { status: "succeeded", result: { ok: true, reply: "hi" } }, localIntentClaim.device_token);
 const queuedBehindAccept = await api("POST", `/v1/connectors/jobs/${queuedBehind.job.id}/accept`, { transport: "websocket" }, localIntentClaim.device_token);
 assert.equal(queuedBehindAccept.accepted, true);
@@ -574,6 +661,8 @@ assert.ok(Number.isFinite(final.job.timing.queued_to_claimed_ms));
 assert.ok(Number.isFinite(final.job.timing.total_job_ms));
 const events = await api("GET", `/v1/jobs/${created.job.id}/events`);
 assert.ok(events.items.length >= 3);
+assert.equal(events.items.some((item) => item.type === "chunk"), false);
+assert.equal(JSON.stringify(events).includes("aGVsbG8gc2hlbGw="), false);
 const queueSummary = await api("GET", "/v1/queue/summary");
 assert.equal(queueSummary.limits.device_max_running, 1);
 assert.equal(queueSummary.counts.total, 2);
@@ -676,6 +765,7 @@ assert.equal(intentClaim.authorization.policy.danger_tiers.low.granted, true);
 assert.deepEqual(intentClaim.authorization.policy.danger_tiers.low.domains, ["codex"]);
 assert.equal(intentClaim.authorization.policy.danger_tiers.medium.granted, false);
 assert.equal(intentClaim.authorization.policy.danger_tiers.high.granted, false);
+assert.equal(intentClaim.authorization.policy.danger_tiers.critical.granted, false);
 assert.deepEqual(intentClaim.authorization.policy.domain_boundaries, {
   codex: { granted: true, danger: "low", boundary_type: "workspace_sandbox" },
 });
@@ -711,6 +801,7 @@ assert.ok(fullAccessClaim.authorization.policy.capabilities.includes("saas.custo
 assert.ok(fullAccessClaim.authorization.policy.capabilities.includes("data.put"));
 assert.equal(fullAccessClaim.authorization.policy.capabilities.includes("fs.read"), false);
 assert.equal(fullAccessClaim.authorization.policy.capabilities.includes("fs.write"), false);
+assert.equal(fullAccessClaim.authorization.policy.capabilities.includes("shell.run"), false);
 assert.equal(fullAccessClaim.authorization.policy.workspace_roots[0].allow_all, true);
 assert.equal(fullAccessClaim.authorization.policy.sandbox_floor, "danger-full-access");
 assert.equal(fullAccessClaim.authorization.policy.approval_policy_floor, "never");
@@ -718,6 +809,7 @@ assert.equal(fullAccessClaim.authorization.policy.allow_approval_never, true);
 assert.equal(fullAccessClaim.authorization.policy.allow_developer_instructions, true);
 assert.equal(fullAccessClaim.authorization.policy.danger_tiers.medium.granted, true);
 assert.equal(fullAccessClaim.authorization.policy.danger_tiers.high.granted, true);
+assert.equal(fullAccessClaim.authorization.policy.danger_tiers.critical.granted, false);
 assert.deepEqual(fullAccessClaim.authorization.policy.domain_boundaries.data, {
   granted: true,
   danger: "medium",
@@ -780,6 +872,7 @@ const fsClaim = await nativeClaimIntent(fsIntent.token, {
 assert.deepEqual(fsClaim.authorization.policy.capabilities, ["codex.chat", "fs.read", "fs.write"]);
 assert.equal(fsClaim.authorization.policy.danger_tiers.high.granted, true);
 assert.deepEqual(fsClaim.authorization.policy.danger_tiers.high.domains, ["fs"]);
+assert.equal(fsClaim.authorization.policy.danger_tiers.critical.granted, false);
 assert.deepEqual(fsClaim.authorization.policy.domain_boundaries.fs, {
   granted: true,
   danger: "high",

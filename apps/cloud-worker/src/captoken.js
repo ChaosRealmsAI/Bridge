@@ -136,6 +136,7 @@ export function normalizeBoundary(policyInput, jobInput) {
   const domain = capabilityDomain(job.kind) || String(job.kind || "").split(".")[0] || "unknown";
   if (domain === "data") return normalizeDataBoundary(policy, job);
   if (domain === "fs") return normalizeFsBoundary(policy);
+  if (domain === "shell") return normalizeShellBoundary(policy);
   if (domain === "codex") return normalizeCodexBoundary(policy);
   return {
     type: "opaque_runtime",
@@ -216,6 +217,38 @@ function normalizeDataBoundary(policy, job) {
   };
 }
 
+function normalizeShellBoundary(policy) {
+  const shell = object(policy.boundaries?.shell);
+  const cmdAllowlist = normalizeStringListKeepSlash(shell.cmd_allowlist || shell.cmdAllowlist)
+    .sort(codePointCompare);
+  return {
+    type: "command_sandbox",
+    cwd_root_id: trimNfcKeepSlash(shell.cwd_root_id || shell.cwdRootId || ""),
+    net: normalizeShellNet(shell.net),
+    allow_exec_subtree: shell.allow_exec_subtree === true || shell.allowExecSubtree === true,
+    cmd_allowlist: cmdAllowlist,
+    max_output_bytes: boundedInteger(shell.max_output_bytes ?? shell.maxOutputBytes, 1048576, 1, 16777216),
+    deadline_ms: boundedInteger(shell.deadline_ms ?? shell.deadlineMs, 30000, 1, 600000),
+    limits: normalizeShellLimits(shell.limits),
+  };
+}
+
+function normalizeShellLimits(input) {
+  const limits = object(input);
+  return {
+    cpu_seconds: boundedInteger(limits.cpu_seconds ?? limits.cpuSeconds, 30, 1, 300),
+    address_space: boundedInteger(limits.address_space ?? limits.addressSpace, 1073741824, 67108864, 8589934592),
+    open_files: boundedInteger(limits.open_files ?? limits.openFiles, 128, 3, 1024),
+    processes: boundedInteger(limits.processes, 16, 1, 128),
+    file_size: boundedInteger(limits.file_size ?? limits.fileSize, 67108864, 1, 1073741824),
+  };
+}
+
+function normalizeShellNet(value) {
+  const net = trimNfc(value || "deny");
+  return ["allow_outbound", "allow-outbound", "outbound"].includes(net) ? "allow_outbound" : "deny";
+}
+
 function normalizeFsBoundary(policy) {
   const fs = object(policy.boundaries?.fs);
   const roots = Array.isArray(fs.allowed_roots || fs.allowedRoots)
@@ -265,6 +298,15 @@ function normalizeStringList(input) {
   return [...seen].sort();
 }
 
+function normalizeStringListKeepSlash(input) {
+  const seen = new Set();
+  for (const item of Array.isArray(input) ? input : []) {
+    const normalized = trimNfcKeepSlash(item);
+    if (normalized) seen.add(normalized);
+  }
+  return [...seen];
+}
+
 function dedupeByCanonical(items) {
   const seen = new Set();
   const result = [];
@@ -308,6 +350,7 @@ function boundedInteger(value, fallback, min, max) {
 }
 
 function capTokenTtlSeconds(danger) {
+  if (danger === "critical") return 30;
   if (danger === "high") return 60;
   if (danger === "medium") return 120;
   return 300;
