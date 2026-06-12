@@ -35,9 +35,17 @@ use wry::WebViewBuilder;
 mod captoken;
 mod connector;
 
+// Single process-wide lock serializing every test that mutates process-global
+// env vars. Tests in different modules (main.rs, connector::fs, ...) share ONE
+// lock so they never run concurrently and clobber each other's env (e.g.
+// PANDA_BRIDGE_FS_ALLOWED_ROOTS / PANDA_BRIDGE_CAPTOKEN_*).
+#[cfg(test)]
+pub(crate) static TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 use connector::{
     codex::CodexConnector,
     data::{DataConnector, MemKv, ProductSqliteKv, DEFAULT_MAX_KEY_BYTES, DEFAULT_MAX_VALUE_BYTES},
+    fs::FsConnector,
     registry::ConnectorRegistry,
     sandbox::{self, NetPolicy, ResourceLimits, SandboxProfileKind, SandboxSpec},
     ConnectorDanger, ConnectorError, ConnectorEvent, ExecCtx, GrantedBoundary,
@@ -3629,6 +3637,7 @@ fn execution_registry(codex: CodexConnector) -> Result<ConnectorRegistry, String
     let mut registry = ConnectorRegistry::new();
     registry.register(Box::new(codex))?;
     registry.register(Box::new(DataConnector::new(ProductSqliteKv::new())))?;
+    registry.register(Box::new(FsConnector::new()))?;
     Ok(registry)
 }
 
@@ -3640,6 +3649,9 @@ fn declaration_registry() -> ConnectorRegistry {
     registry
         .register(Box::new(DataConnector::new(MemKv::new())))
         .expect("data connector declaration should be valid");
+    registry
+        .register(Box::new(FsConnector::new()))
+        .expect("fs connector declaration should be valid");
     registry
 }
 
@@ -3816,7 +3828,46 @@ fn resolve_active_grant(
             job.product_id, job.kind
         ));
     }
+    validate_high_tier_scope_locally(&grant.policy, job)?;
     Ok(grant)
+}
+
+fn validate_high_tier_scope_locally(policy: &Value, job: &BridgeJob) -> Result<(), String> {
+    let Some((domain, danger, _boundary_type)) = capability_metadata(&job.kind) else {
+        return Ok(());
+    };
+    if danger != "high" || job.kind != "fs.read" {
+        return Ok(());
+    }
+    if policy.get("version").and_then(Value::as_str) != Some("AUTH-SCOPE-v2") {
+        return Err("tier_not_granted_locally".to_string());
+    }
+    let tier = policy
+        .pointer(&format!("/danger_tiers/{danger}"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    let tier_domains = tier
+        .get("domains")
+        .and_then(Value::as_array)
+        .map(|items| items.iter().filter_map(Value::as_str).collect::<Vec<_>>())
+        .unwrap_or_default();
+    let boundary = policy
+        .pointer(&format!("/domain_boundaries/{domain}"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    let granted = tier.get("granted").and_then(Value::as_bool) == Some(true)
+        && tier_domains.iter().any(|item| *item == domain)
+        && boundary.get("granted").and_then(Value::as_bool) == Some(true)
+        && boundary
+            .get("danger")
+            .and_then(Value::as_str)
+            .map(|value| value == danger)
+            .unwrap_or(true);
+    if granted {
+        Ok(())
+    } else {
+        Err("tier_not_granted_locally".to_string())
+    }
 }
 
 fn effective_grant_capabilities(grant: &ProductGrant) -> Vec<String> {
@@ -3842,10 +3893,10 @@ fn build_granted_boundary(
         .unwrap_or("")
         .to_string();
     let capabilities = effective_grant_capabilities(grant);
-    let raw = if domain == "data" {
-        data_boundary_policy_slice(&grant.policy, &job.product_id)
-    } else {
-        grant.policy.clone()
+    let raw = match domain.as_str() {
+        "data" => data_boundary_policy_slice(&grant.policy, &job.product_id),
+        "fs" => fs_boundary_policy_slice(&grant.policy),
+        _ => grant.policy.clone(),
     };
     Ok(GrantedBoundary {
         product_id: grant.id.clone(),
@@ -3855,6 +3906,20 @@ fn build_granted_boundary(
         capabilities,
         raw,
     })
+}
+
+fn fs_boundary_policy_slice(policy: &Value) -> Value {
+    policy
+        .pointer("/boundaries/fs")
+        .cloned()
+        .unwrap_or_else(|| {
+            json!({
+                "type": "directory_whitelist",
+                "allowed_roots": [],
+                "max_bytes": connector::fs::DEFAULT_MAX_BYTES,
+                "follow_symlinks": false
+            })
+        })
 }
 
 fn data_boundary_policy_slice(policy: &Value, product_id: &str) -> Value {
@@ -4178,6 +4243,8 @@ fn local_policy_denial(error: &str) -> (&'static str, &'static str) {
         ("sandbox", "sandbox_apply_failed_local")
     } else if error.starts_with("sandbox_spec_missing_local") {
         ("sandbox", "sandbox_spec_missing_local")
+    } else if error.starts_with("tier_not_granted_locally") {
+        ("tier", "tier_not_granted_locally")
     } else if error.starts_with("namespace_owner_mismatch_locally") {
         ("namespace", "namespace_owner_mismatch_locally")
     } else if error.starts_with("namespace_not_owned_locally") {
@@ -4190,6 +4257,14 @@ fn local_policy_denial(error: &str) -> (&'static str, &'static str) {
         ("key", "query_invalid_locally")
     } else if error.starts_with("boundary_type_mismatch_locally") {
         ("namespace", "boundary_type_mismatch_locally")
+    } else if error.starts_with("path_not_found_locally") {
+        ("path", "path_not_found_locally")
+    } else if error.starts_with("path_outside_allowlist_locally") {
+        ("path", "path_outside_allowlist_locally")
+    } else if error.starts_with("path_denied_by_sandbox_local") {
+        ("path", "path_denied_by_sandbox_local")
+    } else if error.starts_with("file_too_large_locally") {
+        ("path", "file_too_large_locally")
     } else {
         ("unknown", "local_policy_denied")
     }
@@ -5932,9 +6007,8 @@ fn arg_map(args: Vec<String>) -> std::collections::BTreeMap<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
 
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    use crate::TEST_ENV_LOCK as ENV_LOCK;
 
     fn test_job(policy: Value) -> BridgeJob {
         BridgeJob {
@@ -6514,6 +6588,14 @@ mod tests {
             false
         );
         assert_eq!(
+            preview["capabilities"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item.as_str() == Some("fs.read")),
+            false
+        );
+        assert_eq!(
             preview["workspace_roots"],
             json!([{ "id": "default", "path_display": "[local]/default" }])
         );
@@ -6541,7 +6623,8 @@ mod tests {
                 "data.delete",
                 "data.get",
                 "data.put",
-                "data.query"
+                "data.query",
+                "fs.read"
             ])
         );
     }
@@ -6799,6 +6882,76 @@ mod tests {
             error,
             "capability_not_authorized_locally: panda-chat:saas.custom.run"
         );
+    }
+
+    #[test]
+    fn fs_read_requires_v2_high_tier_grant_locally() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        reset_policy_env();
+        let job = BridgeJob {
+            kind: "fs.read".to_string(),
+            input: json!({ "path": "/tmp/panda-bridge-fs-read-test.txt" }),
+            workspace_ref: None,
+            ..test_job(json!({}))
+        };
+
+        let mut v1_credentials = test_credentials(vec!["fs.read"]);
+        v1_credentials.authorized_products[0].policy["capabilities"] = json!(["fs.read"]);
+        let mut registry = declaration_registry();
+        let v1_result = execute_via_registry(&mut registry, &v1_credentials, &job).unwrap();
+        assert_eq!(v1_result["ok"], false);
+        assert_eq!(v1_result["denied"], "tier");
+        assert_eq!(v1_result["reason"], "tier_not_granted_locally");
+
+        let mut v2_missing_tier = test_credentials(vec!["fs.read"]);
+        v2_missing_tier.authorized_products[0].policy = json!({
+            "version": "AUTH-SCOPE-v2",
+            "product_id": "panda-dev",
+            "capabilities": ["fs.read"],
+            "danger_tiers": {
+                "low": { "granted": false, "domains": [] },
+                "medium": { "granted": false, "domains": [] },
+                "high": { "granted": false, "domains": [] }
+            },
+            "domain_boundaries": {},
+            "boundaries": {
+                "fs": {
+                    "type": "directory_whitelist",
+                    "allowed_roots": [{ "id": "root-a", "path_display": "[local]/root" }],
+                    "max_bytes": 8388608,
+                    "follow_symlinks": false
+                }
+            }
+        });
+        let mut registry = declaration_registry();
+        let missing_result = execute_via_registry(&mut registry, &v2_missing_tier, &job).unwrap();
+        assert_eq!(missing_result["ok"], false);
+        assert_eq!(missing_result["denied"], "tier");
+        assert_eq!(missing_result["reason"], "tier_not_granted_locally");
+
+        let mut v2_high = v2_missing_tier;
+        v2_high.authorized_products[0].policy["danger_tiers"]["high"] =
+            json!({ "granted": true, "domains": ["fs"] });
+        v2_high.authorized_products[0].policy["domain_boundaries"] = json!({
+            "fs": { "granted": true, "danger": "high", "boundary_type": "directory_whitelist" }
+        });
+        let base = env::temp_dir().join(format!("panda-bridge-fs-tier-{}", std::process::id()));
+        let root = base.join("root");
+        fs::create_dir_all(&root).unwrap();
+        env::set_var(
+            "PANDA_BRIDGE_FS_ALLOWED_ROOTS",
+            format!("root-a:{}", root.display()),
+        );
+        let mut registry = declaration_registry();
+        let high_result = execute_via_registry(&mut registry, &v2_high, &job).unwrap();
+        if sandbox::backend().available() {
+            assert_ne!(high_result["denied"], "tier");
+        } else {
+            assert_eq!(high_result["denied"], "sandbox");
+            assert_eq!(high_result["reason"], "sandbox_unavailable_local");
+        }
+        env::remove_var("PANDA_BRIDGE_FS_ALLOWED_ROOTS");
+        let _ = fs::remove_dir_all(&base);
     }
 
     #[test]

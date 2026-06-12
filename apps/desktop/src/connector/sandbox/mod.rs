@@ -26,6 +26,7 @@ pub struct SandboxSpec {
 pub enum SandboxProfileKind {
     CodexWorkspace,
     DataKvDir,
+    FsReadDir,
 }
 
 impl SandboxProfileKind {
@@ -33,6 +34,7 @@ impl SandboxProfileKind {
         match self {
             Self::CodexWorkspace => "codex_workspace",
             Self::DataKvDir => "data_kv_dir",
+            Self::FsReadDir => "fs_read_dir",
         }
     }
 }
@@ -108,6 +110,15 @@ impl ResourceLimits {
             address_space: 512 * 1024 * 1024,
             open_files: 64,
             processes: 8,
+        }
+    }
+
+    pub fn fs_read_default() -> Self {
+        Self {
+            cpu_seconds: 10,
+            address_space: 256 * 1024 * 1024,
+            open_files: 32,
+            processes: 2,
         }
     }
 }

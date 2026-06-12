@@ -6,6 +6,7 @@ use crate::BridgeJob;
 
 pub mod codex;
 pub mod data;
+pub mod fs;
 pub mod registry;
 pub mod sandbox;
 
