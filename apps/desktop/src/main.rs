@@ -35,8 +35,9 @@ mod connector;
 
 use connector::{
     codex::CodexConnector,
-    data::{DataConnector, MemKv, SqliteKv, DEFAULT_MAX_KEY_BYTES, DEFAULT_MAX_VALUE_BYTES},
+    data::{DataConnector, MemKv, ProductSqliteKv, DEFAULT_MAX_KEY_BYTES, DEFAULT_MAX_VALUE_BYTES},
     registry::ConnectorRegistry,
+    sandbox::{self, NetPolicy, ResourceLimits, SandboxProfileKind, SandboxSpec},
     ConnectorDanger, ConnectorError, ConnectorEvent, ExecCtx, GrantedBoundary,
 };
 
@@ -404,6 +405,8 @@ struct CodexWarmSession {
     err_rx: mpsc::Receiver<String>,
     next_id: u64,
     cwd: String,
+    spec_fingerprint: String,
+    product_id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -3255,7 +3258,50 @@ fn warm_codex_connector(
     if fake_codex_enabled() || !command_exists(&codex_bin()) {
         return CodexConnector::new();
     }
-    let cwd = workspace_path("default");
+    let Some(grant) = active_connection_products(credentials)
+        .into_iter()
+        .find(|grant| {
+            let capabilities = effective_grant_capabilities(grant);
+            capabilities
+                .iter()
+                .any(|item| item == "codex.chat" || item == "codex.run" || item == "codex.rpc")
+        })
+    else {
+        return CodexConnector::new();
+    };
+    let capabilities = effective_grant_capabilities(&grant);
+    let warm_job = BridgeJob {
+        id: "codex_warm".to_string(),
+        product_id: grant.id.clone(),
+        kind: capabilities
+            .iter()
+            .find(|item| item.starts_with("codex."))
+            .cloned()
+            .unwrap_or_else(|| "codex.chat".to_string()),
+        workspace_ref: Some("default".to_string()),
+        input: json!({ "prompt": "" }),
+        policy: json!({}),
+    };
+    let boundary = GrantedBoundary {
+        product_id: grant.id.clone(),
+        product_name: grant.name.clone(),
+        domain: "codex".to_string(),
+        boundary_type: connector::BoundaryType::WorkspaceSandbox,
+        capabilities,
+        raw: grant.policy.clone(),
+    };
+    let spec = match build_codex_sandbox_spec(&warm_job, &boundary) {
+        Ok(spec) => spec,
+        Err(error) => {
+            push_event(
+                state,
+                "codex_warm_failed",
+                json!({ "error": connector_error_message(&error) }),
+            );
+            return CodexConnector::new();
+        }
+    };
+    let spec_fingerprint = sandbox::spec_fingerprint(&spec, &boundary.product_id);
     push_event(
         state,
         "codex_warming",
@@ -3266,7 +3312,7 @@ fn warm_codex_connector(
         "event": "log",
         "message": "warming local Codex app-server"
     })));
-    match CodexWarmSession::start(cwd) {
+    match CodexWarmSession::start(spec, boundary.product_id.clone(), spec_fingerprint) {
         Ok(session) => {
             push_event(
                 state,
@@ -3284,7 +3330,11 @@ fn warm_codex_connector(
             CodexConnector::with_session(Some(session))
         }
         Err(error) => {
-            push_event(state, "codex_warm_failed", json!({ "error": error }));
+            push_event(
+                state,
+                "codex_warm_failed",
+                json!({ "error": connector_error_message(&error) }),
+            );
             CodexConnector::new()
         }
     }
@@ -3464,7 +3514,7 @@ fn execute_and_ack_with_registry(
 fn execution_registry(codex: CodexConnector) -> Result<ConnectorRegistry, String> {
     let mut registry = ConnectorRegistry::new();
     registry.register(Box::new(codex))?;
-    registry.register(Box::new(DataConnector::new(SqliteKv::open_default()?)))?;
+    registry.register(Box::new(DataConnector::new(ProductSqliteKv::new())))?;
     Ok(registry)
 }
 
@@ -3510,16 +3560,6 @@ fn execute_via_registry(
             return Ok(result);
         }
     };
-    let deadline = compute_deadline(&boundary.domain, job);
-    let is_cancelled = || false;
-    let mut emit = |event: ConnectorEvent| {
-        post_event_best_effort(credentials, &job.id, &event.event_type, event.payload)
-    };
-    let mut ctx = ExecCtx {
-        emit: &mut emit,
-        is_cancelled: &is_cancelled,
-        deadline,
-    };
     let Some(connector) = registry.connector_for_kind(&job.kind) else {
         let error = format!(
             "capability_not_authorized_locally: {}:{}",
@@ -3533,6 +3573,50 @@ fn execute_via_registry(
             local_policy_denial_event(job, &error),
         );
         return Ok(result);
+    };
+    let sandbox_spec = match connector.sandbox_spec(job, &boundary) {
+        Ok(spec) => spec,
+        Err(ConnectorError::LocalPolicyDenied { denied, reason }) => {
+            post_event_best_effort(
+                credentials,
+                &job.id,
+                "policy_denied",
+                local_policy_denial_event_from_parts(job, &denied, &reason),
+            );
+            return Ok(local_policy_denial_result_from_parts(job, &denied, &reason));
+        }
+        Err(ConnectorError::InvalidJob { reason }) => {
+            return Ok(json!({ "ok": false, "error": reason }))
+        }
+        Err(ConnectorError::RuntimeFailed { reason }) => {
+            return Ok(json!({ "ok": false, "error": reason }))
+        }
+        Err(ConnectorError::Cancelled) => return Ok(json!({ "ok": false, "error": "cancelled" })),
+        Err(ConnectorError::Timeout) => return Ok(json!({ "ok": false, "error": "timeout" })),
+    };
+    if sandbox_spec.is_some() && !sandbox::backend().available() {
+        post_event_best_effort(
+            credentials,
+            &job.id,
+            "policy_denied",
+            local_policy_denial_event_from_parts(job, "sandbox", "sandbox_unavailable_local"),
+        );
+        return Ok(local_policy_denial_result_from_parts(
+            job,
+            "sandbox",
+            "sandbox_unavailable_local",
+        ));
+    }
+    let deadline = compute_deadline(&boundary.domain, job);
+    let is_cancelled = || false;
+    let mut emit = |event: ConnectorEvent| {
+        post_event_best_effort(credentials, &job.id, &event.event_type, event.payload)
+    };
+    let mut ctx = ExecCtx {
+        emit: &mut emit,
+        is_cancelled: &is_cancelled,
+        deadline,
+        sandbox_spec,
     };
     match connector.execute(job, &boundary, &mut ctx) {
         Ok(result) => Ok(result.result),
@@ -3685,6 +3769,64 @@ fn codex_job_policy_from_scope(job: &BridgeJob, scope: &Value) -> Result<LocalJo
     effective_job_policy(job, Some(scope))
 }
 
+fn build_codex_sandbox_spec(
+    job: &BridgeJob,
+    boundary: &GrantedBoundary,
+) -> Result<SandboxSpec, ConnectorError> {
+    let policy = crate::codex_job_policy_from_scope(job, &boundary.raw).map_err(|error| {
+        let (denied, reason) = crate::local_policy_denial(&error);
+        ConnectorError::LocalPolicyDenied {
+            denied: denied.to_string(),
+            reason: reason.to_string(),
+        }
+    })?;
+    let cwd =
+        canonical_path(Path::new(&policy.cwd)).map_err(|_| ConnectorError::LocalPolicyDenied {
+            denied: "cwd".to_string(),
+            reason: "cwd_not_allowed_locally".to_string(),
+        })?;
+    let runtime_bin = codex_runtime_bin().map_err(|_| ConnectorError::LocalPolicyDenied {
+        denied: "sandbox".to_string(),
+        reason: "sandbox_apply_failed_local".to_string(),
+    })?;
+    let codex_home = codex_home_dir();
+    let tmp_dir = cwd.join(".panda-bridge").join("codex-tmp");
+    fs::create_dir_all(&tmp_dir).map_err(|error| ConnectorError::RuntimeFailed {
+        reason: format!("failed to create codex tmp dir: {error}"),
+    })?;
+    #[cfg(unix)]
+    fs::set_permissions(&tmp_dir, fs::Permissions::from_mode(0o700)).map_err(|error| {
+        ConnectorError::RuntimeFailed {
+            reason: format!("failed to protect codex tmp dir: {error}"),
+        }
+    })?;
+    let mut read_roots = vec![cwd.clone(), codex_home.clone()];
+    if let Some(package_root) = codex_package_root(&runtime_bin) {
+        read_roots.push(package_root);
+    }
+    if let Some(runtime_cache) = codex_runtime_cache_root() {
+        read_roots.push(runtime_cache);
+    }
+    read_roots.sort();
+    read_roots.dedup();
+    let env_allow = codex_clean_env(&cwd, &runtime_bin, &codex_home, &tmp_dir);
+    let net = if policy.sandbox == "read-only" {
+        NetPolicy::Deny
+    } else {
+        NetPolicy::AllowOutbound
+    };
+    Ok(SandboxSpec {
+        profile: SandboxProfileKind::CodexWorkspace,
+        read_roots,
+        write_roots: vec![cwd.clone(), codex_home],
+        exec_allow: vec![runtime_bin],
+        net,
+        limits: ResourceLimits::codex_default(),
+        env_allow,
+        cwd,
+    })
+}
+
 #[cfg(test)]
 fn validate_local_job_authorization(
     credentials: &Credentials,
@@ -3831,6 +3973,19 @@ fn local_policy_denial_event_from_parts(job: &BridgeJob, denied: &str, reason: &
     })
 }
 
+fn connector_error_message(error: &ConnectorError) -> String {
+    match error {
+        ConnectorError::LocalPolicyDenied { denied, reason } => {
+            format!("local_policy_denied:{denied}:{reason}")
+        }
+        ConnectorError::InvalidJob { reason } | ConnectorError::RuntimeFailed { reason } => {
+            reason.clone()
+        }
+        ConnectorError::Cancelled => "cancelled".to_string(),
+        ConnectorError::Timeout => "timeout".to_string(),
+    }
+}
+
 fn local_policy_denial(error: &str) -> (&'static str, &'static str) {
     if error.starts_with("product_not_authorized_locally") {
         ("product", "product_not_authorized_locally")
@@ -3853,6 +4008,12 @@ fn local_policy_denial(error: &str) -> (&'static str, &'static str) {
             "developerInstructions",
             "developer_instructions_not_allowed_locally",
         )
+    } else if error.starts_with("sandbox_unavailable_local") {
+        ("sandbox", "sandbox_unavailable_local")
+    } else if error.starts_with("sandbox_apply_failed_local") {
+        ("sandbox", "sandbox_apply_failed_local")
+    } else if error.starts_with("sandbox_spec_missing_local") {
+        ("sandbox", "sandbox_spec_missing_local")
     } else if error.starts_with("namespace_owner_mismatch_locally") {
         ("namespace", "namespace_owner_mismatch_locally")
     } else if error.starts_with("namespace_not_owned_locally") {
@@ -3886,8 +4047,13 @@ fn effective_policy_event(job: &BridgeJob, policy: &LocalJobPolicy) -> Value {
 }
 
 impl CodexWarmSession {
-    fn start(cwd: String) -> Result<Self, String> {
-        let (child, stdin, rx, err_rx) = spawn_codex_app_server(&cwd)?;
+    fn start(
+        spec: SandboxSpec,
+        product_id: String,
+        spec_fingerprint: String,
+    ) -> Result<Self, ConnectorError> {
+        let cwd = spec.cwd.to_string_lossy().to_string();
+        let (child, stdin, rx, err_rx) = spawn_codex_app_server(&spec)?;
         let mut session = Self {
             child,
             stdin,
@@ -3895,6 +4061,8 @@ impl CodexWarmSession {
             err_rx,
             next_id: 0,
             cwd,
+            spec_fingerprint,
+            product_id,
         };
         let timeout = Duration::from_millis(90_000);
         session.send_request_raw(
@@ -3905,13 +4073,17 @@ impl CodexWarmSession {
             }),
             timeout,
         )?;
-        send_notify(&mut session.stdin, "initialized", json!({}))?;
+        send_notify(&mut session.stdin, "initialized", json!({})).map_err(|reason| {
+            ConnectorError::RuntimeFailed {
+                reason: reason.to_string(),
+            }
+        })?;
         let account =
             session.send_request_raw("account/read", json!({ "refreshToken": false }), timeout)?;
         if account.get("account").is_none() {
-            return Err(
-                "local Codex is not signed in; run codex login on this machine".to_string(),
-            );
+            return Err(ConnectorError::RuntimeFailed {
+                reason: "local Codex is not signed in; run codex login on this machine".to_string(),
+            });
         }
         let _ = session.send_request_raw("account/rateLimits/read", json!({}), timeout);
         Ok(session)
@@ -3922,7 +4094,7 @@ impl CodexWarmSession {
         method: &str,
         params: Value,
         timeout: Duration,
-    ) -> Result<Value, String> {
+    ) -> Result<Value, ConnectorError> {
         self.next_id += 1;
         let id = self.next_id;
         writeln!(
@@ -3930,27 +4102,37 @@ impl CodexWarmSession {
             "{}",
             json!({ "method": method, "id": id, "params": params })
         )
-        .map_err(|error| error.to_string())?;
-        self.stdin.flush().map_err(|error| error.to_string())?;
+        .map_err(|error| ConnectorError::RuntimeFailed {
+            reason: error.to_string(),
+        })?;
+        self.stdin
+            .flush()
+            .map_err(|error| ConnectorError::RuntimeFailed {
+                reason: error.to_string(),
+            })?;
         let started = Instant::now();
         while started.elapsed() < timeout {
             let message = match self.rx.recv_timeout(Duration::from_millis(500)) {
                 Ok(message) => message,
                 Err(mpsc::RecvTimeoutError::Timeout) => continue,
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    return Err(format!(
-                        "codex app-server closed while waiting for {method}"
-                    ));
+                    return Err(ConnectorError::RuntimeFailed {
+                        reason: format!("codex app-server closed while waiting for {method}"),
+                    });
                 }
             };
             if message.get("id").and_then(Value::as_u64) == Some(id) {
                 if let Some(error) = message.get("error") {
-                    return Err(format!("codex {method} error: {error}"));
+                    return Err(ConnectorError::RuntimeFailed {
+                        reason: format!("codex {method} error: {error}"),
+                    });
                 }
                 return Ok(message.get("result").cloned().unwrap_or_else(|| json!({})));
             }
         }
-        Err(format!("codex app-server timeout waiting for {method}"))
+        Err(ConnectorError::RuntimeFailed {
+            reason: format!("codex app-server timeout waiting for {method}"),
+        })
     }
 }
 
@@ -3961,7 +4143,7 @@ impl Drop for CodexWarmSession {
 }
 
 fn spawn_codex_app_server(
-    cwd: &str,
+    spec: &SandboxSpec,
 ) -> Result<
     (
         Child,
@@ -3969,23 +4151,68 @@ fn spawn_codex_app_server(
         mpsc::Receiver<Value>,
         mpsc::Receiver<String>,
     ),
-    String,
+    ConnectorError,
 > {
-    let bin = codex_bin();
+    let bin = spec
+        .exec_allow
+        .first()
+        .ok_or_else(|| ConnectorError::LocalPolicyDenied {
+            denied: "sandbox".to_string(),
+            reason: "sandbox_spec_missing_local".to_string(),
+        })?
+        .to_string_lossy()
+        .to_string();
     let mut command = Command::new(&bin);
     command
         .args(["app-server", "--stdio"])
-        .current_dir(cwd)
+        .current_dir(&spec.cwd)
+        .env_clear()
+        .envs(spec.env_allow.iter().cloned())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    add_resolved_command_dir_to_path(&mut command, &bin);
+    if sandbox::disabled_for_debug() {
+        eprintln!(
+            "WARN PANDA_BRIDGE_SANDBOX_MODE=disabled: starting codex without macOS seatbelt; debug only"
+        );
+    } else {
+        let backend = sandbox::backend();
+        if !backend.available() {
+            return Err(ConnectorError::LocalPolicyDenied {
+                denied: "sandbox".to_string(),
+                reason: "sandbox_unavailable_local".to_string(),
+            });
+        }
+        backend.wrap_command(&mut command, spec).map_err(|_| {
+            ConnectorError::LocalPolicyDenied {
+                denied: "sandbox".to_string(),
+                reason: "sandbox_apply_failed_local".to_string(),
+            }
+        })?;
+    }
     let mut child = command
         .spawn()
-        .map_err(|error| format!("failed to start codex app-server at {bin}: {error}"))?;
-    let stdin = child.stdin.take().ok_or("codex stdin unavailable")?;
-    let stdout = child.stdout.take().ok_or("codex stdout unavailable")?;
-    let stderr = child.stderr.take().ok_or("codex stderr unavailable")?;
+        .map_err(|error| ConnectorError::RuntimeFailed {
+            reason: format!("failed to start codex app-server at {bin}: {error}"),
+        })?;
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| ConnectorError::RuntimeFailed {
+            reason: "codex stdin unavailable".to_string(),
+        })?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| ConnectorError::RuntimeFailed {
+            reason: "codex stdout unavailable".to_string(),
+        })?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| ConnectorError::RuntimeFailed {
+            reason: "codex stderr unavailable".to_string(),
+        })?;
     let (tx, rx) = mpsc::channel::<Value>();
     thread::spawn(move || {
         let reader = BufReader::new(stdout);
@@ -5035,6 +5262,182 @@ fn codex_bin() -> String {
     resolve_codex_bin().unwrap_or_else(|| "codex".to_string())
 }
 
+fn codex_runtime_bin() -> Result<PathBuf, String> {
+    if let Ok(explicit) = env::var("PANDA_BRIDGE_CODEX_RUNTIME_BIN") {
+        let trimmed = explicit.trim();
+        if !trimmed.is_empty() {
+            let path = canonical_path(Path::new(trimmed))?;
+            if executable_exists(&path) {
+                return Ok(path);
+            }
+            return Err(format!("codex runtime is not executable: {trimmed}"));
+        }
+    }
+    let bin = codex_bin();
+    let canonical = canonical_path(Path::new(&bin)).or_else(|_| {
+        resolve_codex_bin()
+            .ok_or_else(|| "codex command not found".to_string())
+            .and_then(|path| canonical_path(Path::new(&path)))
+    })?;
+    if let Some(native) = native_codex_from_js_shim(&canonical) {
+        return Ok(native);
+    }
+    if executable_exists(&canonical) {
+        return Ok(canonical);
+    }
+    Err(format!("codex runtime is not executable: {bin}"))
+}
+
+fn native_codex_from_js_shim(canonical_bin: &Path) -> Option<PathBuf> {
+    if canonical_bin.extension().and_then(|value| value.to_str()) != Some("js") {
+        return None;
+    }
+    let package_root = canonical_bin.parent()?.parent()?;
+    let target = codex_target_triple()?;
+    let packages = [
+        package_root
+            .join("node_modules")
+            .join(codex_platform_package())
+            .join("vendor")
+            .join(target)
+            .join("bin")
+            .join(if cfg!(windows) { "codex.exe" } else { "codex" }),
+        package_root
+            .join("vendor")
+            .join(target)
+            .join("bin")
+            .join(if cfg!(windows) { "codex.exe" } else { "codex" }),
+    ];
+    packages
+        .into_iter()
+        .find(|path| executable_exists(path))
+        .and_then(|path| canonical_path(&path).ok())
+}
+
+fn codex_target_triple() -> Option<&'static str> {
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("macos", "aarch64") => Some("aarch64-apple-darwin"),
+        ("macos", "x86_64") => Some("x86_64-apple-darwin"),
+        ("linux", "x86_64") => Some("x86_64-unknown-linux-musl"),
+        ("linux", "aarch64") => Some("aarch64-unknown-linux-musl"),
+        ("windows", "x86_64") => Some("x86_64-pc-windows-msvc"),
+        ("windows", "aarch64") => Some("aarch64-pc-windows-msvc"),
+        _ => None,
+    }
+}
+
+fn codex_platform_package() -> &'static str {
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("macos", "aarch64") => "@openai/codex-darwin-arm64",
+        ("macos", "x86_64") => "@openai/codex-darwin-x64",
+        ("linux", "x86_64") => "@openai/codex-linux-x64",
+        ("linux", "aarch64") => "@openai/codex-linux-arm64",
+        ("windows", "x86_64") => "@openai/codex-win32-x64",
+        ("windows", "aarch64") => "@openai/codex-win32-arm64",
+        _ => "@openai/codex-unknown",
+    }
+}
+
+fn codex_home_dir() -> PathBuf {
+    env::var_os("CODEX_HOME")
+        .map(PathBuf::from)
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| {
+            home_dir()
+                .unwrap_or_else(|_| PathBuf::from("."))
+                .join(".codex")
+        })
+}
+
+fn codex_package_root(runtime_bin: &Path) -> Option<PathBuf> {
+    if let Ok(explicit) = env::var("CODEX_MANAGED_PACKAGE_ROOT") {
+        let path = PathBuf::from(explicit);
+        if path.exists() {
+            return canonical_path(&path).ok();
+        }
+    }
+    for ancestor in runtime_bin.ancestors() {
+        if ancestor.file_name().and_then(|value| value.to_str()) == Some("codex")
+            && ancestor
+                .parent()
+                .and_then(|parent| parent.file_name())
+                .and_then(|value| value.to_str())
+                == Some("@openai")
+        {
+            return Some(ancestor.to_path_buf());
+        }
+    }
+    None
+}
+
+fn codex_runtime_cache_root() -> Option<PathBuf> {
+    let path = home_dir()
+        .ok()?
+        .join(".cache")
+        .join("codex-runtimes")
+        .join("codex-primary-runtime");
+    path.exists().then_some(path)
+}
+
+fn codex_clean_env(
+    cwd: &Path,
+    runtime_bin: &Path,
+    codex_home: &Path,
+    tmp_dir: &Path,
+) -> Vec<(String, String)> {
+    let mut envs = Vec::new();
+    if let Ok(home) = home_dir() {
+        envs.push(("HOME".to_string(), home.to_string_lossy().to_string()));
+    }
+    envs.push((
+        "CODEX_HOME".to_string(),
+        codex_home.to_string_lossy().to_string(),
+    ));
+    envs.push(("TMPDIR".to_string(), tmp_dir.to_string_lossy().to_string()));
+    if let Some(cert_file) = codex_system_cert_file() {
+        envs.push((
+            "SSL_CERT_FILE".to_string(),
+            cert_file.to_string_lossy().to_string(),
+        ));
+    }
+    if let Some(parent) = runtime_bin.parent() {
+        let mut paths = vec![parent.to_string_lossy().to_string()];
+        if let Some(package_root) = codex_package_root(runtime_bin) {
+            let vendor_path = package_root
+                .join("node_modules")
+                .join(codex_platform_package())
+                .join("vendor")
+                .join(codex_target_triple().unwrap_or(""))
+                .join("codex-path");
+            if vendor_path.exists() {
+                paths.push(vendor_path.to_string_lossy().to_string());
+            }
+            envs.push((
+                "CODEX_MANAGED_PACKAGE_ROOT".to_string(),
+                package_root.to_string_lossy().to_string(),
+            ));
+            envs.push(("CODEX_MANAGED_BY_NPM".to_string(), "1".to_string()));
+        }
+        paths.push("/usr/bin".to_string());
+        paths.push("/bin".to_string());
+        envs.push(("PATH".to_string(), paths.join(":")));
+    }
+    for key in ["LANG", "LC_ALL", "LC_CTYPE"] {
+        if let Ok(value) = env::var(key) {
+            envs.push((key.to_string(), value));
+        }
+    }
+    envs.push(("PWD".to_string(), cwd.to_string_lossy().to_string()));
+    envs
+}
+
+fn codex_system_cert_file() -> Option<PathBuf> {
+    ["/etc/ssl/cert.pem", "/private/etc/ssl/cert.pem"]
+        .into_iter()
+        .map(PathBuf::from)
+        .find(|path| path.exists())
+}
+
 fn resolve_codex_bin() -> Option<String> {
     resolve_command_on_path("codex").or_else(|| {
         common_codex_paths()
@@ -5097,30 +5500,6 @@ fn common_codex_paths() -> Vec<PathBuf> {
         paths.push(home.join(".npm-global/bin/codex"));
     }
     paths
-}
-
-fn add_resolved_command_dir_to_path(command: &mut Command, bin: &str) {
-    let path = Path::new(bin);
-    let Some(parent) = path.parent() else {
-        return;
-    };
-    if parent.as_os_str().is_empty() {
-        return;
-    }
-    let Some(parent_text) = parent.to_str() else {
-        return;
-    };
-    let separator = if cfg!(windows) { ';' } else { ':' };
-    let current = env::var("PATH").unwrap_or_default();
-    if current.split(separator).any(|item| item == parent_text) {
-        return;
-    }
-    let next_path = if current.is_empty() {
-        parent_text.to_string()
-    } else {
-        format!("{parent_text}{separator}{current}")
-    };
-    command.env("PATH", next_path);
 }
 
 fn fake_codex_enabled() -> bool {
@@ -5420,6 +5799,7 @@ mod tests {
         env::remove_var("PANDA_BRIDGE_ALLOWED_WORKSPACE_ROOTS");
         env::remove_var("PANDA_BRIDGE_ALLOW_APPROVAL_NEVER");
         env::remove_var("PANDA_BRIDGE_ALLOW_DEVELOPER_INSTRUCTIONS");
+        env::remove_var("PANDA_BRIDGE_SANDBOX_MODE");
     }
 
     fn reset_credentials_env() {
@@ -5947,6 +6327,22 @@ mod tests {
         assert_eq!(result["fixture"], true);
         assert_eq!(result["cloud_openai_credentials"], false);
         env::remove_var("PANDA_BRIDGE_FAKE_CODEX");
+    }
+
+    #[test]
+    fn codex_clean_env_points_to_system_ca_bundle_when_available() {
+        let cert_file = codex_system_cert_file();
+        let envs = codex_clean_env(
+            Path::new("/tmp/workspace"),
+            Path::new("/usr/bin/codex"),
+            Path::new("/tmp/codex-home"),
+            Path::new("/tmp/codex-tmp"),
+        );
+        let ssl_cert_file = envs
+            .iter()
+            .find(|(key, _)| key == "SSL_CERT_FILE")
+            .map(|(_, value)| PathBuf::from(value));
+        assert_eq!(ssl_cert_file, cert_file);
     }
 
     #[test]

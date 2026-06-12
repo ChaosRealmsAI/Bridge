@@ -1812,11 +1812,13 @@ name = "panda-bridge-desktop"
 version = "0.1.0"
 dependencies = [
  "keyring",
+ "libc",
  "png",
  "reqwest",
  "rusqlite",
  "serde",
  "serde_json",
+ "sha2",
  "tao",
  "tungstenite",
  "url",

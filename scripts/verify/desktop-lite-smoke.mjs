@@ -68,7 +68,6 @@ try {
   const intent = await bridge.connect.createIntent({ deviceName: "Desktop Lite Smoke Device" });
   const connected = await runDesktop(["headless-connect", "--api", apiBase, "--intent", intent.token, "--device-name", "Desktop Lite Smoke Device"], {
     PANDA_BRIDGE_DESKTOP_STATE: statePath,
-    PANDA_BRIDGE_FAKE_CODEX: "1",
   });
   assert.equal(connected.status, 0, childMessage(connected));
 
@@ -94,20 +93,23 @@ try {
 
   const created = await mobile.codex.run({
     deviceId: device.id,
-    prompt: "hello from mobile",
+    prompt: "Reply with exactly this text and no extra words: hello from mobile",
     requestKey: "desktop-lite-mobile-1",
     tokenBudget: 1000,
-    timeoutMs: 60000,
+    timeoutMs: 180000,
   });
   assert.equal(created.job.status, "queued");
 
   const polled = await runDesktop(["headless-poll"], {
     PANDA_BRIDGE_DESKTOP_STATE: statePath,
-    PANDA_BRIDGE_FAKE_CODEX: "1",
   });
   assert.equal(polled.status, 0, childMessage(polled));
 
-  const final = await mobile.jobs.wait(created.job.id, { timeoutMs: 30000, intervalMs: 500 });
+  const final = await mobile.jobs.wait(created.job.id, { timeoutMs: 180000, intervalMs: 500 });
+  if (final.status !== "succeeded") {
+    const failureEvents = await mobile.jobs.events(created.job.id);
+    console.error(JSON.stringify({ final, events: failureEvents.items }, null, 2));
+  }
   assert.equal(final.status, "succeeded");
   assert.match(final.result.reply, /hello from mobile/);
   const events = await mobile.jobs.events(created.job.id);
@@ -122,6 +124,7 @@ try {
     device_id: device.id,
     job_id: created.job.id,
     final_status: final.status,
+    codex_round_trip: "real",
     event_count: events.items.length,
     checked_at: new Date().toISOString(),
   };
@@ -142,7 +145,7 @@ function runDesktop(args, extraEnv = {}) {
     const timer = setTimeout(() => {
       error = new Error("desktop-lite child timed out");
       child.kill("SIGTERM");
-    }, 60000);
+    }, 240000);
     child.stdout.on("data", (chunk) => {
       stdout += String(chunk);
     });

@@ -7,6 +7,7 @@ use std::{
 
 use crate::{BridgeJob, CodexWarmSession, VERSION};
 
+use super::sandbox::{self, SandboxSpec};
 use super::{
     BoundaryDescription, BoundaryType, BridgeConnector, ConnectorDanger, ConnectorDeclaration,
     ConnectorError, ConnectorExecutionResult, ConnectorGrant, ConnectorKindDeclaration, ExecCtx,
@@ -105,8 +106,7 @@ impl BridgeConnector for CodexConnector {
             self.run_warm(job, &policy, ctx)
         } else {
             run_cold(job, &policy, ctx)
-        }
-        .map_err(|reason| ConnectorError::RuntimeFailed { reason })?;
+        }?;
         Ok(ConnectorExecutionResult {
             ok: result.get("ok").and_then(Value::as_bool).unwrap_or(false),
             result,
@@ -128,6 +128,23 @@ impl BridgeConnector for CodexConnector {
             redacted_boundary: json!({ "type": "workspace_sandbox" }),
         }
     }
+
+    fn sandbox_spec(
+        &self,
+        job: &BridgeJob,
+        boundary: &GrantedBoundary,
+    ) -> Result<Option<SandboxSpec>, ConnectorError> {
+        if crate::fake_codex_enabled() {
+            return Ok(None);
+        }
+        if !sandbox::backend().available() {
+            return Err(ConnectorError::LocalPolicyDenied {
+                denied: "sandbox".to_string(),
+                reason: "sandbox_unavailable_local".to_string(),
+            });
+        }
+        crate::build_codex_sandbox_spec(job, boundary).map(Some)
+    }
 }
 
 impl CodexConnector {
@@ -136,15 +153,36 @@ impl CodexConnector {
         job: &BridgeJob,
         policy: &crate::LocalJobPolicy,
         ctx: &mut ExecCtx<'_>,
-    ) -> Result<Value, String> {
-        let cwd = policy.cwd.clone();
+    ) -> Result<Value, ConnectorError> {
+        let spec = ctx
+            .sandbox_spec
+            .clone()
+            .ok_or_else(|| ConnectorError::LocalPolicyDenied {
+                denied: "sandbox".to_string(),
+                reason: "sandbox_spec_missing_local".to_string(),
+            })?;
+        let cwd = spec.cwd.to_string_lossy().to_string();
+        let want_fingerprint = sandbox::spec_fingerprint(&spec, &job.product_id);
         let should_restart = self
             .session
             .as_ref()
-            .map(|session| session.cwd != cwd)
+            .map(|session| {
+                warm_session_should_restart(
+                    &session.cwd,
+                    &session.spec_fingerprint,
+                    &session.product_id,
+                    &cwd,
+                    &want_fingerprint,
+                    &job.product_id,
+                )
+            })
             .unwrap_or(true);
         if should_restart {
-            self.session = Some(CodexWarmSession::start(cwd.clone())?);
+            self.session = Some(CodexWarmSession::start(
+                spec,
+                job.product_id.clone(),
+                want_fingerprint,
+            )?);
         }
         let run_result = match self.session.as_mut() {
             Some(session) => run_warm_session_job(session, job, policy, ctx),
@@ -159,10 +197,23 @@ impl CodexConnector {
             }
             Err(error) => {
                 self.session = None;
-                Err(error)
+                Err(ConnectorError::RuntimeFailed { reason: error })
             }
         }
     }
+}
+
+fn warm_session_should_restart(
+    session_cwd: &str,
+    session_fingerprint: &str,
+    session_product_id: &str,
+    cwd: &str,
+    spec_fingerprint: &str,
+    product_id: &str,
+) -> bool {
+    session_cwd != cwd
+        || session_fingerprint != spec_fingerprint
+        || session_product_id != product_id
 }
 
 fn run_warm_session_job(
@@ -231,7 +282,7 @@ fn run_cold(
     job: &BridgeJob,
     policy: &crate::LocalJobPolicy,
     ctx: &mut ExecCtx<'_>,
-) -> Result<Value, String> {
+) -> Result<Value, ConnectorError> {
     let prompt = job
         .input
         .get("prompt")
@@ -243,7 +294,14 @@ fn run_cold(
             json!({ "ok": false, "error": "missing prompt", "cloud_openai_credentials": false }),
         );
     }
-    let (mut child, mut stdin, rx, err_rx) = crate::spawn_codex_app_server(&policy.cwd)?;
+    let spec = ctx
+        .sandbox_spec
+        .clone()
+        .ok_or_else(|| ConnectorError::LocalPolicyDenied {
+            denied: "sandbox".to_string(),
+            reason: "sandbox_spec_missing_local".to_string(),
+        })?;
+    let (mut child, mut stdin, rx, err_rx) = crate::spawn_codex_app_server(&spec)?;
     let result = (|| -> Result<Value, String> {
         let mut next_id = 0_u64;
         let mut final_text = String::new();
@@ -327,7 +385,17 @@ fn run_cold(
         }))
     })();
     let _ = child.kill();
-    result
+    result.map_err(|reason| {
+        let stderr_tail = err_rx
+            .recv_timeout(Duration::from_millis(500))
+            .unwrap_or_default();
+        let reason = if stderr_tail.trim().is_empty() {
+            reason
+        } else {
+            format!("{reason}; {stderr_tail}")
+        };
+        ConnectorError::RuntimeFailed { reason }
+    })
 }
 
 fn send_request_ctx(
@@ -410,5 +478,46 @@ fn handle_codex_event_ctx(ctx: &mut ExecCtx<'_>, message: &Value, final_text: &m
         }
     } else if let Some(method) = message.get("method").and_then(Value::as_str) {
         ctx.emit("app_server_event", json!({ "method": method }));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::warm_session_should_restart;
+
+    #[test]
+    fn warm_session_restarts_on_boundary_or_product_change() {
+        assert!(!warm_session_should_restart(
+            "/tmp/ws",
+            "fp-a",
+            "product-a",
+            "/tmp/ws",
+            "fp-a",
+            "product-a"
+        ));
+        assert!(warm_session_should_restart(
+            "/tmp/ws",
+            "fp-a",
+            "product-a",
+            "/tmp/other",
+            "fp-a",
+            "product-a"
+        ));
+        assert!(warm_session_should_restart(
+            "/tmp/ws",
+            "fp-a",
+            "product-a",
+            "/tmp/ws",
+            "fp-b",
+            "product-a"
+        ));
+        assert!(warm_session_should_restart(
+            "/tmp/ws",
+            "fp-a",
+            "product-a",
+            "/tmp/ws",
+            "fp-a",
+            "product-b"
+        ));
     }
 }

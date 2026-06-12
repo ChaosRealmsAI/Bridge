@@ -7,6 +7,7 @@ use crate::BridgeJob;
 pub mod codex;
 pub mod data;
 pub mod registry;
+pub mod sandbox;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -85,6 +86,7 @@ pub struct ExecCtx<'a> {
     pub emit: &'a mut dyn FnMut(ConnectorEvent),
     pub is_cancelled: &'a dyn Fn() -> bool,
     pub deadline: Instant,
+    pub sandbox_spec: Option<sandbox::SandboxSpec>,
 }
 
 impl ExecCtx<'_> {
@@ -145,6 +147,14 @@ pub trait BridgeConnector: Send {
     ) -> Result<ConnectorExecutionResult, ConnectorError>;
 
     fn describe_boundary(&self, grant: &ConnectorGrant) -> BoundaryDescription;
+
+    fn sandbox_spec(
+        &self,
+        _job: &BridgeJob,
+        _boundary: &GrantedBoundary,
+    ) -> Result<Option<sandbox::SandboxSpec>, ConnectorError> {
+        Ok(None)
+    }
 }
 
 #[cfg(test)]
@@ -168,6 +178,7 @@ mod tests {
             emit: &mut emit,
             is_cancelled: &move || flag_reader.load(Ordering::SeqCst),
             deadline,
+            sandbox_spec: None,
         };
 
         assert!(!ctx.cancelled());

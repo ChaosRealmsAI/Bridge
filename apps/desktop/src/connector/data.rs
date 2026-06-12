@@ -1,6 +1,7 @@
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
-use std::{collections::BTreeMap, fs, path::PathBuf};
+use sha2::{Digest, Sha256};
+use std::{collections::BTreeMap, collections::HashMap, fs, path::PathBuf};
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -43,7 +44,10 @@ impl KvError {
 }
 
 pub trait LocalKvStore: Send {
-    fn put(&mut self, namespace: &str, key: &str, value: &Value) -> Result<(), KvError>;
+    /// Contract: value_json is serde_json compact serialization.
+    /// The connector computes quota bytes from this exact string and the store
+    /// persists it unchanged so validation bytes and stored bytes cannot drift.
+    fn put(&mut self, namespace: &str, key: &str, value_json: &str) -> Result<(), KvError>;
     fn get(&self, namespace: &str, key: &str) -> Result<Option<KvEntry>, KvError>;
     fn query(&self, namespace: &str, prefix: &str, limit: usize) -> Result<Vec<KvEntry>, KvError>;
     fn delete(&mut self, namespace: &str, key: &str) -> Result<bool, KvError>;
@@ -58,6 +62,10 @@ impl SqliteKv {
         Self::open(default_kv_path()?)
     }
 
+    pub fn open_product(product_id: &str) -> Result<Self, String> {
+        Self::open(product_kv_path(product_id)?)
+    }
+
     pub fn open(path: PathBuf) -> Result<Self, String> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|error| error.to_string())?;
@@ -65,7 +73,6 @@ impl SqliteKv {
             fs::set_permissions(parent, fs::Permissions::from_mode(0o700))
                 .map_err(|error| error.to_string())?;
         }
-        let existed = path.exists();
         let conn = Connection::open(&path).map_err(|error| error.to_string())?;
         conn.pragma_update(None, "journal_mode", "WAL")
             .map_err(|error| error.to_string())?;
@@ -95,7 +102,7 @@ impl SqliteKv {
             return Err(format!("sqlite integrity check failed: {integrity}"));
         }
         #[cfg(unix)]
-        if !existed {
+        {
             fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
                 .map_err(|error| error.to_string())?;
         }
@@ -104,9 +111,7 @@ impl SqliteKv {
 }
 
 impl LocalKvStore for SqliteKv {
-    fn put(&mut self, namespace: &str, key: &str, value: &Value) -> Result<(), KvError> {
-        let value_json =
-            serde_json::to_string(value).map_err(|error| KvError::Serialize(error.to_string()))?;
+    fn put(&mut self, namespace: &str, key: &str, value_json: &str) -> Result<(), KvError> {
         let now = crate::now_string();
         self.conn
             .execute(
@@ -199,6 +204,105 @@ fn default_kv_path() -> Result<PathBuf, String> {
     Ok(crate::state_dir()?.join("data").join("kv.sqlite3"))
 }
 
+pub fn product_kv_path(product_id: &str) -> Result<PathBuf, String> {
+    Ok(crate::state_dir()?
+        .join("data")
+        .join("products")
+        .join(format!("{}.sqlite3", product_file_stem(product_id)?)))
+}
+
+fn product_file_stem(product_id: &str) -> Result<String, String> {
+    let trimmed = product_id.trim();
+    if trimmed.is_empty() {
+        return Err("product_id empty".to_string());
+    }
+    let mut readable = trimmed
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '.' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    if readable.len() > 48 {
+        readable.truncate(48);
+    }
+    let digest = Sha256::digest(trimmed.as_bytes());
+    let suffix = digest[..8]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    Ok(format!("{readable}-{suffix}"))
+}
+
+pub struct ProductSqliteKv {
+    stores: HashMap<String, SqliteKv>,
+}
+
+impl ProductSqliteKv {
+    pub fn new() -> Self {
+        Self {
+            stores: HashMap::new(),
+        }
+    }
+
+    fn store_mut(&mut self, namespace: &str) -> Result<&mut SqliteKv, KvError> {
+        let product_id = product_id_from_namespace(namespace)?;
+        if !self.stores.contains_key(&product_id) {
+            let store = SqliteKv::open_product(&product_id).map_err(KvError::Io)?;
+            self.stores.insert(product_id.clone(), store);
+        }
+        self.stores
+            .get_mut(&product_id)
+            .ok_or_else(|| KvError::Io("product sqlite store unavailable".to_string()))
+    }
+
+    fn store(&self, namespace: &str) -> Result<Option<&SqliteKv>, KvError> {
+        let product_id = product_id_from_namespace(namespace)?;
+        Ok(self.stores.get(&product_id))
+    }
+}
+
+impl Default for ProductSqliteKv {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl LocalKvStore for ProductSqliteKv {
+    fn put(&mut self, namespace: &str, key: &str, value_json: &str) -> Result<(), KvError> {
+        self.store_mut(namespace)?.put(namespace, key, value_json)
+    }
+
+    fn get(&self, namespace: &str, key: &str) -> Result<Option<KvEntry>, KvError> {
+        match self.store(namespace)? {
+            Some(store) => store.get(namespace, key),
+            None => Ok(None),
+        }
+    }
+
+    fn query(&self, namespace: &str, prefix: &str, limit: usize) -> Result<Vec<KvEntry>, KvError> {
+        match self.store(namespace)? {
+            Some(store) => store.query(namespace, prefix, limit),
+            None => Ok(Vec::new()),
+        }
+    }
+
+    fn delete(&mut self, namespace: &str, key: &str) -> Result<bool, KvError> {
+        self.store_mut(namespace)?.delete(namespace, key)
+    }
+}
+
+fn product_id_from_namespace(namespace: &str) -> Result<String, KvError> {
+    namespace
+        .strip_prefix("product:")
+        .filter(|value| !value.trim().is_empty())
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| KvError::Io("invalid product namespace".to_string()))
+}
+
 #[derive(Default)]
 pub struct MemKv {
     map: BTreeMap<(String, String), (Value, String)>,
@@ -217,10 +321,12 @@ impl MemKv {
 }
 
 impl LocalKvStore for MemKv {
-    fn put(&mut self, namespace: &str, key: &str, value: &Value) -> Result<(), KvError> {
+    fn put(&mut self, namespace: &str, key: &str, value_json: &str) -> Result<(), KvError> {
+        let value = serde_json::from_str(value_json)
+            .map_err(|error| KvError::Serialize(error.to_string()))?;
         self.map.insert(
             (namespace.to_string(), key.to_string()),
-            (value.clone(), crate::now_string()),
+            (value, crate::now_string()),
         );
         Ok(())
     }
@@ -335,18 +441,18 @@ impl<KV: LocalKvStore> BridgeConnector for DataConnector<KV> {
                     data_boundary.max_key_bytes,
                 )?;
                 let value = job.input.get("value").cloned().unwrap_or(Value::Null);
-                let serialized =
-                    serde_json::to_vec(&value).map_err(|error| ConnectorError::InvalidJob {
+                let value_json =
+                    serde_json::to_string(&value).map_err(|error| ConnectorError::InvalidJob {
                         reason: error.to_string(),
                     })?;
-                if serialized.len() > data_boundary.max_value_bytes {
+                if value_json.len() > data_boundary.max_value_bytes {
                     return deny("value", "value_too_large_locally");
                 }
-                self.kv.put(&effective_ns, &key, &value).map_err(|error| {
-                    ConnectorError::RuntimeFailed {
+                self.kv
+                    .put(&effective_ns, &key, &value_json)
+                    .map_err(|error| ConnectorError::RuntimeFailed {
                         reason: error.message(),
-                    }
-                })?;
+                    })?;
                 json!({ "ok": true, "namespace": effective_ns, "key": key, "written": true })
             }
             "get" => {
@@ -589,6 +695,7 @@ mod tests {
             emit: &mut emit,
             is_cancelled: &is_cancelled,
             deadline: Instant::now() + Duration::from_secs(10),
+            sandbox_spec: None,
         };
         connector.execute(job, boundary, &mut ctx)
     }
@@ -821,17 +928,15 @@ mod tests {
 
     #[test]
     fn sqlite_store_round_trips_json_without_path_leak() {
-        let dir = std::env::temp_dir().join(format!(
-            "panda-bridge-kv-test-{}",
-            crate::next_event_seq()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("panda-bridge-kv-test-{}", crate::next_event_seq()));
         let path = dir.join("kv.sqlite3");
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let _ = fs::remove_file(&path);
         let mut store = SqliteKv::open(path.clone()).unwrap();
         store
-            .put("product:A", "json", &json!({ "n": 1, "ok": true }))
+            .put("product:A", "json", r#"{"n":1,"ok":true}"#)
             .unwrap();
         let entry = store.get("product:A", "json").unwrap().unwrap();
         assert_eq!(entry.value, json!({ "n": 1, "ok": true }));
@@ -840,5 +945,45 @@ mod tests {
         assert!(store.get("product:A", "json").unwrap().is_none());
         drop(store);
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn product_sqlite_paths_are_physically_isolated() {
+        let path_a = product_kv_path("product-A").unwrap();
+        let path_b = product_kv_path("product-B").unwrap();
+        assert_ne!(path_a, path_b);
+        assert!(path_a.to_string_lossy().contains("product-A"));
+        assert!(path_b.to_string_lossy().contains("product-B"));
+    }
+
+    #[test]
+    fn product_sqlite_store_does_not_cross_read_other_product() {
+        let old_home = std::env::var_os("HOME");
+        let home = std::env::temp_dir().join(format!(
+            "panda-bridge-product-kv-test-{}",
+            crate::next_event_seq()
+        ));
+        let _ = fs::remove_dir_all(&home);
+        fs::create_dir_all(&home).unwrap();
+        std::env::set_var("HOME", &home);
+
+        let mut store = ProductSqliteKv::new();
+        store.put("product:A", "x", "1").unwrap();
+        let from_a = store.get("product:A", "x").unwrap().unwrap();
+        assert_eq!(from_a.value, json!(1));
+        assert!(store.get("product:B", "x").unwrap().is_none());
+
+        let path_a = product_kv_path("A").unwrap();
+        let path_b = product_kv_path("B").unwrap();
+        assert_ne!(path_a, path_b);
+        assert!(path_a.exists());
+        assert!(!path_b.exists());
+
+        if let Some(value) = old_home {
+            std::env::set_var("HOME", value);
+        } else {
+            std::env::remove_var("HOME");
+        }
+        let _ = fs::remove_dir_all(home);
     }
 }

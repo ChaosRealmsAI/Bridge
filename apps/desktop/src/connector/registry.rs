@@ -188,8 +188,18 @@ mod tests {
             .register(Box::new(TestConnector {
                 domain: "a",
                 kinds: vec![
-                    ("a.run", "run", ConnectorDanger::Low, BoundaryType::OpaqueRuntime),
-                    ("a.run", "run", ConnectorDanger::Low, BoundaryType::OpaqueRuntime),
+                    (
+                        "a.run",
+                        "run",
+                        ConnectorDanger::Low,
+                        BoundaryType::OpaqueRuntime
+                    ),
+                    (
+                        "a.run",
+                        "run",
+                        ConnectorDanger::Low,
+                        BoundaryType::OpaqueRuntime
+                    ),
                 ],
             }))
             .unwrap_err()
