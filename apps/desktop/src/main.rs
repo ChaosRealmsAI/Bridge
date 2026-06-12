@@ -2642,6 +2642,87 @@ fn bind_local_root_path(params: &Value, selected_path: &Path) -> Result<Value, S
     }))
 }
 
+fn bind_local_root_headless(
+    map: &std::collections::BTreeMap<String, String>,
+) -> Result<Value, String> {
+    let product_id = map
+        .get("product-id")
+        .cloned()
+        .ok_or_else(|| "missing --product-id".to_string())?;
+    let root_id_raw = map
+        .get("root-id")
+        .cloned()
+        .ok_or_else(|| "missing --root-id".to_string())?;
+    let domain_raw = map
+        .get("domain")
+        .cloned()
+        .ok_or_else(|| "missing --domain".to_string())?;
+    let path = map
+        .get("path")
+        .cloned()
+        .ok_or_else(|| "missing --path".to_string())?;
+    let domain =
+        LocalRootDomain::parse(&domain_raw).ok_or_else(|| "unknown_root_domain".to_string())?;
+    let root_id = normalize_local_root_id(domain, &root_id_raw);
+    let credentials = load_credentials()?;
+    let mut candidates = credentials_connections(&credentials)
+        .into_iter()
+        .flat_map(|connection| {
+            let preferred = connection.device_id == credentials.device_id;
+            let product_id = product_id.clone();
+            let root_id = root_id.clone();
+            connection_products(&connection)
+                .into_iter()
+                .filter(move |grant| {
+                    grant.authorization.is_active() && product_matches_target(grant, &product_id)
+                })
+                .filter_map(move |grant| {
+                    let declared =
+                        declared_local_root_for_policy(&grant.policy, domain, &root_id, None)?;
+                    let account = connection
+                        .account_id
+                        .clone()
+                        .or_else(|| connection.account_display.clone())?;
+                    Some((preferred, account, declared.path_display))
+                })
+        })
+        .collect::<Vec<_>>();
+    candidates.sort();
+    candidates.dedup();
+    let selected = candidates
+        .iter()
+        .find(|(preferred, _, _)| *preferred)
+        .or_else(|| {
+            if candidates.len() == 1 {
+                candidates.first()
+            } else {
+                None
+            }
+        })
+        .ok_or_else(|| {
+            if candidates.is_empty() {
+                "authorization_not_found".to_string()
+            } else {
+                "ambiguous_authorization_target".to_string()
+            }
+        })?;
+    let mut params = json!({
+        "product_id": product_id,
+        "account": selected.1.clone(),
+        "domain": domain_raw,
+        "root_id": root_id_raw,
+        "path_display": selected.2.clone()
+    });
+    if map
+        .get("confirm")
+        .map(|value| matches!(value.as_str(), "1" | "true" | "yes"))
+        .unwrap_or(false)
+    {
+        params["confirm"] = json!(true);
+    }
+    bind_local_root_path(&params, Path::new(&path))
+}
+
 fn upsert_local_root_binding(
     product_id: &str,
     account: &str,
@@ -6651,6 +6732,10 @@ fn run_headless_if_requested() -> Option<i32> {
             claim_intent(&api, &intent, &device_name)
                 .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string()))
         }
+        "headless-bind-local-root" => {
+            let map = arg_map(args.collect());
+            bind_local_root_headless(&map)
+        }
         "headless-revoke-authorization" => {
             let map = arg_map(args.collect());
             let product_id = match map.get("product-id") {
@@ -7510,6 +7595,65 @@ mod tests {
         assert!(!serde_json::to_string(&credentials_products(&loaded))
             .unwrap()
             .contains("real_path"));
+
+        reset_credentials_env();
+        let _ = fs::remove_file(state_path);
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn headless_bind_local_root_infers_account_and_path_display() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        reset_credentials_env();
+        env::remove_var(connector::fs::FS_ALLOWED_ROOTS_ENV);
+        let state_path = with_state_file("panda-bridge-headless-root-bind-test");
+        let base = env::temp_dir().join(format!(
+            "panda-bridge-headless-root-bind-{}",
+            next_event_seq()
+        ));
+        let root = base.join("project");
+        let file = root.join("seed.txt");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(&file, "seed").unwrap();
+        let mut credentials = test_high_risk_credentials();
+        credentials.product_id = Some("panda-notes".to_string());
+        credentials.product_name = Some("Panda Notes".to_string());
+        credentials.authorized_products[0].id = "panda-notes".to_string();
+        credentials.authorized_products[0].name = "Panda Notes".to_string();
+        credentials.authorized_products[0].policy["product_id"] = json!("panda-notes");
+        save_credentials(&credentials).unwrap();
+
+        let mut map = std::collections::BTreeMap::new();
+        map.insert("product-id".to_string(), "panda-notes".to_string());
+        map.insert("root-id".to_string(), "root-a".to_string());
+        map.insert("domain".to_string(), "fs_read".to_string());
+        map.insert("path".to_string(), root.to_string_lossy().to_string());
+        let response = bind_local_root_headless(&map).unwrap();
+        assert_eq!(response["root_id"], "root-a");
+        assert_eq!(response["path_display"], "[local]/Read");
+        assert!(!response
+            .to_string()
+            .contains(root.to_string_lossy().as_ref()));
+
+        let loaded = load_credentials().unwrap();
+        let connection = &loaded.connections[0];
+        let grant = connection
+            .authorized_products
+            .iter()
+            .find(|grant| grant.id == "panda-notes")
+            .unwrap();
+        let registry = declaration_registry();
+        let mut job = fs_read_job_for(&file);
+        job.product_id = "panda-notes".to_string();
+        let boundary =
+            build_granted_boundary(&registry, grant, &job, &connection.device_id).unwrap();
+        assert_eq!(
+            boundary.raw["_local_paths"]["root-a"],
+            fs::canonicalize(&root)
+                .unwrap()
+                .to_string_lossy()
+                .to_string()
+        );
 
         reset_credentials_env();
         let _ = fs::remove_file(state_path);

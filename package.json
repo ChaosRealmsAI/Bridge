@@ -37,6 +37,7 @@
     "verify:concurrency:matrix": "node scripts/verify/concurrency-matrix.mjs",
     "verify:concurrency:cloud": "node scripts/verify/cloud-concurrency-matrix.mjs",
     "verify:real-codex:queue": "node scripts/verify/real-codex-queue.mjs",
+    "verify:bridge-notes": "node scripts/verify/bridge-notes-dogfood.mjs",
     "verify:performance": "node scripts/verify/account-password-e2e.mjs",
     "verify:performance:matrix": "node scripts/verify/performance-matrix.mjs",
     "verify:performance:real-codex": "PANDA_BRIDGE_REAL_CODEX=1 node scripts/verify/account-password-e2e.mjs",

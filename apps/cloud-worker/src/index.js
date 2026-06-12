@@ -49,6 +49,10 @@ const DEFAULT_JSON_BODY_LIMIT_BYTES = 1024 * 512;
 const MAX_JSON_BODY_LIMIT_BYTES = 1024 * 1024 * 2;
 const memory = makeMemoryStore();
 
+export function __bridgeTestMemorySnapshot() {
+  return typeof memory.snapshot === "function" ? memory.snapshot() : {};
+}
+
 export default {
   async fetch(request, env = {}, ctx = {}) {
     try {
@@ -1510,7 +1514,7 @@ async function cancelDelegatedJob(request, env, productId, jobId) {
   if (!job) return json({ error: "job_not_found" }, env, 404);
   if (isTerminalJobStatus(job.status)) return json({ job: publicJob(job), cancelled: false }, env);
   const cancelledAt = now();
-  const next = await storage(env).update("bridge_jobs", job.id, { status: "cancelled", completed_at: job.completed_at || cancelledAt, updated_at: cancelledAt });
+  const next = await storage(env).update("bridge_jobs", job.id, { status: "cancelled", input: terminalJobInput(job, {}), completed_at: job.completed_at || cancelledAt, updated_at: cancelledAt });
   const event = await appendEvent(env, job.id, "cancelled", { completed_at: next.updated_at });
   await notifyJobEvent(env, job.device_id, next, event);
   await dispatchQueuedJobs(env, job.device_id);
@@ -1541,7 +1545,7 @@ async function cancelJob(request, env, jobId) {
   if (!job) return json({ error: "job_not_found" }, env, 404);
   if (isTerminalJobStatus(job.status)) return json({ job: publicJob(job), cancelled: false }, env);
   const cancelledAt = now();
-  const next = await storage(env).update("bridge_jobs", job.id, { status: "cancelled", completed_at: job.completed_at || cancelledAt, updated_at: cancelledAt });
+  const next = await storage(env).update("bridge_jobs", job.id, { status: "cancelled", input: terminalJobInput(job, {}), completed_at: job.completed_at || cancelledAt, updated_at: cancelledAt });
   const event = await appendEvent(env, job.id, "cancelled", { completed_at: next.updated_at });
   await notifyJobEvent(env, job.device_id, next, event);
   await dispatchQueuedJobs(env, job.device_id);
@@ -1658,9 +1662,11 @@ async function ackConnectorJob(request, env, jobId) {
   const body = await readJson(request, env);
   const status = body.status === "failed" ? "failed" : "succeeded";
   const terminalAt = now();
+  const result = object(body.result);
   const next = await storage(env).update("bridge_jobs", job.id, {
     status,
-    result: object(body.result),
+    result,
+    input: terminalJobInput(job, result),
     completed_at: job.completed_at || terminalAt,
     acked_at: terminalAt,
     updated_at: terminalAt,
@@ -1673,6 +1679,19 @@ async function ackConnectorJob(request, env, jobId) {
   await notifyJobEvent(env, connector.device.id, next, event);
   await dispatchQueuedJobs(env, connector.device.id);
   return json({ job: publicJob(next) }, env);
+}
+
+function terminalJobInput(job, result = {}) {
+  const input = object(job.input);
+  if (job.kind !== "data.put" || !Object.hasOwn(input, "value")) return input;
+  return {
+    ...input,
+    value: null,
+    value_redacted: true,
+    value_redacted_reason: result?.ok === false
+      ? "data_put_terminal_failure"
+      : "data_put_value_written_to_local_product_store",
+  };
 }
 
 function isTerminalJobStatus(status) {
@@ -2169,6 +2188,10 @@ async function requireProductDelegation(request, env, product, rawBody) {
 }
 
 function productDelegationSecret(env, productId) {
+  const envKey = productDelegationSecretEnvKey(productId);
+  if (envKey && env[envKey]) {
+    return clean(env[envKey], 4096);
+  }
   if (productId === "otherline" && env.BRIDGE_OTHERLINE_DELEGATION_SECRET) {
     return clean(env.BRIDGE_OTHERLINE_DELEGATION_SECRET, 4096);
   }
@@ -2180,6 +2203,14 @@ function productDelegationSecret(env, productId) {
   } catch {
     return "";
   }
+}
+
+function productDelegationSecretEnvKey(productId) {
+  const normalized = clean(productId, 200)
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return normalized ? `BRIDGE_${normalized}_DELEGATION_SECRET` : "";
 }
 
 function productDelegationSkewMs(env) {
@@ -2302,6 +2333,7 @@ async function cancelAuthorizationInactiveJob(env, job, denial = { error: "produ
   const cancelledAt = now();
   const next = await storage(env).update("bridge_jobs", job.id, {
     status: "cancelled",
+    input: terminalJobInput(job, { ok: false }),
     result: {
       ok: false,
       error: denial.error,
@@ -3548,6 +3580,14 @@ function makeMemoryStore() {
       const count = rows.length - keep.length;
       tables.set(name, keep);
       return count;
+    },
+    snapshot() {
+      return Object.fromEntries(
+        [...tables.entries()].map(([name, rows]) => [
+          name,
+          rows.map((row) => structuredClone(row)),
+        ]),
+      );
     },
     reset() {
       tables.clear();

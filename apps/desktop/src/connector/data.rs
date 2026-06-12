@@ -263,6 +263,15 @@ impl ProductSqliteKv {
         let product_id = product_id_from_namespace(namespace)?;
         Ok(self.stores.get(&product_id))
     }
+
+    fn open_existing_store(&self, namespace: &str) -> Result<Option<SqliteKv>, KvError> {
+        let product_id = product_id_from_namespace(namespace)?;
+        let path = product_kv_path(&product_id).map_err(KvError::Io)?;
+        if !path.exists() {
+            return Ok(None);
+        }
+        SqliteKv::open(path).map(Some).map_err(KvError::Io)
+    }
 }
 
 impl Default for ProductSqliteKv {
@@ -279,14 +288,20 @@ impl LocalKvStore for ProductSqliteKv {
     fn get(&self, namespace: &str, key: &str) -> Result<Option<KvEntry>, KvError> {
         match self.store(namespace)? {
             Some(store) => store.get(namespace, key),
-            None => Ok(None),
+            None => match self.open_existing_store(namespace)? {
+                Some(store) => store.get(namespace, key),
+                None => Ok(None),
+            },
         }
     }
 
     fn query(&self, namespace: &str, prefix: &str, limit: usize) -> Result<Vec<KvEntry>, KvError> {
         match self.store(namespace)? {
             Some(store) => store.query(namespace, prefix, limit),
-            None => Ok(Vec::new()),
+            None => match self.open_existing_store(namespace)? {
+                Some(store) => store.query(namespace, prefix, limit),
+                None => Ok(Vec::new()),
+            },
         }
     }
 
@@ -980,6 +995,11 @@ mod tests {
         assert_ne!(path_a, path_b);
         assert!(path_a.exists());
         assert!(!path_b.exists());
+        let cold_store = ProductSqliteKv::new();
+        let cold_read = cold_store.get("product:A", "x").unwrap().unwrap();
+        assert_eq!(cold_read.value, json!(1));
+        let cold_query = cold_store.query("product:A", "x", 10).unwrap();
+        assert_eq!(cold_query.len(), 1);
 
         if let Some(value) = old_home {
             std::env::set_var("HOME", value);
