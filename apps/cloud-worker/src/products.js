@@ -1,4 +1,4 @@
-export const CAPABILITY_DANGER_LEVELS = Object.freeze(["low", "medium", "high"]);
+export const CAPABILITY_DANGER_LEVELS = Object.freeze(["low", "medium", "high", "critical"]);
 export const CAPABILITY_BOUNDARY_TYPES = Object.freeze([
   "workspace_sandbox",
   "namespace_kv",
@@ -9,7 +9,7 @@ export const CAPABILITY_BOUNDARY_TYPES = Object.freeze([
 
 // v3.1+ registered data definitions:
 // fs.read/fs.write -> high / directory_whitelist
-// shell.run -> high / command_sandbox
+// shell.run -> critical / command_sandbox
 export const BRIDGE_RUNTIME_CAPABILITY_REGISTRY = Object.freeze({
   "codex.chat": Object.freeze({
     domain: "codex",
@@ -74,6 +74,13 @@ export const BRIDGE_RUNTIME_CAPABILITY_REGISTRY = Object.freeze({
     boundary_type: "directory_whitelist",
     description: "Write files inside explicitly authorized local directories",
   }),
+  "shell.run": Object.freeze({
+    domain: "shell",
+    verb: "run",
+    danger: "critical",
+    boundary_type: "command_sandbox",
+    description: "Run a command in a sandboxed working dir",
+  }),
   "saas.custom.run": Object.freeze({
     domain: "saas",
     verb: "custom.run",
@@ -85,7 +92,8 @@ export const BRIDGE_RUNTIME_CAPABILITY_REGISTRY = Object.freeze({
 
 export const BRIDGE_RUNTIME_CAPABILITIES = Object.freeze(Object.keys(BRIDGE_RUNTIME_CAPABILITY_REGISTRY));
 export const HIGH_TIER_RUNTIME_CAPABILITIES = Object.freeze(["fs.read", "fs.write"]);
-export const NON_DATA_RUNTIME_CAPABILITIES = Object.freeze(BRIDGE_RUNTIME_CAPABILITIES.filter((kind) => !kind.startsWith("data.") && !HIGH_TIER_RUNTIME_CAPABILITIES.includes(kind)));
+export const CRITICAL_TIER_RUNTIME_CAPABILITIES = Object.freeze(["shell.run"]);
+export const NON_DATA_RUNTIME_CAPABILITIES = Object.freeze(BRIDGE_RUNTIME_CAPABILITIES.filter((kind) => !kind.startsWith("data.") && !HIGH_TIER_RUNTIME_CAPABILITIES.includes(kind) && !CRITICAL_TIER_RUNTIME_CAPABILITIES.includes(kind)));
 export const OTHERLINE_RUNTIME_CAPABILITIES = Object.freeze([
   ...NON_DATA_RUNTIME_CAPABILITIES,
   "data.put",

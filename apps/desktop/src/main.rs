@@ -48,6 +48,7 @@ use connector::{
     fs::FsConnector,
     registry::ConnectorRegistry,
     sandbox::{self, NetPolicy, ResourceLimits, SandboxProfileKind, SandboxSpec},
+    shell::ShellConnector,
     ConnectorDanger, ConnectorError, ConnectorEvent, ExecCtx, GrantedBoundary,
 };
 
@@ -3641,6 +3642,7 @@ fn execution_registry(codex: CodexConnector) -> Result<ConnectorRegistry, String
     registry.register(Box::new(codex))?;
     registry.register(Box::new(DataConnector::new(ProductSqliteKv::new())))?;
     registry.register(Box::new(FsConnector::new()))?;
+    registry.register(Box::new(ShellConnector::new()))?;
     Ok(registry)
 }
 
@@ -3655,6 +3657,9 @@ fn declaration_registry() -> ConnectorRegistry {
     registry
         .register(Box::new(FsConnector::new()))
         .expect("fs connector declaration should be valid");
+    registry
+        .register(Box::new(ShellConnector::new()))
+        .expect("shell connector declaration should be valid");
     registry
 }
 
@@ -3839,7 +3844,7 @@ fn validate_high_tier_scope_locally(policy: &Value, job: &BridgeJob) -> Result<(
     let Some((domain, danger, _boundary_type)) = capability_metadata(&job.kind) else {
         return Ok(());
     };
-    if danger != "high" || domain != "fs" {
+    if !matches!(danger.as_str(), "high" | "critical") {
         return Ok(());
     }
     if policy.get("version").and_then(Value::as_str) != Some("AUTH-SCOPE-v2") {
@@ -3899,6 +3904,7 @@ fn build_granted_boundary(
     let raw = match domain.as_str() {
         "data" => data_boundary_policy_slice(&grant.policy, &job.product_id),
         "fs" => fs_boundary_policy_slice(&grant.policy),
+        "shell" => shell_boundary_policy_slice(&grant.policy),
         _ => grant.policy.clone(),
     };
     Ok(GrantedBoundary {
@@ -3923,6 +3929,24 @@ fn fs_boundary_policy_slice(policy: &Value) -> Value {
                 "writable": false,
                 "max_bytes": connector::fs::DEFAULT_MAX_BYTES,
                 "follow_symlinks": false
+            })
+        })
+}
+
+fn shell_boundary_policy_slice(policy: &Value) -> Value {
+    policy
+        .pointer("/boundaries/shell")
+        .cloned()
+        .unwrap_or_else(|| {
+            json!({
+                "type": "command_sandbox",
+                "cwd_root_id": "",
+                "net": "deny",
+                "allow_exec_subtree": false,
+                "cmd_allowlist": [],
+                "max_output_bytes": connector::shell::DEFAULT_MAX_OUTPUT_BYTES,
+                "deadline_ms": connector::shell::DEFAULT_DEADLINE_MS,
+                "limits": connector::shell::default_limits_json()
             })
         })
 }
@@ -4054,6 +4078,7 @@ fn build_codex_sandbox_spec(
         read_roots,
         write_roots,
         exec_allow: vec![runtime_bin],
+        allow_exec_subtree: false,
         net,
         limits: ResourceLimits::codex_default(),
         env_allow,
@@ -4270,6 +4295,14 @@ fn local_policy_denial(error: &str) -> (&'static str, &'static str) {
         ("path", "path_denied_by_sandbox_local")
     } else if error.starts_with("file_too_large_locally") {
         ("path", "file_too_large_locally")
+    } else if error.starts_with("cwd_root_not_granted_locally") {
+        ("cwd_root", "cwd_root_not_granted_locally")
+    } else if error.starts_with("command_not_found_locally") {
+        ("command", "command_not_found_locally")
+    } else if error.starts_with("command_not_allowed_locally") {
+        ("command", "command_not_allowed_locally")
+    } else if error.starts_with("output_too_large_locally") {
+        ("output", "output_too_large_locally")
     } else {
         ("unknown", "local_policy_denied")
     }
@@ -4765,6 +4798,7 @@ fn scope_danger_metadata_from_capabilities(capabilities: &[String]) -> (Value, V
     let mut low = HashSet::new();
     let mut medium = HashSet::new();
     let mut high = HashSet::new();
+    let mut critical = HashSet::new();
     for capability in capabilities {
         if let Some((domain, danger, _)) = capability_metadata(capability) {
             match danger.as_str() {
@@ -4777,6 +4811,9 @@ fn scope_danger_metadata_from_capabilities(capabilities: &[String]) -> (Value, V
                 "high" => {
                     high.insert(domain);
                 }
+                "critical" => {
+                    critical.insert(domain);
+                }
                 _ => {}
             }
         }
@@ -4784,7 +4821,8 @@ fn scope_danger_metadata_from_capabilities(capabilities: &[String]) -> (Value, V
     let danger_tiers = json!({
         "low": tier_metadata_value(&low),
         "medium": tier_metadata_value(&medium),
-        "high": tier_metadata_value(&high)
+        "high": tier_metadata_value(&high),
+        "critical": tier_metadata_value(&critical)
     });
     (
         danger_tiers,
@@ -6609,6 +6647,14 @@ mod tests {
             false
         );
         assert_eq!(
+            preview["capabilities"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item.as_str() == Some("shell.run")),
+            false
+        );
+        assert_eq!(
             preview["workspace_roots"],
             json!([{ "id": "default", "path_display": "[local]/default" }])
         );
@@ -6619,6 +6665,7 @@ mod tests {
         assert_eq!(preview["danger_tiers"]["low"]["granted"], true);
         assert_eq!(preview["danger_tiers"]["medium"]["granted"], false);
         assert_eq!(preview["danger_tiers"]["high"]["granted"], false);
+        assert_eq!(preview["danger_tiers"]["critical"]["granted"], false);
         assert_eq!(
             preview["domain_boundaries"]["codex"],
             json!({
@@ -6638,7 +6685,8 @@ mod tests {
                 "data.put",
                 "data.query",
                 "fs.read",
-                "fs.write"
+                "fs.write",
+                "shell.run"
             ])
         );
     }
@@ -6822,6 +6870,7 @@ mod tests {
         assert_eq!(policy["approval_policy_floor"], "on-request");
         assert_eq!(policy["allow_approval_never"], false);
         assert_eq!(policy["allow_developer_instructions"], false);
+        assert_eq!(policy["danger_tiers"]["critical"]["granted"], false);
     }
 
     #[test]
@@ -6986,6 +7035,80 @@ mod tests {
             assert_eq!(high_result["reason"], "sandbox_unavailable_local");
         }
         env::remove_var("PANDA_BRIDGE_FS_ALLOWED_ROOTS");
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn shell_run_requires_v2_critical_tier_grant_locally() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        reset_policy_env();
+        let job = BridgeJob {
+            kind: "shell.run".to_string(),
+            input: json!({ "argv": ["/bin/echo", "hi"] }),
+            workspace_ref: None,
+            ..test_job(json!({}))
+        };
+
+        let mut v1_credentials = test_credentials(vec!["shell.run"]);
+        v1_credentials.authorized_products[0].policy["capabilities"] = json!(["shell.run"]);
+        let mut registry = declaration_registry();
+        let v1_result = execute_via_registry(&mut registry, &v1_credentials, &job).unwrap();
+        assert_eq!(v1_result["ok"], false);
+        assert_eq!(v1_result["denied"], "tier");
+        assert_eq!(v1_result["reason"], "tier_not_granted_locally");
+
+        let mut old_v2 = test_credentials(vec!["shell.run"]);
+        old_v2.authorized_products[0].policy = json!({
+            "version": "AUTH-SCOPE-v2",
+            "product_id": "panda-dev",
+            "capabilities": ["shell.run"],
+            "danger_tiers": {
+                "low": { "granted": false, "domains": [] },
+                "medium": { "granted": false, "domains": [] },
+                "high": { "granted": false, "domains": [] }
+            },
+            "domain_boundaries": {},
+            "boundaries": {
+                "shell": {
+                    "type": "command_sandbox",
+                    "cwd_root_id": "root-a",
+                    "net": "deny",
+                    "allow_exec_subtree": false,
+                    "cmd_allowlist": [],
+                    "max_output_bytes": 1048576,
+                    "deadline_ms": 30000,
+                    "limits": connector::shell::default_limits_json()
+                }
+            }
+        });
+        let mut registry = declaration_registry();
+        let old_v2_result = execute_via_registry(&mut registry, &old_v2, &job).unwrap();
+        assert_eq!(old_v2_result["ok"], false);
+        assert_eq!(old_v2_result["denied"], "tier");
+        assert_eq!(old_v2_result["reason"], "tier_not_granted_locally");
+
+        let mut critical = old_v2;
+        critical.authorized_products[0].policy["danger_tiers"]["critical"] =
+            json!({ "granted": true, "domains": ["shell"] });
+        critical.authorized_products[0].policy["domain_boundaries"] = json!({
+            "shell": { "granted": true, "danger": "critical", "boundary_type": "command_sandbox" }
+        });
+        let base = env::temp_dir().join(format!("panda-bridge-shell-tier-{}", std::process::id()));
+        let root = base.join("root");
+        fs::create_dir_all(&root).unwrap();
+        env::set_var(
+            connector::shell::SHELL_CWD_ROOTS_ENV,
+            format!("root-a:{}", root.display()),
+        );
+        let mut registry = declaration_registry();
+        let critical_result = execute_via_registry(&mut registry, &critical, &job).unwrap();
+        if sandbox::backend().available() {
+            assert_ne!(critical_result["denied"], "tier");
+        } else {
+            assert_eq!(critical_result["denied"], "sandbox");
+            assert_eq!(critical_result["reason"], "sandbox_unavailable_local");
+        }
+        env::remove_var(connector::shell::SHELL_CWD_ROOTS_ENV);
         let _ = fs::remove_dir_all(&base);
     }
 

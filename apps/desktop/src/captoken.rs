@@ -294,12 +294,60 @@ fn normalize_boundary(policy: &Value, job: &BridgeJob) -> Value {
     match capability_domain(&job.kind).as_str() {
         "data" => normalize_data_boundary(policy, job),
         "fs" => normalize_fs_boundary(policy),
+        "shell" => normalize_shell_boundary(policy),
         "codex" => normalize_codex_boundary(policy),
         domain => json!({
             "type": "opaque_runtime",
             "domain": trim_nfc(domain),
             "capabilities": normalize_string_list(policy.get("capabilities")),
         }),
+    }
+}
+
+fn normalize_shell_boundary(policy: &Value) -> Value {
+    let shell = policy.pointer("/boundaries/shell").unwrap_or(&Value::Null);
+    let mut cmd_allowlist = shell
+        .get("cmd_allowlist")
+        .or_else(|| shell.get("cmdAllowlist"))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|item| item.as_str().map(trim_nfc_keep_slash))
+        .filter(|item| !item.is_empty())
+        .map(Value::String)
+        .collect::<Vec<_>>();
+    cmd_allowlist.sort_by_key(canonical_json);
+    cmd_allowlist.dedup_by(|left, right| canonical_json(left) == canonical_json(right));
+    let limits = shell.get("limits").unwrap_or(&Value::Null);
+    json!({
+        "type": "command_sandbox",
+        "cwd_root_id": trim_nfc_keep_slash(policy_string(shell, "cwd_root_id").or_else(|| policy_string(shell, "cwdRootId")).unwrap_or_default()),
+        "net": normalize_shell_net(shell),
+        "allow_exec_subtree": shell.get("allow_exec_subtree").or_else(|| shell.get("allowExecSubtree")).and_then(Value::as_bool).unwrap_or(false),
+        "cmd_allowlist": cmd_allowlist,
+        "max_output_bytes": bounded_usize_field(shell, "max_output_bytes", "maxOutputBytes", 1_048_576, 1, 16_777_216),
+        "deadline_ms": bounded_usize_field(shell, "deadline_ms", "deadlineMs", 30_000, 1, 600_000),
+        "limits": {
+            "cpu_seconds": bounded_usize_field(limits, "cpu_seconds", "cpuSeconds", 30, 1, 300),
+            "address_space": bounded_usize_field(limits, "address_space", "addressSpace", 1_073_741_824, 67_108_864, 8_589_934_592usize),
+            "open_files": bounded_usize_field(limits, "open_files", "openFiles", 128, 3, 1024),
+            "processes": bounded_usize_field(limits, "processes", "processes", 16, 1, 128),
+            "file_size": bounded_usize_field(limits, "file_size", "fileSize", 67_108_864, 1, 1_073_741_824)
+        }
+    })
+}
+
+fn normalize_shell_net(shell: &Value) -> String {
+    match shell
+        .get("net")
+        .and_then(Value::as_str)
+        .map(trim_nfc)
+        .unwrap_or_else(|| "deny".to_string())
+        .as_str()
+    {
+        "allow_outbound" | "allow-outbound" | "outbound" => "allow_outbound".to_string(),
+        _ => "deny".to_string(),
     }
 }
 

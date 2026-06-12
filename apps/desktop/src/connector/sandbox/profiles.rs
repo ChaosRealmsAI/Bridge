@@ -8,6 +8,7 @@ pub fn render(spec: &SandboxSpec) -> Result<String, SandboxError> {
         SandboxProfileKind::DataKvDir => render_data_kv_dir(spec),
         SandboxProfileKind::FsReadDir => render_fs_read_dir(spec),
         SandboxProfileKind::FsWriteDir => render_fs_write_dir(spec),
+        SandboxProfileKind::ShellCommand => render_shell_command(spec),
     }
 }
 
@@ -183,6 +184,72 @@ fn render_fs_write_dir(spec: &SandboxSpec) -> Result<String, SandboxError> {
     Ok(out)
 }
 
+fn render_shell_command(spec: &SandboxSpec) -> Result<String, SandboxError> {
+    if spec.cwd.as_os_str().is_empty() {
+        return render_error("shell sandbox cwd is empty");
+    }
+    if spec.write_roots.len() != 1 || spec.write_roots[0] != spec.cwd {
+        return render_error("shell sandbox requires cwd as its only write root");
+    }
+    let exec_paths = unique_paths(spec.exec_allow.iter());
+    if exec_paths.is_empty() {
+        return render_error("shell sandbox requires argv0 exec allow path");
+    }
+    let argv0 = exec_paths[0].clone();
+    let home = home_dir()?;
+    let mut out = String::new();
+    out.push_str("(version 1)\n");
+    out.push_str("(deny default)\n");
+    out.push_str("(import \"system.sb\")\n");
+    out.push_str("(allow file-read-metadata)\n");
+    out.push_str("(allow file-read*\n");
+    out.push_str("  (subpath \"/System\")\n");
+    out.push_str("  (subpath \"/usr/lib\")\n");
+    out.push_str("  (subpath \"/usr/share\")\n");
+    out.push_str("  (literal \"/dev/null\")\n");
+    out.push_str("  (literal \"/dev/urandom\")\n");
+    out.push_str("  (literal \"/dev/random\")\n");
+    out.push_str(&format!("  (subpath {})\n", sb_string(&spec.cwd)));
+    for path in &exec_paths {
+        out.push_str(&format!("  (literal {})\n", sb_string(path)));
+        if let Some(parent) = path.parent() {
+            out.push_str(&format!("  (subpath {})\n", sb_string(parent)));
+        }
+    }
+    if spec.allow_exec_subtree && exec_paths.len() == 1 {
+        out.push_str("  (subpath \"/bin\")\n");
+        out.push_str("  (subpath \"/usr/bin\")\n");
+    }
+    out.push_str(")\n");
+    out.push_str("(allow file-write*\n");
+    out.push_str(&format!("  (subpath {})\n", sb_string(&spec.cwd)));
+    out.push_str("  (literal \"/dev/null\")\n");
+    out.push_str(")\n");
+    out.push_str("(allow file-write-data (literal \"/dev/stdout\") (literal \"/dev/stderr\"))\n");
+    render_sensitive_denies(&mut out, &home);
+    render_net(&mut out, spec.net);
+    if spec.allow_exec_subtree {
+        out.push_str("(allow process-fork)\n");
+        out.push_str("(allow process-exec\n");
+        if exec_paths.len() == 1 {
+            out.push_str("  (subpath \"/bin\")\n");
+            out.push_str("  (subpath \"/usr/bin\")\n");
+        }
+        for path in &exec_paths {
+            out.push_str(&format!("  (literal {})\n", sb_string(path)));
+        }
+        out.push_str(")\n");
+        out.push_str("(deny process-exec)\n");
+    } else {
+        out.push_str("(allow process-exec\n");
+        out.push_str(&format!("  (literal {})\n", sb_string(&argv0)));
+        out.push_str(")\n");
+        out.push_str("(deny process-exec)\n");
+        out.push_str("(deny process-fork)\n");
+    }
+    Ok(out)
+}
+
 fn render_net(out: &mut String, net: NetPolicy) {
     match net {
         NetPolicy::Deny => out.push_str("(deny network*)\n"),
@@ -285,6 +352,7 @@ mod tests {
             read_roots: vec![cwd.clone()],
             write_roots: vec![cwd.clone()],
             exec_allow,
+            allow_exec_subtree: false,
             net: NetPolicy::Deny,
             limits: ResourceLimits::codex_default(),
             env_allow: Vec::new(),
@@ -341,6 +409,7 @@ mod tests {
             read_roots: vec![root.clone()],
             write_roots: Vec::new(),
             exec_allow: vec![PathBuf::from("/bin/cat")],
+            allow_exec_subtree: false,
             net: NetPolicy::Deny,
             limits: ResourceLimits::fs_read_default(),
             env_allow: Vec::new(),
@@ -364,6 +433,7 @@ mod tests {
             read_roots: Vec::new(),
             write_roots: Vec::new(),
             exec_allow: vec![PathBuf::from("/bin/cat")],
+            allow_exec_subtree: false,
             net: NetPolicy::Deny,
             limits: ResourceLimits::fs_read_default(),
             env_allow: Vec::new(),
@@ -390,6 +460,7 @@ mod tests {
             read_roots: Vec::new(),
             write_roots: vec![root.clone()],
             exec_allow: vec![helper.clone()],
+            allow_exec_subtree: false,
             net: NetPolicy::Deny,
             limits: ResourceLimits::fs_write_default(),
             env_allow: Vec::new(),
@@ -417,6 +488,7 @@ mod tests {
             read_roots: Vec::new(),
             write_roots: Vec::new(),
             exec_allow: vec![helper.clone()],
+            allow_exec_subtree: false,
             net: NetPolicy::Deny,
             limits: ResourceLimits::fs_write_default(),
             env_allow: Vec::new(),
@@ -428,6 +500,82 @@ mod tests {
         ));
         sandbox.write_roots.push(root);
         sandbox.exec_allow.push(PathBuf::from("/bin/sh"));
+        assert!(matches!(
+            render(&sandbox),
+            Err(SandboxError::ProfileRenderFailed { .. })
+        ));
+    }
+
+    #[test]
+    fn shell_profile_is_deny_by_default_cwd_only_and_single_exec_by_default() {
+        let root = std::env::temp_dir().join("panda-bridge-shell-profile-render-test");
+        let profile = render(&SandboxSpec {
+            profile: SandboxProfileKind::ShellCommand,
+            read_roots: vec![root.clone()],
+            write_roots: vec![root.clone()],
+            exec_allow: vec![PathBuf::from("/bin/echo")],
+            allow_exec_subtree: false,
+            net: NetPolicy::Deny,
+            limits: ResourceLimits::shell_default(),
+            env_allow: Vec::new(),
+            cwd: root.clone(),
+        })
+        .unwrap();
+        assert!(profile.starts_with("(version 1)\n(deny default)\n"));
+        assert!(profile.contains("(deny network*)"));
+        assert!(profile.contains("(allow file-write*\n"));
+        assert!(profile.contains(&format!("  (subpath {})", sb_string(&root))));
+        assert!(profile.contains("(allow process-exec\n  (literal \"/bin/echo\")\n)"));
+        assert!(profile.contains("(deny process-exec)"));
+        assert!(profile.contains("(deny process-fork)"));
+        assert!(profile.contains("Library/Keychains"));
+        assert!(!profile.contains("(allow process-fork)"));
+        assert!(!profile.contains("(allow default)"));
+    }
+
+    #[test]
+    fn shell_profile_allow_exec_subtree_adds_fork_and_subpath_exec() {
+        let root = std::env::temp_dir().join("panda-bridge-shell-profile-render-test");
+        let profile = render(&SandboxSpec {
+            profile: SandboxProfileKind::ShellCommand,
+            read_roots: vec![root.clone()],
+            write_roots: vec![root.clone()],
+            exec_allow: vec![PathBuf::from("/bin/sh")],
+            allow_exec_subtree: true,
+            net: NetPolicy::AllowOutbound,
+            limits: ResourceLimits::shell_default(),
+            env_allow: Vec::new(),
+            cwd: root,
+        })
+        .unwrap();
+        assert!(profile.contains("(allow network-outbound)"));
+        assert!(profile.contains("(deny network-inbound)"));
+        assert!(profile.contains("(allow process-fork)"));
+        assert!(profile.contains("  (subpath \"/bin\")"));
+        assert!(profile.contains("  (subpath \"/usr/bin\")"));
+        assert!(profile.contains("(deny process-exec)"));
+    }
+
+    #[test]
+    fn shell_profile_fails_closed_without_cwd_or_with_wrong_write_root() {
+        let root = std::env::temp_dir().join("panda-bridge-shell-profile-render-test");
+        let mut sandbox = SandboxSpec {
+            profile: SandboxProfileKind::ShellCommand,
+            read_roots: vec![root.clone()],
+            write_roots: vec![root.join("other")],
+            exec_allow: vec![PathBuf::from("/bin/echo")],
+            allow_exec_subtree: false,
+            net: NetPolicy::Deny,
+            limits: ResourceLimits::shell_default(),
+            env_allow: Vec::new(),
+            cwd: root.clone(),
+        };
+        assert!(matches!(
+            render(&sandbox),
+            Err(SandboxError::ProfileRenderFailed { .. })
+        ));
+        sandbox.write_roots = vec![root];
+        sandbox.cwd = PathBuf::new();
         assert!(matches!(
             render(&sandbox),
             Err(SandboxError::ProfileRenderFailed { .. })
@@ -467,6 +615,7 @@ mod tests {
             read_roots: vec![workspace.clone()],
             write_roots: vec![workspace.clone()],
             exec_allow,
+            allow_exec_subtree: false,
             net: NetPolicy::Deny,
             limits: ResourceLimits::codex_default(),
             env_allow: Vec::new(),
@@ -576,6 +725,7 @@ mod tests {
             read_roots: vec![allowed.clone()],
             write_roots: Vec::new(),
             exec_allow: vec![PathBuf::from("/bin/cat")],
+            allow_exec_subtree: false,
             net: NetPolicy::Deny,
             limits: ResourceLimits::fs_read_default(),
             env_allow: Vec::new(),
@@ -645,6 +795,7 @@ mod tests {
             read_roots: Vec::new(),
             write_roots: vec![allowed.clone()],
             exec_allow: vec![helper.clone()],
+            allow_exec_subtree: false,
             net: NetPolicy::Deny,
             limits: ResourceLimits::fs_write_default(),
             env_allow: Vec::new(),

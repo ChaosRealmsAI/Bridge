@@ -1562,18 +1562,28 @@ async function postConnectorEvents(request, env, jobId) {
   for (const item of incoming) {
     const eventType = clean(item.type, 80) || "status";
     const eventPayload = object(item.payload || item);
+    const persist = item.persist !== false && eventPayload.persist !== false;
+    const cleanPayload = { ...eventPayload };
+    delete cleanPayload.persist;
     const patch = timingPatchForEvent(currentJob, eventType);
     if (Object.keys(patch).length) currentJob = await storage(env).update("bridge_jobs", currentJob.id, patch);
-    const event = await appendEvent(env, currentJob.id, eventType, { ...eventPayload, ...patch });
+    const event = persist
+      ? await appendEvent(env, currentJob.id, eventType, { ...cleanPayload, ...patch })
+      : {
+          job_id: currentJob.id,
+          seq: null,
+          transient: true,
+          ...bridgeEvent(eventType, { ...cleanPayload, ...patch }),
+        };
     events.push(event);
     if (eventType === "cap_token.verify_ok" || eventType === "cap_token.denied") {
       await runBackground({}, audit(env, currentJob.user_id, currentJob.device_id, currentJob.product_id, eventType, currentJob.id, {
-        jti: clean(eventPayload.jti, 120) || null,
-        eph: eventPayload.eph ?? null,
-        uses: eventPayload.uses ?? null,
-        denied: clean(eventPayload.denied, 120) || null,
-        reason: clean(eventPayload.reason, 160) || null,
-        mode: clean(eventPayload.mode, 40) || capTokenMode(env),
+        jti: clean(cleanPayload.jti, 120) || null,
+        eph: cleanPayload.eph ?? null,
+        uses: cleanPayload.uses ?? null,
+        denied: clean(cleanPayload.denied, 120) || null,
+        reason: clean(cleanPayload.reason, 160) || null,
+        mode: clean(cleanPayload.mode, 40) || capTokenMode(env),
       }));
     }
     await notifyJobEvent(env, connector.device.id, currentJob, event);
@@ -3021,7 +3031,42 @@ function normalizeConnectorBoundaries(input, product, capabilities) {
       follow_symlinks: fs.follow_symlinks === true || fs.followSymlinks === true,
     };
   }
+  if (capabilities.includes("shell.run")) {
+    const shell = object(requested.shell);
+    const cmdAllowlist = Array.isArray(shell.cmd_allowlist || shell.cmdAllowlist)
+      ? (shell.cmd_allowlist || shell.cmdAllowlist)
+          .map((item) => cleanKeepSlash(item, 400))
+          .filter(Boolean)
+      : [];
+    cmdAllowlist.sort(codePointCompare);
+    boundaries.shell = {
+      type: "command_sandbox",
+      cwd_root_id: cleanKeepSlash(shell.cwd_root_id || shell.cwdRootId, 120),
+      net: normalizeShellNet(shell.net),
+      allow_exec_subtree: shell.allow_exec_subtree === true || shell.allowExecSubtree === true,
+      cmd_allowlist: [...new Set(cmdAllowlist)],
+      max_output_bytes: boundedInteger(shell.max_output_bytes ?? shell.maxOutputBytes, 1048576, 1, 16777216),
+      deadline_ms: boundedInteger(shell.deadline_ms ?? shell.deadlineMs, 30000, 1, 600000),
+      limits: normalizeShellLimits(shell.limits),
+    };
+  }
   return boundaries;
+}
+
+function normalizeShellNet(value) {
+  const net = clean(value, 80) || "deny";
+  return ["allow_outbound", "allow-outbound", "outbound"].includes(net) ? "allow_outbound" : "deny";
+}
+
+function normalizeShellLimits(input) {
+  const limits = object(input);
+  return {
+    cpu_seconds: boundedInteger(limits.cpu_seconds ?? limits.cpuSeconds, 30, 1, 300),
+    address_space: boundedInteger(limits.address_space ?? limits.addressSpace, 1073741824, 67108864, 8589934592),
+    open_files: boundedInteger(limits.open_files ?? limits.openFiles, 128, 3, 1024),
+    processes: boundedInteger(limits.processes, 16, 1, 128),
+    file_size: boundedInteger(limits.file_size ?? limits.fileSize, 67108864, 1, 1073741824),
+  };
 }
 
 function normalizedPolicyCapabilities(requested, product, originalPolicy = {}) {
@@ -3035,16 +3080,16 @@ function normalizedPolicyCapabilities(requested, product, originalPolicy = {}) {
     throw error;
   }
   const unsupportedByProduct = capabilities.filter((kind) => !product.capabilities.includes(kind));
-  const highUnsupportedByProduct = unsupportedByProduct.filter((kind) => capabilityDanger(kind) === "high");
-  if (highUnsupportedByProduct.length) {
+  const restrictedUnsupportedByProduct = unsupportedByProduct.filter((kind) => ["high", "critical"].includes(capabilityDanger(kind)));
+  if (restrictedUnsupportedByProduct.length) {
     const explicitRequested = Array.isArray(originalPolicy.capabilities)
-      && originalPolicy.capabilities.some((kind) => highUnsupportedByProduct.includes(kind));
+      && originalPolicy.capabilities.some((kind) => restrictedUnsupportedByProduct.includes(kind));
     if (explicitRequested) {
       const error = httpError("invalid_authorization_policy", 400);
-      error.public = { field: "capabilities", unsupported: highUnsupportedByProduct };
+      error.public = { field: "capabilities", unsupported: restrictedUnsupportedByProduct };
       throw error;
     }
-    capabilities = capabilities.filter((kind) => !highUnsupportedByProduct.includes(kind));
+    capabilities = capabilities.filter((kind) => !restrictedUnsupportedByProduct.includes(kind));
   }
   return capabilities;
 }
@@ -3068,6 +3113,10 @@ function authorizationPolicyDisplay(workspaceRoots, sandboxFloor, approvalFloor,
       .filter(Boolean)
       .join(", ");
   }
+  if (boundaries.shell) {
+    display.shell = boundaries.shell.cwd_root_id || "[missing]";
+    display.shell_network = boundaries.shell.net;
+  }
   return display;
 }
 
@@ -3076,7 +3125,10 @@ export function authorizationScopeDenial(scopeInput, job) {
   if (!["AUTH-SCOPE-v1", "AUTH-SCOPE-v2"].includes(scope.version)) {
     return { denied: "authorization", reason: "authorization_scope_missing" };
   }
-  if (scope.version === "AUTH-SCOPE-v1" && capabilityDomain(job.kind) === "fs") {
+  if (scope.version === "AUTH-SCOPE-v1" && ["fs", "shell"].includes(capabilityDomain(job.kind))) {
+    return { denied: "tier", reason: "tier_not_granted" };
+  }
+  if (scope.version === "AUTH-SCOPE-v2" && ["high", "critical"].includes(capabilityDanger(job.kind)) && (!scope.danger_tiers || !scope.domain_boundaries)) {
     return { denied: "tier", reason: "tier_not_granted" };
   }
   if (scope.version === "AUTH-SCOPE-v2" && scope.danger_tiers && scope.domain_boundaries) {
@@ -3092,6 +3144,9 @@ export function authorizationScopeDenial(scopeInput, job) {
   }
   if (domain === "fs") {
     return authorizationFsScopeDenial(scope, job);
+  }
+  if (domain === "shell") {
+    return authorizationShellScopeDenial(scope);
   }
   const workspaceRef = job.workspace_ref || "default";
   if (!authorizationScopeAllowsWorkspace(scope, workspaceRef)) {
@@ -3109,6 +3164,18 @@ export function authorizationScopeDenial(scopeInput, job) {
   }
   if (clean(job.policy?.developerInstructions, 1000) && scope.allow_developer_instructions !== true) {
     return { denied: "developerInstructions", reason: "developer_instructions_not_authorized" };
+  }
+  return null;
+}
+
+function authorizationShellScopeDenial(scope) {
+  const shell = object(scope.boundaries?.shell);
+  const boundaryType = clean(shell.type || shell.boundary_type || shell.boundaryType, 80);
+  if (boundaryType && boundaryType !== "command_sandbox") {
+    return { denied: "command", reason: "boundary_type_mismatch" };
+  }
+  if (!cleanKeepSlash(shell.cwd_root_id || shell.cwdRootId, 120)) {
+    return { denied: "cwd_root", reason: "cwd_root_not_granted" };
   }
   return null;
 }

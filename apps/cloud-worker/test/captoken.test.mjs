@@ -70,6 +70,44 @@ assert.deepEqual(await verifyCapTokenJws(issued.token, {
   now: vectors.base_claims.nbf + 1,
 }), { verdict: "allow" });
 
+const issuedCritical = await issueCapToken({
+  BRIDGE_LOCAL_MEMORY: "1",
+}, {
+  authorization: {
+    policy: {
+      version: "AUTH-SCOPE-v2",
+      product_id: "panda-dev",
+      capabilities: ["shell.run"],
+      boundaries: {
+        shell: {
+          cwd_root_id: "root-a",
+          net: "deny",
+          allow_exec_subtree: false,
+          max_output_bytes: 1048576,
+          deadline_ms: 30000,
+        },
+      },
+    },
+    epoch: 1,
+  },
+  job: {
+    id: "job_shell_ttl",
+    product_id: "panda-dev",
+    kind: "shell.run",
+    workspace_ref: null,
+    request_key: "rk_shell_ttl",
+    policy: {},
+    input: { argv: ["/bin/echo", "hi"] },
+  },
+  product: { id: "panda-dev" },
+  userId: vectors.base_context.user_id,
+  device: { id: vectors.base_context.device_id },
+  nowSeconds: vectors.base_claims.nbf,
+});
+const parsedCritical = parseCompactJws(issuedCritical.token);
+assert.equal(parsedCritical.claims.exp - parsedCritical.claims.nbf, 30);
+assert.equal(issuedCritical.danger, "critical");
+
 function makeWorkerHarness(overrides = {}) {
   const state = {
     values: new Map(),
