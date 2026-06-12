@@ -293,6 +293,7 @@ fn compute_boundary_fingerprint(policy: &Value, job: &BridgeJob) -> String {
 fn normalize_boundary(policy: &Value, job: &BridgeJob) -> Value {
     match capability_domain(&job.kind).as_str() {
         "data" => normalize_data_boundary(policy, job),
+        "fs" => normalize_fs_boundary(policy),
         "codex" => normalize_codex_boundary(policy),
         domain => json!({
             "type": "opaque_runtime",
@@ -343,6 +344,42 @@ fn normalize_data_boundary(policy: &Value, job: &BridgeJob) -> Value {
         "type": trim_nfc(policy_string(data, "type").or_else(|| policy_string(data, "boundary_type")).or_else(|| policy_string(data, "boundaryType")).unwrap_or_else(|| "namespace_kv".to_string())),
         "owner_product_id": trim_nfc(policy_string(data, "owner_product_id").or_else(|| policy_string(data, "ownerProductId")).unwrap_or_else(|| job.product_id.clone())),
         "namespace": trim_nfc(policy_string(data, "namespace").unwrap_or_else(|| format!("product:{}", job.product_id))),
+    })
+}
+
+fn normalize_fs_boundary(policy: &Value) -> Value {
+    let fs = policy.pointer("/boundaries/fs").unwrap_or(&Value::Null);
+    let mut roots = fs
+        .get("allowed_roots")
+        .or_else(|| fs.get("allowedRoots"))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .enumerate()
+        .map(|(index, root)| {
+            let id = root
+                .get("id")
+                .and_then(Value::as_str)
+                .map(trim_nfc_keep_slash)
+                .filter(|item| !item.is_empty())
+                .unwrap_or_else(|| format!("root-{}", index + 1));
+            let path_display = root
+                .get("path_display")
+                .or_else(|| root.get("pathDisplay"))
+                .and_then(Value::as_str)
+                .map(trim_nfc_keep_slash)
+                .unwrap_or_default();
+            json!({ "id": id, "path_display": path_display })
+        })
+        .collect::<Vec<_>>();
+    roots.sort_by_key(canonical_json);
+    roots.dedup_by(|left, right| canonical_json(left) == canonical_json(right));
+    json!({
+        "type": "directory_whitelist",
+        "allowed_roots": roots,
+        "max_bytes": bounded_usize_field(fs, "max_bytes", "maxBytes", 8_388_608, 1, 67_108_864),
+        "follow_symlinks": fs.get("follow_symlinks").or_else(|| fs.get("followSymlinks")).and_then(Value::as_bool).unwrap_or(false),
     })
 }
 
@@ -463,6 +500,35 @@ fn trim_nfc(value: impl AsRef<str>) -> String {
         .collect::<String>()
         .trim_end_matches('/')
         .to_string()
+}
+
+fn trim_nfc_keep_slash(value: impl AsRef<str>) -> String {
+    value.as_ref().trim().nfc().collect::<String>()
+}
+
+fn bounded_usize_field(
+    value: &Value,
+    snake_key: &str,
+    camel_key: &str,
+    fallback: usize,
+    min: usize,
+    max: usize,
+) -> usize {
+    value
+        .get(snake_key)
+        .or_else(|| value.get(camel_key))
+        .and_then(Value::as_f64)
+        .map(|number| {
+            let truncated = number.trunc();
+            if truncated < min as f64 {
+                min
+            } else if truncated > max as f64 {
+                max
+            } else {
+                truncated as usize
+            }
+        })
+        .unwrap_or(fallback)
 }
 
 fn base64url_decode(value: &str) -> Result<Vec<u8>, base64::DecodeError> {

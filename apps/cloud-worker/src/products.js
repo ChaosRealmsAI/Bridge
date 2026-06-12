@@ -60,6 +60,13 @@ export const BRIDGE_RUNTIME_CAPABILITY_REGISTRY = Object.freeze({
     boundary_type: "namespace_kv",
     description: "Delete product-scoped local data",
   }),
+  "fs.read": Object.freeze({
+    domain: "fs",
+    verb: "read",
+    danger: "high",
+    boundary_type: "directory_whitelist",
+    description: "Read files from explicitly authorized local directories",
+  }),
   "saas.custom.run": Object.freeze({
     domain: "saas",
     verb: "custom.run",
@@ -70,13 +77,15 @@ export const BRIDGE_RUNTIME_CAPABILITY_REGISTRY = Object.freeze({
 });
 
 export const BRIDGE_RUNTIME_CAPABILITIES = Object.freeze(Object.keys(BRIDGE_RUNTIME_CAPABILITY_REGISTRY));
-export const NON_DATA_RUNTIME_CAPABILITIES = Object.freeze(BRIDGE_RUNTIME_CAPABILITIES.filter((kind) => !kind.startsWith("data.")));
+export const HIGH_TIER_RUNTIME_CAPABILITIES = Object.freeze(["fs.read"]);
+export const NON_DATA_RUNTIME_CAPABILITIES = Object.freeze(BRIDGE_RUNTIME_CAPABILITIES.filter((kind) => !kind.startsWith("data.") && !HIGH_TIER_RUNTIME_CAPABILITIES.includes(kind)));
 export const OTHERLINE_RUNTIME_CAPABILITIES = Object.freeze([
   ...NON_DATA_RUNTIME_CAPABILITIES,
   "data.put",
   "data.get",
   "data.query",
   "data.delete",
+  ...HIGH_TIER_RUNTIME_CAPABILITIES,
 ]);
 
 export const PRODUCT_REGISTRY = {
@@ -94,7 +103,7 @@ export const PRODUCT_REGISTRY = {
     name: "Panda Dev",
     official_origin: "https://bridge.otherline.cc",
     official_origins: ["https://bridge.otherline.cc", "https://dev.otherline.cc"],
-    capabilities: [...NON_DATA_RUNTIME_CAPABILITIES],
+    capabilities: [...NON_DATA_RUNTIME_CAPABILITIES, ...HIGH_TIER_RUNTIME_CAPABILITIES],
     default_policy: {},
     requires_desktop_authorization: true,
   },

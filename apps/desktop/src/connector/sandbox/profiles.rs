@@ -6,6 +6,7 @@ pub fn render(spec: &SandboxSpec) -> Result<String, SandboxError> {
     match spec.profile {
         SandboxProfileKind::CodexWorkspace => render_codex_workspace(spec),
         SandboxProfileKind::DataKvDir => render_data_kv_dir(spec),
+        SandboxProfileKind::FsReadDir => render_fs_read_dir(spec),
     }
 }
 
@@ -99,6 +100,50 @@ fn render_data_kv_dir(spec: &SandboxSpec) -> Result<String, SandboxError> {
     out.push_str(&format!("  (subpath {})\n", sb_string(db_dir)));
     out.push_str(")\n");
     out.push_str("(deny network*)\n");
+    out.push_str("(deny process-exec)\n");
+    out.push_str("(deny process-fork)\n");
+    Ok(out)
+}
+
+fn render_fs_read_dir(spec: &SandboxSpec) -> Result<String, SandboxError> {
+    if spec.read_roots.is_empty() {
+        return render_error("fs.read sandbox requires at least one read root");
+    }
+    let cat = PathBuf::from("/bin/cat");
+    let exec_paths = unique_paths(spec.exec_allow.iter());
+    if exec_paths != vec![cat.clone()] {
+        return render_error("fs.read sandbox only allows /bin/cat exec");
+    }
+    let home = home_dir()?;
+    let read_roots = unique_paths(spec.read_roots.iter());
+    let mut out = String::new();
+    out.push_str("(version 1)\n");
+    out.push_str("(deny default)\n");
+    out.push_str("(import \"system.sb\")\n");
+    out.push_str("(allow file-read-metadata)\n");
+    out.push_str("(allow file-read*\n");
+    out.push_str("  (subpath \"/System\")\n");
+    out.push_str("  (subpath \"/usr/lib\")\n");
+    out.push_str("  (literal \"/dev/null\")\n");
+    out.push_str("  (literal \"/dev/urandom\")\n");
+    out.push_str(&format!("  (literal {})\n", sb_string(&cat)));
+    for path in &read_roots {
+        out.push_str(&format!("  (subpath {})\n", sb_string(path)));
+    }
+    out.push_str(")\n");
+    render_sensitive_denies(&mut out, &home);
+    out.push_str(&format!(
+        "(deny file-read* (subpath {}))\n",
+        sb_string(home.join("Library/Keychains"))
+    ));
+    out.push_str(&format!(
+        "(deny file-write* (subpath {}))\n",
+        sb_string(home.join("Library/Keychains"))
+    ));
+    out.push_str("(deny network*)\n");
+    out.push_str("(allow process-exec\n");
+    out.push_str(&format!("  (literal {})\n", sb_string(&cat)));
+    out.push_str(")\n");
     out.push_str("(deny process-exec)\n");
     out.push_str("(deny process-fork)\n");
     Ok(out)
@@ -246,6 +291,54 @@ mod tests {
     }
 
     #[test]
+    fn fs_read_profile_is_deny_by_default_read_only_and_cat_only() {
+        let root = std::env::temp_dir().join("panda-bridge-fs-profile-render-test");
+        let profile = render(&SandboxSpec {
+            profile: SandboxProfileKind::FsReadDir,
+            read_roots: vec![root.clone()],
+            write_roots: Vec::new(),
+            exec_allow: vec![PathBuf::from("/bin/cat")],
+            net: NetPolicy::Deny,
+            limits: ResourceLimits::fs_read_default(),
+            env_allow: Vec::new(),
+            cwd: root,
+        })
+        .unwrap();
+        assert!(profile.starts_with("(version 1)\n(deny default)\n"));
+        assert!(profile.contains("(deny network*)"));
+        assert!(profile.contains("(allow process-exec\n  (literal \"/bin/cat\")\n)"));
+        assert!(profile.contains("(deny process-exec)"));
+        assert!(profile.contains("(deny process-fork)"));
+        assert!(!profile.contains("(allow file-write*"));
+        assert!(!profile.contains("(literal \"/bin/sh\")"));
+    }
+
+    #[test]
+    fn fs_read_profile_fails_closed_without_roots_or_with_extra_exec() {
+        let root = std::env::temp_dir().join("panda-bridge-fs-profile-render-test");
+        let mut sandbox = SandboxSpec {
+            profile: SandboxProfileKind::FsReadDir,
+            read_roots: Vec::new(),
+            write_roots: Vec::new(),
+            exec_allow: vec![PathBuf::from("/bin/cat")],
+            net: NetPolicy::Deny,
+            limits: ResourceLimits::fs_read_default(),
+            env_allow: Vec::new(),
+            cwd: root.clone(),
+        };
+        assert!(matches!(
+            render(&sandbox),
+            Err(SandboxError::ProfileRenderFailed { .. })
+        ));
+        sandbox.read_roots.push(root);
+        sandbox.exec_allow.push(PathBuf::from("/bin/sh"));
+        assert!(matches!(
+            render(&sandbox),
+            Err(SandboxError::ProfileRenderFailed { .. })
+        ));
+    }
+
+    #[test]
     fn path_with_quotes_is_escaped() {
         let escaped = sb_string(PathBuf::from("/tmp/a\"b\\c"));
         assert_eq!(escaped, "\"/tmp/a\\\"b\\\\c\"");
@@ -355,5 +448,81 @@ mod tests {
 
         let _ = std::fs::remove_file(&evil);
         let _ = std::fs::remove_dir_all(&workspace_raw);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn fs_read_profile_enforces_outside_and_symlink_denials_with_sandbox_exec() {
+        if !Path::new("/usr/bin/sandbox-exec").exists() {
+            return;
+        }
+        let base = std::env::temp_dir().join(format!(
+            "panda-bridge-fs-seatbelt-probe-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        let allowed_raw = base.join("allowed");
+        let outside_raw = base.join("outside");
+        std::fs::create_dir_all(&allowed_raw).unwrap();
+        std::fs::create_dir_all(&outside_raw).unwrap();
+        let allowed = std::fs::canonicalize(&allowed_raw).unwrap();
+        let outside = std::fs::canonicalize(&outside_raw).unwrap();
+        let ok_file = allowed.join("ok.txt");
+        let outside_file = outside.join("secret.txt");
+        std::fs::write(&ok_file, "ok").unwrap();
+        std::fs::write(&outside_file, "secret").unwrap();
+        let link = allowed.join("link-outside.txt");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside_file, &link).unwrap();
+
+        let profile = render(&SandboxSpec {
+            profile: SandboxProfileKind::FsReadDir,
+            read_roots: vec![allowed.clone()],
+            write_roots: Vec::new(),
+            exec_allow: vec![PathBuf::from("/bin/cat")],
+            net: NetPolicy::Deny,
+            limits: ResourceLimits::fs_read_default(),
+            env_allow: Vec::new(),
+            cwd: allowed.clone(),
+        })
+        .unwrap();
+
+        let ok = Command::new("/usr/bin/sandbox-exec")
+            .args(["-p", &profile, "--", "/bin/cat"])
+            .arg(&ok_file)
+            .output()
+            .unwrap();
+        assert!(ok.status.success(), "authorized file should read");
+        assert_eq!(String::from_utf8_lossy(&ok.stdout), "ok");
+
+        let denied = Command::new("/usr/bin/sandbox-exec")
+            .args(["-p", &profile, "--", "/bin/cat"])
+            .arg(&outside_file)
+            .output()
+            .unwrap();
+        assert!(!denied.status.success(), "outside file must fail");
+        let denied_stderr = String::from_utf8_lossy(&denied.stderr);
+        assert!(
+            denied_stderr.contains("Operation not permitted")
+                || denied_stderr.contains("Permission denied"),
+            "unexpected outside stderr: {denied_stderr}"
+        );
+
+        #[cfg(unix)]
+        {
+            let symlink_denied = Command::new("/usr/bin/sandbox-exec")
+                .args(["-p", &profile, "--", "/bin/cat"])
+                .arg(&link)
+                .output()
+                .unwrap();
+            assert!(!symlink_denied.status.success(), "symlink escape must fail");
+            let stderr = String::from_utf8_lossy(&symlink_denied.stderr);
+            assert!(
+                stderr.contains("Operation not permitted") || stderr.contains("Permission denied"),
+                "unexpected symlink stderr: {stderr}"
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

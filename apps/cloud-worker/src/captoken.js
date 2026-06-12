@@ -135,6 +135,7 @@ export function normalizeBoundary(policyInput, jobInput) {
   const job = object(jobInput);
   const domain = capabilityDomain(job.kind) || String(job.kind || "").split(".")[0] || "unknown";
   if (domain === "data") return normalizeDataBoundary(policy, job);
+  if (domain === "fs") return normalizeFsBoundary(policy);
   if (domain === "codex") return normalizeCodexBoundary(policy);
   return {
     type: "opaque_runtime",
@@ -216,6 +217,32 @@ function normalizeDataBoundary(policy, job) {
   };
 }
 
+function normalizeFsBoundary(policy) {
+  const fs = object(policy.boundaries?.fs);
+  const roots = Array.isArray(fs.allowed_roots || fs.allowedRoots)
+    ? (fs.allowed_roots || fs.allowedRoots)
+    : [];
+  const allowedRoots = dedupeByCanonical(roots.map((item, index) => {
+    const root = object(item);
+    const id = trimNfcKeepSlash(root.id || "");
+    return {
+      id: id || `root-${index + 1}`,
+      path_display: trimNfcKeepSlash(root.path_display || root.pathDisplay || ""),
+    };
+  }));
+  allowedRoots.sort((left, right) => {
+    const a = canonicalJson(left);
+    const b = canonicalJson(right);
+    return a < b ? -1 : a > b ? 1 : 0;
+  });
+  return {
+    type: "directory_whitelist",
+    allowed_roots: allowedRoots,
+    max_bytes: boundedInteger(fs.max_bytes ?? fs.maxBytes, 8388608, 1, 67108864),
+    follow_symlinks: fs.follow_symlinks === true || fs.followSymlinks === true,
+  };
+}
+
 function authorizationPolicyCapabilities(policyInput) {
   return normalizeStringList(object(policyInput).capabilities);
 }
@@ -243,6 +270,16 @@ function dedupeByCanonical(items) {
 
 function trimNfc(value) {
   return String(value ?? "").trim().normalize("NFC").replace(/\/+$/, "");
+}
+
+function trimNfcKeepSlash(value) {
+  return String(value ?? "").trim().normalize("NFC");
+}
+
+function boundedInteger(value, fallback, min, max) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.max(min, Math.min(max, Math.trunc(number)));
 }
 
 function capTokenTtlSeconds(danger) {

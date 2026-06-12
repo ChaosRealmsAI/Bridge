@@ -2944,13 +2944,14 @@ function normalizeAuthorizationPolicy(input, product, source_origin) {
         };
       })
     : [{ id: "default", path_display: "[local]/default" }];
-  const capabilities = normalizedPolicyCapabilities(requested);
+  const capabilities = normalizedPolicyCapabilities(requested, product, policy);
   const sandboxFloor = clean(requested.sandbox_floor || requested.sandboxFloor, 80);
   const approvalFloor = clean(requested.approval_policy_floor || requested.approvalPolicyFloor, 80);
   const normalizedSandboxFloor = ["danger-full-access", "workspace-write", "read-only"].includes(sandboxFloor) ? sandboxFloor : "workspace-write";
   const normalizedApprovalFloor = ["never", "on-request", "on-failure", "untrusted"].includes(approvalFloor) ? approvalFloor : "on-request";
   const allowDeveloperInstructions = requested.allow_developer_instructions === true || requested.allowDeveloperInstructions === true;
   const tierMetadata = scopeDangerMetadataFromCapabilities(capabilities);
+  const boundaries = normalizeConnectorBoundaries(requested.boundaries, product, capabilities);
   const normalized = {
     version: "AUTH-SCOPE-v2",
     preset: clean(requested.preset || requested.permission_preset, 80) || (hasExplicitInput ? "custom" : "workspace-default"),
@@ -2963,10 +2964,9 @@ function normalizeAuthorizationPolicy(input, product, source_origin) {
     approval_policy_floor: normalizedApprovalFloor,
     allow_approval_never: requested.allow_approval_never === true || requested.allowApprovalNever === true || normalizedApprovalFloor === "never",
     allow_developer_instructions: allowDeveloperInstructions,
-    display: authorizationPolicyDisplay(workspaceRoots, normalizedSandboxFloor, normalizedApprovalFloor, allowDeveloperInstructions),
+    display: authorizationPolicyDisplay(workspaceRoots, normalizedSandboxFloor, normalizedApprovalFloor, allowDeveloperInstructions, boundaries),
     ...tierMetadata,
   };
-  const boundaries = normalizeConnectorBoundaries(requested.boundaries, product, capabilities);
   if (Object.keys(boundaries).length) normalized.boundaries = boundaries;
   return normalized;
 }
@@ -2986,24 +2986,57 @@ function normalizeConnectorBoundaries(input, product, capabilities) {
       allow_delete: data.allow_delete !== false && data.allowDelete !== false,
     };
   }
+  if (capabilities.includes("fs.read")) {
+    const fs = object(requested.fs);
+    const rawRoots = Array.isArray(fs.allowed_roots || fs.allowedRoots)
+      ? (fs.allowed_roots || fs.allowedRoots)
+      : [];
+    const allowedRoots = dedupeByCanonical(rawRoots.map((item, index) => {
+      const root = object(item);
+      const id = cleanKeepSlash(root.id, 120);
+      return {
+        id: id || `root-${index + 1}`,
+        path_display: cleanKeepSlash(root.path_display || root.pathDisplay || root.label, 300),
+      };
+    }));
+    allowedRoots.sort((left, right) => {
+      const a = canonicalJson(left);
+      const b = canonicalJson(right);
+      return a < b ? -1 : a > b ? 1 : 0;
+    });
+    boundaries.fs = {
+      type: "directory_whitelist",
+      allowed_roots: allowedRoots,
+      max_bytes: boundedInteger(fs.max_bytes ?? fs.maxBytes, 8388608, 1, 67108864),
+      follow_symlinks: fs.follow_symlinks === true || fs.followSymlinks === true,
+    };
+  }
   return boundaries;
 }
 
-function normalizedPolicyCapabilities(requested) {
+function normalizedPolicyCapabilities(requested, product, originalPolicy = {}) {
   if (!Object.hasOwn(requested, "capabilities")) return lowTierCapabilities();
   if (!Array.isArray(requested.capabilities)) throw httpError("invalid_authorization_policy", 400);
-  const capabilities = [...new Set(requested.capabilities.map((item) => clean(item, 120)).filter(Boolean))];
+  let capabilities = [...new Set(requested.capabilities.map((item) => clean(item, 120)).filter(Boolean))];
   const unsupported = capabilities.filter((item) => !SUPPORTED_JOB_KINDS.includes(item));
   if (unsupported.length) {
     const error = httpError("invalid_authorization_policy", 400);
     error.public = { field: "capabilities", unsupported };
     throw error;
   }
+  if (capabilities.includes("fs.read") && !product.capabilities.includes("fs.read")) {
+    if (Array.isArray(originalPolicy.capabilities) && originalPolicy.capabilities.includes("fs.read")) {
+      const error = httpError("invalid_authorization_policy", 400);
+      error.public = { field: "capabilities", unsupported: ["fs.read"] };
+      throw error;
+    }
+    capabilities = capabilities.filter((kind) => kind !== "fs.read");
+  }
   return capabilities;
 }
 
-function authorizationPolicyDisplay(workspaceRoots, sandboxFloor, approvalFloor, allowDeveloperInstructions) {
-  return {
+function authorizationPolicyDisplay(workspaceRoots, sandboxFloor, approvalFloor, allowDeveloperInstructions, boundaries = {}) {
+  const display = {
     workspace: workspaceRoots.some((item) => item.allow_all === true)
       ? "All local files"
       : workspaceRoots.map((item) => item.path_display || item.id).join(", "),
@@ -3011,12 +3044,22 @@ function authorizationPolicyDisplay(workspaceRoots, sandboxFloor, approvalFloor,
     approval: approvalFloor,
     developer_instructions: allowDeveloperInstructions ? "allowed" : "denied",
   };
+  if (boundaries.fs) {
+    display.fs_read = (boundaries.fs.allowed_roots || [])
+      .map((item) => item.path_display || item.id)
+      .filter(Boolean)
+      .join(", ");
+  }
+  return display;
 }
 
 export function authorizationScopeDenial(scopeInput, job) {
   const scope = object(scopeInput);
   if (!["AUTH-SCOPE-v1", "AUTH-SCOPE-v2"].includes(scope.version)) {
     return { denied: "authorization", reason: "authorization_scope_missing" };
+  }
+  if (scope.version === "AUTH-SCOPE-v1" && job.kind === "fs.read") {
+    return { denied: "tier", reason: "tier_not_granted" };
   }
   if (scope.version === "AUTH-SCOPE-v2" && scope.danger_tiers && scope.domain_boundaries) {
     const tierDenial = authorizationScopeTierDenial(scope, job.kind);
@@ -3025,8 +3068,12 @@ export function authorizationScopeDenial(scopeInput, job) {
   if (!Array.isArray(scope.capabilities) || !scope.capabilities.includes(job.kind)) {
     return { denied: "capability", reason: "capability_not_authorized" };
   }
-  if (capabilityDomain(job.kind) === "data") {
+  const domain = capabilityDomain(job.kind);
+  if (domain === "data") {
     return authorizationDataScopeDenial(scope, job);
+  }
+  if (domain === "fs") {
+    return authorizationFsScopeDenial(scope);
   }
   const workspaceRef = job.workspace_ref || "default";
   if (!authorizationScopeAllowsWorkspace(scope, workspaceRef)) {
@@ -3044,6 +3091,15 @@ export function authorizationScopeDenial(scopeInput, job) {
   }
   if (clean(job.policy?.developerInstructions, 1000) && scope.allow_developer_instructions !== true) {
     return { denied: "developerInstructions", reason: "developer_instructions_not_authorized" };
+  }
+  return null;
+}
+
+function authorizationFsScopeDenial(scope) {
+  const fs = object(scope.boundaries?.fs);
+  const boundaryType = clean(fs.type || fs.boundary_type || fs.boundaryType, 80);
+  if (boundaryType && boundaryType !== "directory_whitelist") {
+    return { denied: "path", reason: "boundary_type_mismatch" };
   }
   return null;
 }
@@ -3786,6 +3842,22 @@ function object(value) {
 
 function clean(value, max = 1000) {
   return typeof value === "string" ? value.trim().slice(0, max) : "";
+}
+
+function cleanKeepSlash(value, max = 1000) {
+  return typeof value === "string" ? value.trim().normalize("NFC").slice(0, max) : "";
+}
+
+function dedupeByCanonical(items) {
+  const seen = new Set();
+  const result = [];
+  for (const item of items) {
+    const key = canonicalJson(item);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(item);
+  }
+  return result;
 }
 
 function normalizeEmail(value) {
