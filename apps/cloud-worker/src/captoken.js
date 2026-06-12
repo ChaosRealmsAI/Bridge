@@ -190,7 +190,14 @@ function normalizeCodexBoundary(policy) {
       allow_all: root.allow_all === true || root.allowAll === true || root.id === "all" || root.id === "*",
     };
   }));
-  workspaceRoots.sort((left, right) => canonicalJson(left).localeCompare(canonicalJson(right)));
+  workspaceRoots.sort((left, right) => {
+    // Code-unit order to match Rust L2 `roots.sort_by_key(canonical_json)`;
+    // localeCompare diverges on uppercase/underscore/punctuation ids and would
+    // split the L1/L2 bnd fingerprint (rejecting legit jobs under enforce).
+    const a = canonicalJson(left);
+    const b = canonicalJson(right);
+    return a < b ? -1 : a > b ? 1 : 0;
+  });
   return {
     capabilities: normalizeStringList(policy.capabilities),
     workspace_roots: workspaceRoots,
