@@ -292,6 +292,7 @@ struct IntentPreview {
     cloud_origin: String,
     capabilities: Vec<String>,
     local_policy: Value,
+    local_root_state: Value,
     device_name: String,
     user_id: Option<String>,
     user_display_name: String,
@@ -1801,12 +1802,22 @@ fn preview_intent(api: &str, intent: &str) -> Result<IntentPreview, String> {
     );
     let capabilities =
         authorization_policy_capabilities(&local_policy).unwrap_or(product_capabilities);
+    let local_credentials = load_credentials().ok();
     let existing_grant = payload
         .connect_intent
         .user
         .as_ref()
         .and_then(|user| user.id.as_deref())
-        .and_then(|user_id| existing_grant_for_intent(&api_base, user_id, &product_id));
+        .and_then(|user_id| {
+            local_credentials.as_ref().and_then(|credentials| {
+                existing_grant_for_intent_from_credentials(
+                    credentials,
+                    &api_base,
+                    user_id,
+                    &product_id,
+                )
+            })
+        });
     let scope_diff = existing_grant
         .as_ref()
         .map(|grant| scope_diff(&grant.policy, &local_policy))
@@ -1817,12 +1828,19 @@ fn preview_intent(api: &str, intent: &str) -> Result<IntentPreview, String> {
         .unwrap_or(true);
     let confirmation_mode =
         confirmation_mode_for_existing_grant(existing_grant.as_ref(), scope_widening);
+    let current_device_id = local_credentials
+        .as_ref()
+        .map(|credentials| credentials.device_id.as_str())
+        .unwrap_or("");
+    let local_root_state =
+        local_root_state_for_preview(&local_policy, existing_grant.as_ref(), current_device_id);
     Ok(IntentPreview {
         product_id,
         product_name,
         cloud_origin,
         capabilities,
         local_policy,
+        local_root_state,
         device_name: payload
             .connect_intent
             .device_name
@@ -1845,19 +1863,32 @@ fn preview_intent(api: &str, intent: &str) -> Result<IntentPreview, String> {
     })
 }
 
-fn existing_grant_for_intent(
+fn existing_grant_for_intent_from_credentials(
+    credentials: &Credentials,
     api_base: &str,
     account_id: &str,
     product_id: &str,
 ) -> Option<ProductGrant> {
-    let credentials = load_credentials().ok()?;
-    credentials_connections(&credentials)
-        .into_iter()
-        .filter(|connection| {
-            connection.api_base == api_base && connection.account_id.as_deref() == Some(account_id)
-        })
-        .flat_map(|connection| connection_products(&connection))
-        .find(|grant| grant.id == product_id)
+    let mut fallback = None;
+    for connection in credentials_connections(credentials) {
+        if connection.api_base != api_base || connection.account_id.as_deref() != Some(account_id) {
+            continue;
+        }
+        let Some(grant) = connection_products(&connection)
+            .into_iter()
+            .find(|grant| grant.id == product_id)
+        else {
+            continue;
+        };
+        if !credentials.device_id.trim().is_empty() && connection.device_id == credentials.device_id
+        {
+            return Some(grant);
+        }
+        if fallback.is_none() {
+            fallback = Some(grant);
+        }
+    }
+    fallback
 }
 
 fn is_scope_widening(existing: &Value, requested: &Value) -> bool {
@@ -1876,6 +1907,96 @@ fn confirmation_mode_for_existing_grant(
     } else {
         "full".to_string()
     }
+}
+
+fn local_root_state_for_preview(
+    policy: &Value,
+    existing_grant: Option<&ProductGrant>,
+    current_device_id: &str,
+) -> Value {
+    let mut fs_state = Map::new();
+    for root in declared_fs_roots(policy, "allowed_roots", "allowedRoots") {
+        fs_state.insert(
+            root.id.clone(),
+            local_root_binding_state(
+                existing_grant.and_then(|grant| grant.local_roots.fs_roots.get(&root.id)),
+                &root.path_display,
+                current_device_id,
+                Some("read"),
+            ),
+        );
+    }
+    for root in declared_fs_roots(policy, "write_roots", "writeRoots") {
+        fs_state.insert(
+            root.id.clone(),
+            local_root_binding_state(
+                existing_grant.and_then(|grant| grant.local_roots.fs_roots.get(&root.id)),
+                &root.path_display,
+                current_device_id,
+                Some("write"),
+            ),
+        );
+    }
+
+    let mut shell_state = Map::new();
+    if let Some(root) = declared_shell_cwd_root_for_preview(policy) {
+        shell_state.insert(
+            root.id.clone(),
+            local_root_binding_state(
+                existing_grant.and_then(|grant| grant.local_roots.shell_cwd.get(&root.id)),
+                &root.path_display,
+                current_device_id,
+                None,
+            ),
+        );
+    }
+
+    json!({
+        "fs": fs_state,
+        "shell": shell_state
+    })
+}
+
+fn local_root_binding_state(
+    binding: Option<&LocalRootBinding>,
+    path_display: &str,
+    current_device_id: &str,
+    kind: Option<&str>,
+) -> Value {
+    let bound = binding
+        .map(|binding| {
+            !current_device_id.trim().is_empty()
+                && binding.bound_device_id == current_device_id
+                && binding.path_display == path_display
+        })
+        .unwrap_or(false);
+    let mut state = Map::new();
+    state.insert("bound".to_string(), json!(bound));
+    state.insert(
+        "redacted_path".to_string(),
+        if bound {
+            binding
+                .map(|binding| json!(redact_local_path(&binding.real_path)))
+                .unwrap_or(Value::Null)
+        } else {
+            Value::Null
+        },
+    );
+    if let Some(kind) = kind {
+        state.insert("kind".to_string(), json!(kind));
+    }
+    Value::Object(state)
+}
+
+fn declared_shell_cwd_root_for_preview(policy: &Value) -> Option<DeclaredLocalRoot> {
+    let shell = policy.pointer("/boundaries/shell")?;
+    let root_id = shell
+        .get("cwd_root_id")
+        .or_else(|| shell.get("cwdRootId"))
+        .and_then(Value::as_str)
+        .map(trim_nfc_keep_slash_local)
+        .filter(|value| !value.is_empty())?;
+    declared_shell_cwd_root(policy, &root_id, None)
 }
 
 fn scope_diff(existing: &Value, requested: &Value) -> Value {
@@ -6936,6 +7057,66 @@ mod tests {
         state_path
     }
 
+    fn connect_intent_payload(policy: Value) -> Value {
+        json!({
+            "connect_intent": {
+                "product_id": "panda-chat",
+                "product": {
+                    "id": "panda-chat",
+                    "name": "Panda Chat",
+                    "origin": "http://local.test",
+                    "capabilities": ["fs.read", "fs.write", "shell.run"]
+                },
+                "policy": policy,
+                "source_origin": "http://local.test",
+                "device_name": "Panda Bridge Desktop",
+                "expires_at": "2099-01-01T00:00:00Z",
+                "user": {
+                    "id": "user_1",
+                    "email": "user@example.test"
+                }
+            }
+        })
+    }
+
+    fn start_one_shot_json_server(payload: Value) -> (String, std::thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            loop {
+                let mut line = String::new();
+                let bytes = reader.read_line(&mut line).unwrap_or(0);
+                if bytes == 0 || line == "\r\n" || line == "\n" {
+                    break;
+                }
+            }
+            write_http_json(&mut stream, 200, payload).unwrap();
+        });
+        (format!("http://{addr}"), handle)
+    }
+
+    fn run_preview_intent_for_policy(policy: Value) -> IntentPreview {
+        let (api, server) = start_one_shot_json_server(connect_intent_payload(policy));
+        finish_preview_intent(&api, server)
+    }
+
+    fn finish_preview_intent(api: &str, server: std::thread::JoinHandle<()>) -> IntentPreview {
+        let preview = preview_intent(api, "intent-preview-test").unwrap();
+        server.join().unwrap();
+        preview
+    }
+
+    fn point_credentials_at_api(credentials: &mut Credentials, api: &str) {
+        credentials.api_base = api.to_string();
+        credentials.cloud_origin = Some(api.to_string());
+        for grant in &mut credentials.authorized_products {
+            grant.origin = Some(api.to_string());
+        }
+    }
+
     fn test_credentials_for_device(
         device_id: &str,
         account_id: &str,
@@ -6947,6 +7128,203 @@ mod tests {
         credentials.account_id = Some(account_id.to_string());
         credentials.account_display = Some(display.to_string());
         credentials
+    }
+
+    #[test]
+    fn preview_intent_local_root_state_marks_valid_fs_binding_without_leaking_real_path() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        reset_credentials_env();
+        let state_path = with_state_file("panda-bridge-preview-root-state-fs");
+        let base = env::temp_dir().join(format!(
+            "panda-bridge-preview-root-state-fs-{}",
+            next_event_seq()
+        ));
+        let root = base.join("project");
+        fs::create_dir_all(&root).unwrap();
+        let canonical = fs::canonicalize(&root)
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        let (api, server) =
+            start_one_shot_json_server(connect_intent_payload(high_risk_root_scope()));
+        let mut credentials = test_high_risk_credentials();
+        point_credentials_at_api(&mut credentials, &api);
+        credentials.authorized_products[0]
+            .local_roots
+            .fs_roots
+            .insert(
+                "root-a".to_string(),
+                LocalRootBinding {
+                    real_path: canonical.clone(),
+                    path_display: "[local]/Read".to_string(),
+                    bound_at: now_string(),
+                    bound_device_id: credentials.device_id.clone(),
+                },
+            );
+        save_credentials(&credentials).unwrap();
+
+        let preview = finish_preview_intent(&api, server);
+        let response = serde_json::to_value(&preview).unwrap();
+        let state = &response["local_root_state"];
+        assert_eq!(state["fs"]["root-a"]["bound"], true);
+        assert_eq!(state["fs"]["root-a"]["kind"], "read");
+        assert_eq!(state["fs"]["root-a"]["redacted_path"], "[local]/project");
+        assert_eq!(state["fs"]["root-w"]["bound"], false);
+        assert_eq!(state["fs"]["root-w"]["kind"], "write");
+        let state_text = serde_json::to_string(state).unwrap();
+        assert!(!state_text.contains(&canonical));
+        assert!(!state_text.contains(root.to_string_lossy().as_ref()));
+        assert!(!state_text.contains("/Users/"));
+        assert!(state_text.contains("[local]/project"));
+
+        reset_credentials_env();
+        let _ = fs::remove_file(state_path);
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn preview_intent_local_root_state_rejects_device_mismatch_and_path_display_drift() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        reset_credentials_env();
+        let state_path = with_state_file("panda-bridge-preview-root-state-mismatch");
+        let base = env::temp_dir().join(format!(
+            "panda-bridge-preview-root-state-mismatch-{}",
+            next_event_seq()
+        ));
+        let root = base.join("project");
+        fs::create_dir_all(&root).unwrap();
+        let canonical = fs::canonicalize(&root)
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        let (api, server) =
+            start_one_shot_json_server(connect_intent_payload(high_risk_root_scope()));
+        let mut credentials = test_high_risk_credentials();
+        point_credentials_at_api(&mut credentials, &api);
+        credentials.authorized_products[0]
+            .local_roots
+            .fs_roots
+            .insert(
+                "root-a".to_string(),
+                LocalRootBinding {
+                    real_path: canonical.clone(),
+                    path_display: "[local]/Read".to_string(),
+                    bound_at: now_string(),
+                    bound_device_id: "other-device".to_string(),
+                },
+            );
+        save_credentials(&credentials).unwrap();
+
+        let preview = finish_preview_intent(&api, server);
+        let response = serde_json::to_value(&preview).unwrap();
+        assert_eq!(response["local_root_state"]["fs"]["root-a"]["bound"], false);
+        assert_eq!(
+            response["local_root_state"]["fs"]["root-a"]["redacted_path"],
+            Value::Null
+        );
+
+        credentials.authorized_products[0]
+            .local_roots
+            .fs_roots
+            .get_mut("root-a")
+            .unwrap()
+            .bound_device_id = credentials.device_id.clone();
+        credentials.authorized_products[0]
+            .local_roots
+            .fs_roots
+            .get_mut("root-a")
+            .unwrap()
+            .path_display = "[local]/Old".to_string();
+        let (api, server) =
+            start_one_shot_json_server(connect_intent_payload(high_risk_root_scope()));
+        point_credentials_at_api(&mut credentials, &api);
+        save_credentials(&credentials).unwrap();
+
+        let preview = finish_preview_intent(&api, server);
+        let response = serde_json::to_value(&preview).unwrap();
+        assert_eq!(response["local_root_state"]["fs"]["root-a"]["bound"], false);
+        assert_eq!(
+            response["local_root_state"]["fs"]["root-a"]["redacted_path"],
+            Value::Null
+        );
+        assert!(!serde_json::to_string(&response["local_root_state"])
+            .unwrap()
+            .contains(&canonical));
+
+        reset_credentials_env();
+        let _ = fs::remove_file(state_path);
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn preview_intent_local_root_state_marks_declared_roots_unbound_without_existing_grant() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        reset_credentials_env();
+        let state_path = with_state_file("panda-bridge-preview-root-state-first-auth");
+
+        let preview = run_preview_intent_for_policy(high_risk_root_scope());
+        let response = serde_json::to_value(&preview).unwrap();
+        let state = &response["local_root_state"];
+        assert_eq!(state["fs"]["root-a"]["bound"], false);
+        assert_eq!(state["fs"]["root-a"]["kind"], "read");
+        assert_eq!(state["fs"]["root-a"]["redacted_path"], Value::Null);
+        assert_eq!(state["fs"]["root-w"]["bound"], false);
+        assert_eq!(state["fs"]["root-w"]["kind"], "write");
+        assert_eq!(state["fs"]["root-w"]["redacted_path"], Value::Null);
+        assert_eq!(state["shell"]["root-shell"]["bound"], false);
+        assert_eq!(state["shell"]["root-shell"]["redacted_path"], Value::Null);
+
+        reset_credentials_env();
+        let _ = fs::remove_file(state_path);
+    }
+
+    #[test]
+    fn preview_intent_local_root_state_marks_valid_shell_cwd_binding_without_kind() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        reset_credentials_env();
+        let state_path = with_state_file("panda-bridge-preview-root-state-shell");
+        let base = env::temp_dir().join(format!(
+            "panda-bridge-preview-root-state-shell-{}",
+            next_event_seq()
+        ));
+        let root = base.join("shell");
+        fs::create_dir_all(&root).unwrap();
+        let canonical = fs::canonicalize(&root)
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        let (api, server) =
+            start_one_shot_json_server(connect_intent_payload(high_risk_root_scope()));
+        let mut credentials = test_high_risk_credentials();
+        point_credentials_at_api(&mut credentials, &api);
+        credentials.authorized_products[0]
+            .local_roots
+            .shell_cwd
+            .insert(
+                "root-shell".to_string(),
+                LocalRootBinding {
+                    real_path: canonical.clone(),
+                    path_display: "[local]/Shell".to_string(),
+                    bound_at: now_string(),
+                    bound_device_id: credentials.device_id.clone(),
+                },
+            );
+        save_credentials(&credentials).unwrap();
+
+        let preview = finish_preview_intent(&api, server);
+        let response = serde_json::to_value(&preview).unwrap();
+        let shell = &response["local_root_state"]["shell"]["root-shell"];
+        assert_eq!(shell["bound"], true);
+        assert_eq!(shell["redacted_path"], "[local]/shell");
+        assert!(shell.get("kind").is_none());
+        let state_text = serde_json::to_string(&response["local_root_state"]).unwrap();
+        assert!(!state_text.contains(&canonical));
+        assert!(!state_text.contains("/Users/"));
+        assert!(state_text.contains("[local]/shell"));
+
+        reset_credentials_env();
+        let _ = fs::remove_file(state_path);
+        let _ = fs::remove_dir_all(base);
     }
 
     #[test]
