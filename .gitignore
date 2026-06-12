@@ -10,3 +10,4 @@ apps/desktop/target/
 spec/evidence/
 apps/web-chat/public/sdk/
 *.log
+.pandacode/
