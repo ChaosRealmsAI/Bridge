@@ -4452,8 +4452,21 @@ fn inject_local_shell_cwd(mut raw: Value, grant: &ProductGrant, current_device_i
     raw
 }
 
+/// Strip any caller-supplied machine-only injection keys (underscore-prefixed,
+/// e.g. `_local_paths` / `_local_cwd`) from a boundary slice cloned out of the
+/// persisted policy. A caller could smuggle these through their requested
+/// boundaries; only the desktop's own `inject_local_*` may add them, from
+/// user-bound real paths. Without this strip, a zero-binding grant carrying a
+/// caller-supplied `_local_paths` would pass an attacker-chosen real path
+/// straight to the connector as the seatbelt boundary (P0).
+fn strip_local_injection_keys(slice: &mut Value) {
+    if let Some(map) = slice.as_object_mut() {
+        map.retain(|key, _| !key.starts_with('_'));
+    }
+}
+
 fn fs_boundary_policy_slice(policy: &Value) -> Value {
-    policy
+    let mut slice = policy
         .pointer("/boundaries/fs")
         .cloned()
         .unwrap_or_else(|| {
@@ -4465,11 +4478,13 @@ fn fs_boundary_policy_slice(policy: &Value) -> Value {
                 "max_bytes": connector::fs::DEFAULT_MAX_BYTES,
                 "follow_symlinks": false
             })
-        })
+        });
+    strip_local_injection_keys(&mut slice);
+    slice
 }
 
 fn shell_boundary_policy_slice(policy: &Value) -> Value {
-    policy
+    let mut slice = policy
         .pointer("/boundaries/shell")
         .cloned()
         .unwrap_or_else(|| {
@@ -4483,7 +4498,9 @@ fn shell_boundary_policy_slice(policy: &Value) -> Value {
                 "deadline_ms": connector::shell::DEFAULT_DEADLINE_MS,
                 "limits": connector::shell::default_limits_json()
             })
-        })
+        });
+    strip_local_injection_keys(&mut slice);
+    slice
 }
 
 fn data_boundary_policy_slice(policy: &Value, product_id: &str) -> Value {
@@ -7281,6 +7298,41 @@ mod tests {
         assert!(injected.raw.get("_local_paths").is_some());
 
         let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn build_granted_boundary_strips_caller_smuggled_local_paths() {
+        // P0: a caller must not be able to smuggle `_local_paths` through their
+        // requested boundaries (which persist into grant.policy) to control the
+        // real path. With zero bindings the choke point strips it; the
+        // attacker path never reaches the connector boundary.
+        let credentials = test_high_risk_credentials();
+        let mut grant = credentials.authorized_products[0].clone();
+        grant.local_roots.fs_roots.clear();
+        grant.local_roots.shell_cwd.clear();
+        grant
+            .policy
+            .pointer_mut("/boundaries/fs")
+            .and_then(Value::as_object_mut)
+            .expect("fixture has boundaries.fs")
+            .insert(
+                "_local_paths".to_string(),
+                json!({ "root-a": "/etc/victim-secret" }),
+            );
+        let registry = declaration_registry();
+        let job = fs_read_job_for(Path::new("/etc/victim-secret/file.txt"));
+        let boundary =
+            build_granted_boundary(&registry, &grant, &job, &credentials.device_id).unwrap();
+        assert!(
+            boundary.raw.get("_local_paths").is_none(),
+            "caller-smuggled _local_paths must be stripped before the connector"
+        );
+        assert!(
+            !serde_json::to_string(&boundary.raw)
+                .unwrap()
+                .contains("/etc/victim-secret"),
+            "attacker real path must never reach the connector boundary"
+        );
     }
 
     #[test]
