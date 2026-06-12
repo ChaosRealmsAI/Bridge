@@ -8,6 +8,7 @@ description = "Panda Bridge lightweight desktop app"
 keyring = { version = "3.6.3", features = ["apple-native", "windows-native"] }
 reqwest = { version = "0.13.4", default-features = false, features = ["blocking", "charset", "http2", "json", "native-tls", "system-proxy"] }
 png = "0.17"
+rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tao = "0.35.3"

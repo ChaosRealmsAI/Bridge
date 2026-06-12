@@ -2728,7 +2728,7 @@ function normalizeAuthorizationPolicy(input, product, source_origin) {
   const normalizedApprovalFloor = ["never", "on-request", "on-failure", "untrusted"].includes(approvalFloor) ? approvalFloor : "on-request";
   const allowDeveloperInstructions = requested.allow_developer_instructions === true || requested.allowDeveloperInstructions === true;
   const tierMetadata = scopeDangerMetadataFromCapabilities(capabilities);
-  return {
+  const normalized = {
     version: "AUTH-SCOPE-v2",
     preset: clean(requested.preset || requested.permission_preset, 80) || (hasExplicitInput ? "custom" : "workspace-default"),
     request_source: clean(requested.request_source, 120) || (hasExplicitInput ? "caller_request" : "worker_default_low_tier"),
@@ -2743,6 +2743,27 @@ function normalizeAuthorizationPolicy(input, product, source_origin) {
     display: authorizationPolicyDisplay(workspaceRoots, normalizedSandboxFloor, normalizedApprovalFloor, allowDeveloperInstructions),
     ...tierMetadata,
   };
+  const boundaries = normalizeConnectorBoundaries(requested.boundaries, product, capabilities);
+  if (Object.keys(boundaries).length) normalized.boundaries = boundaries;
+  return normalized;
+}
+
+function normalizeConnectorBoundaries(input, product, capabilities) {
+  const boundaries = {};
+  const requested = object(input);
+  if (capabilities.some((kind) => kind.startsWith("data."))) {
+    const data = object(requested.data);
+    boundaries.data = {
+      type: "namespace_kv",
+      owner_product_id: clean(data.owner_product_id || data.ownerProductId, 120) || product.id,
+      namespace: clean(data.namespace, 200) || `product:${product.id}`,
+      max_key_bytes: boundedInteger(data.max_key_bytes ?? data.maxKeyBytes, 512, 1, 4096),
+      max_value_bytes: boundedInteger(data.max_value_bytes ?? data.maxValueBytes, 262144, 1, 1048576),
+      allow_query: data.allow_query !== false && data.allowQuery !== false,
+      allow_delete: data.allow_delete !== false && data.allowDelete !== false,
+    };
+  }
+  return boundaries;
 }
 
 function normalizedPolicyCapabilities(requested) {
@@ -2781,6 +2802,9 @@ export function authorizationScopeDenial(scopeInput, job) {
   if (!Array.isArray(scope.capabilities) || !scope.capabilities.includes(job.kind)) {
     return { denied: "capability", reason: "capability_not_authorized" };
   }
+  if (capabilityDomain(job.kind) === "data") {
+    return authorizationDataScopeDenial(scope, job);
+  }
   const workspaceRef = job.workspace_ref || "default";
   if (!authorizationScopeAllowsWorkspace(scope, workspaceRef)) {
     return { denied: "workspace_ref", reason: "workspace_not_authorized" };
@@ -2797,6 +2821,19 @@ export function authorizationScopeDenial(scopeInput, job) {
   }
   if (clean(job.policy?.developerInstructions, 1000) && scope.allow_developer_instructions !== true) {
     return { denied: "developerInstructions", reason: "developer_instructions_not_authorized" };
+  }
+  return null;
+}
+
+function authorizationDataScopeDenial(scope, job) {
+  const data = object(scope.boundaries?.data);
+  const boundaryType = clean(data.type || data.boundary_type || data.boundaryType, 80);
+  if (boundaryType && boundaryType !== "namespace_kv") {
+    return { denied: "namespace", reason: "boundary_type_mismatch" };
+  }
+  const owner = clean(data.owner_product_id || data.ownerProductId, 120);
+  if (owner && owner !== job.product_id) {
+    return { denied: "namespace", reason: "namespace_owner_mismatch" };
   }
   return null;
 }

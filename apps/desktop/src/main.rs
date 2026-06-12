@@ -31,12 +31,20 @@ use window_vibrancy::{apply_acrylic, apply_mica};
 use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial, NSVisualEffectState};
 use wry::WebViewBuilder;
 
+mod connector;
+
+use connector::{
+    codex::CodexConnector,
+    data::{DataConnector, MemKv, SqliteKv, DEFAULT_MAX_KEY_BYTES, DEFAULT_MAX_VALUE_BYTES},
+    registry::ConnectorRegistry,
+    ConnectorDanger, ConnectorError, ConnectorEvent, ExecCtx, GrantedBoundary,
+};
+
 const VERSION: &str = "panda-bridge-desktop-lite-v0.1";
 const KEYCHAIN_SERVICE: &str = "cc.otherline.panda-bridge";
 const KEYCHAIN_USER: &str = "device";
 const DEFAULT_API: &str = "https://api.bridge.otherline.cc";
 const DEFAULT_WEB: &str = "https://bridge.otherline.cc";
-const LOW_TIER_CAPABILITIES: &[&str] = &["codex.chat", "codex.run", "codex.rpc"];
 #[cfg(windows)]
 const WINDOWS_SINGLE_INSTANCE_ADDR: &str = "127.0.0.1:52321";
 #[cfg(windows)]
@@ -3164,7 +3172,8 @@ fn run_realtime_worker(
     let _ = proxy.send_event(UserEvent::UiEvent(
         json!({ "type": "event", "event": "refresh" }),
     ));
-    let mut codex_session = warm_codex_session(credentials, state, proxy);
+    let codex_connector = warm_codex_connector(credentials, state, proxy);
+    let mut registry = execution_registry(codex_connector)?;
     let mut processed = std::collections::HashSet::<String>::new();
     while running.load(Ordering::SeqCst) {
         let message = socket
@@ -3218,10 +3227,10 @@ fn run_realtime_worker(
                             ));
                             if accept_job(&current_connection, &job, "websocket")? {
                                 processed.insert(job.id.clone());
-                                execute_and_ack_warm(
+                                execute_and_ack_with_registry(
                                     &current_connection,
                                     &job,
-                                    &mut codex_session,
+                                    &mut registry,
                                 )?;
                             }
                         }
@@ -3238,13 +3247,13 @@ fn run_realtime_worker(
     Ok(())
 }
 
-fn warm_codex_session(
+fn warm_codex_connector(
     credentials: &Credentials,
     state: &AppState,
     proxy: &EventLoopProxy<UserEvent>,
-) -> Option<CodexWarmSession> {
+) -> CodexConnector {
     if fake_codex_enabled() || !command_exists(&codex_bin()) {
-        return None;
+        return CodexConnector::new();
     }
     let cwd = workspace_path("default");
     push_event(
@@ -3272,11 +3281,11 @@ fn warm_codex_session(
                 "event": "log",
                 "message": "local Codex app-server is warm"
             })));
-            Some(session)
+            CodexConnector::with_session(Some(session))
         }
         Err(error) => {
             push_event(state, "codex_warm_failed", json!({ "error": error }));
-            None
+            CodexConnector::new()
         }
     }
 }
@@ -3415,35 +3424,23 @@ fn accept_job(credentials: &Credentials, job: &BridgeJob, transport: &str) -> Re
 }
 
 fn execute_and_ack(credentials: &Credentials, job: &BridgeJob) -> Result<(), String> {
-    let result = execute_job(credentials, job).unwrap_or_else(
-        |error| json!({ "ok": false, "error": error, "cloud_openai_credentials": false }),
-    );
-    let status = if result.get("ok").and_then(Value::as_bool) == Some(false) {
-        "failed"
-    } else {
-        "succeeded"
-    };
-    let ack_url = format!(
-        "{}/v1/connectors/jobs/{}/ack",
-        credentials.api_base,
-        urlencoding::encode(&job.id)
-    );
-    let _: Value = post_json_with_install(
-        &ack_url,
-        &json!({ "status": status, "result": result }),
-        Some(&credentials.device_token),
-        credentials.install_id.as_deref(),
-    )?;
-    Ok(())
+    let mut registry = execution_registry(CodexConnector::new())?;
+    execute_and_ack_with_registry(credentials, job, &mut registry)
 }
 
-fn execute_and_ack_warm(
+fn execute_and_ack_with_registry(
     credentials: &Credentials,
     job: &BridgeJob,
-    session: &mut Option<CodexWarmSession>,
+    registry: &mut ConnectorRegistry,
 ) -> Result<(), String> {
-    let result = execute_job_warm(credentials, job, session).unwrap_or_else(|error| {
-        json!({ "ok": false, "error": error, "cloud_openai_credentials": false, "codex_warm": false })
+    let result = execute_via_registry(registry, credentials, job).unwrap_or_else(|error| {
+        let mut result = json!({ "ok": false, "error": error });
+        if job.kind.starts_with("codex.") {
+            if let Value::Object(ref mut map) = result {
+                map.insert("cloud_openai_credentials".to_string(), Value::Bool(false));
+            }
+        }
+        result
     });
     let status = if result.get("ok").and_then(Value::as_bool) == Some(false) {
         "failed"
@@ -3464,9 +3461,31 @@ fn execute_and_ack_warm(
     Ok(())
 }
 
-fn execute_job(credentials: &Credentials, job: &BridgeJob) -> Result<Value, String> {
-    let policy = match local_job_policy_for_credentials(credentials, job) {
-        Ok(policy) => policy,
+fn execution_registry(codex: CodexConnector) -> Result<ConnectorRegistry, String> {
+    let mut registry = ConnectorRegistry::new();
+    registry.register(Box::new(codex))?;
+    registry.register(Box::new(DataConnector::new(SqliteKv::open_default()?)))?;
+    Ok(registry)
+}
+
+fn declaration_registry() -> ConnectorRegistry {
+    let mut registry = ConnectorRegistry::new();
+    registry
+        .register(Box::new(CodexConnector::new()))
+        .expect("codex connector declaration should be valid");
+    registry
+        .register(Box::new(DataConnector::new(MemKv::new())))
+        .expect("data connector declaration should be valid");
+    registry
+}
+
+fn execute_via_registry(
+    registry: &mut ConnectorRegistry,
+    credentials: &Credentials,
+    job: &BridgeJob,
+) -> Result<Value, String> {
+    let grant = match resolve_active_grant(credentials, job) {
+        Ok(grant) => grant,
         Err(error) => {
             let result = local_policy_denial_result(job, &error);
             post_event_best_effort(
@@ -3478,54 +3497,10 @@ fn execute_job(credentials: &Credentials, job: &BridgeJob) -> Result<Value, Stri
             return Ok(result);
         }
     };
-    post_event_best_effort(
-        credentials,
-        &job.id,
-        "effective_policy",
-        effective_policy_event(job, &policy),
-    );
-    post_event_best_effort(
-        credentials,
-        &job.id,
-        "started",
-        json!({ "kind": job.kind, "workspace_ref": job.workspace_ref.clone().unwrap_or_else(|| "default".to_string()) }),
-    );
-    if fake_codex_enabled() {
-        let prompt = job
-            .input
-            .get("prompt")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .trim();
-        let reply = format!(
-            "Panda Bridge fixture reply: {}",
-            if prompt.is_empty() { "ok" } else { prompt }
-        );
-        post_event_best_effort(
-            credentials,
-            &job.id,
-            "text_delta",
-            json!({ "delta": reply }),
-        );
-        return Ok(
-            json!({ "ok": true, "reply": reply, "fixture": true, "cloud_openai_credentials": false }),
-        );
-    }
-    run_codex_app_server(credentials, job)
-}
-
-fn execute_job_warm(
-    credentials: &Credentials,
-    job: &BridgeJob,
-    session: &mut Option<CodexWarmSession>,
-) -> Result<Value, String> {
-    let policy = match local_job_policy_for_credentials(credentials, job) {
-        Ok(policy) => policy,
+    let boundary = match build_granted_boundary(registry, &grant, job) {
+        Ok(boundary) => boundary,
         Err(error) => {
-            let mut result = local_policy_denial_result(job, &error);
-            if let Value::Object(ref mut map) = result {
-                map.insert("codex_warm".to_string(), Value::Bool(false));
-            }
+            let result = local_policy_denial_result(job, &error);
             post_event_best_effort(
                 credentials,
                 &job.id,
@@ -3535,66 +3510,143 @@ fn execute_job_warm(
             return Ok(result);
         }
     };
-    post_event_best_effort(
-        credentials,
-        &job.id,
-        "effective_policy",
-        effective_policy_event(job, &policy),
-    );
-    post_event_best_effort(
-        credentials,
-        &job.id,
-        "started",
-        json!({
-            "kind": job.kind,
-            "workspace_ref": job.workspace_ref.clone().unwrap_or_else(|| "default".to_string()),
-            "codex_warm": session.is_some()
-        }),
-    );
-    if fake_codex_enabled() {
-        let prompt = job
-            .input
-            .get("prompt")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .trim();
-        let reply = format!(
-            "Panda Bridge fixture reply: {}",
-            if prompt.is_empty() { "ok" } else { prompt }
+    let deadline = compute_deadline(&boundary.domain, job);
+    let is_cancelled = || false;
+    let mut emit = |event: ConnectorEvent| {
+        post_event_best_effort(credentials, &job.id, &event.event_type, event.payload)
+    };
+    let mut ctx = ExecCtx {
+        emit: &mut emit,
+        is_cancelled: &is_cancelled,
+        deadline,
+    };
+    let Some(connector) = registry.connector_for_kind(&job.kind) else {
+        let error = format!(
+            "capability_not_authorized_locally: {}:{}",
+            job.product_id, job.kind
         );
+        let result = local_policy_denial_result(job, &error);
         post_event_best_effort(
             credentials,
             &job.id,
-            "text_delta",
-            json!({ "delta": reply }),
+            "policy_denied",
+            local_policy_denial_event(job, &error),
         );
-        return Ok(
-            json!({ "ok": true, "reply": reply, "fixture": true, "cloud_openai_credentials": false }),
-        );
-    }
-    let cwd = policy.cwd.clone();
-    let should_restart = session.as_ref().map(|item| item.cwd != cwd).unwrap_or(true);
-    if should_restart {
-        *session = Some(CodexWarmSession::start(cwd.clone())?);
-    }
-    match session
-        .as_mut()
-        .ok_or("codex warm session unavailable")?
-        .run_job(credentials, job)
-    {
-        Ok(mut result) => {
-            if let Value::Object(ref mut map) = result {
-                map.insert("codex_warm".to_string(), Value::Bool(true));
+        return Ok(result);
+    };
+    match connector.execute(job, &boundary, &mut ctx) {
+        Ok(result) => Ok(result.result),
+        Err(ConnectorError::LocalPolicyDenied { denied, reason }) => {
+            post_event_best_effort(
+                credentials,
+                &job.id,
+                "policy_denied",
+                local_policy_denial_event_from_parts(job, &denied, &reason),
+            );
+            Ok(local_policy_denial_result_from_parts(job, &denied, &reason))
+        }
+        Err(ConnectorError::InvalidJob { reason }) => Ok(json!({ "ok": false, "error": reason })),
+        Err(ConnectorError::RuntimeFailed { reason }) => {
+            if job.kind.starts_with("codex.") {
+                Ok(
+                    json!({ "ok": false, "error": reason, "cloud_openai_credentials": false, "codex_warm": false }),
+                )
+            } else {
+                Ok(json!({ "ok": false, "error": reason }))
             }
-            Ok(result)
         }
-        Err(error) => {
-            *session = None;
-            Err(error)
-        }
+        Err(ConnectorError::Cancelled) => Ok(json!({ "ok": false, "error": "cancelled" })),
+        Err(ConnectorError::Timeout) => Ok(json!({ "ok": false, "error": "timeout" })),
     }
 }
 
+fn resolve_active_grant(
+    credentials: &Credentials,
+    job: &BridgeJob,
+) -> Result<ProductGrant, String> {
+    let grant = connection_products(credentials)
+        .into_iter()
+        .find(|item| item.id == job.product_id)
+        .ok_or_else(|| format!("product_not_authorized_locally: {}", job.product_id))?;
+    if !grant.authorization.is_active() {
+        return Err(format!("authorization_paused_locally: {}", job.product_id));
+    }
+    let capabilities = effective_grant_capabilities(&grant);
+    if !capabilities.is_empty() && !capabilities.iter().any(|item| item == &job.kind) {
+        return Err(format!(
+            "capability_not_authorized_locally: {}:{}",
+            job.product_id, job.kind
+        ));
+    }
+    Ok(grant)
+}
+
+fn effective_grant_capabilities(grant: &ProductGrant) -> Vec<String> {
+    if !grant.capabilities.is_empty() {
+        return grant.capabilities.clone();
+    }
+    authorization_policy_capabilities(&grant.policy).unwrap_or_default()
+}
+
+fn build_granted_boundary(
+    registry: &ConnectorRegistry,
+    grant: &ProductGrant,
+    job: &BridgeJob,
+) -> Result<GrantedBoundary, String> {
+    let declaration = registry.kind_declaration(&job.kind).ok_or_else(|| {
+        format!(
+            "capability_not_authorized_locally: {}:{}",
+            job.product_id, job.kind
+        )
+    })?;
+    let domain = registry
+        .domain_for_kind(&job.kind)
+        .unwrap_or("")
+        .to_string();
+    let capabilities = effective_grant_capabilities(grant);
+    let raw = if domain == "data" {
+        data_boundary_policy_slice(&grant.policy, &job.product_id)
+    } else {
+        grant.policy.clone()
+    };
+    Ok(GrantedBoundary {
+        product_id: grant.id.clone(),
+        product_name: grant.name.clone(),
+        domain,
+        boundary_type: declaration.boundary_type,
+        capabilities,
+        raw,
+    })
+}
+
+fn data_boundary_policy_slice(policy: &Value, product_id: &str) -> Value {
+    policy
+        .pointer("/boundaries/data")
+        .cloned()
+        .unwrap_or_else(|| {
+            json!({
+                "type": "namespace_kv",
+                "owner_product_id": product_id,
+                "namespace": format!("product:{product_id}"),
+                "max_key_bytes": DEFAULT_MAX_KEY_BYTES,
+                "max_value_bytes": DEFAULT_MAX_VALUE_BYTES,
+                "allow_query": true,
+                "allow_delete": true
+            })
+        })
+}
+
+fn compute_deadline(domain: &str, job: &BridgeJob) -> Instant {
+    let default_ms = if domain == "data" { 10_000 } else { 240_000 };
+    let requested = job
+        .policy
+        .get("timeout_ms")
+        .and_then(Value::as_u64)
+        .unwrap_or(default_ms);
+    Instant::now() + Duration::from_millis(requested.min(default_ms))
+}
+
+#[cfg(test)]
 fn local_job_policy_for_credentials(
     credentials: &Credentials,
     job: &BridgeJob,
@@ -3620,6 +3672,17 @@ fn local_job_policy_for_credentials(
     }
     validate_authorization_scope(&grant.policy, job)?;
     effective_job_policy(job, Some(&grant.policy))
+}
+
+fn codex_job_policy_from_scope(job: &BridgeJob, scope: &Value) -> Result<LocalJobPolicy, String> {
+    match scope.get("version").and_then(Value::as_str) {
+        Some("AUTH-SCOPE-v1") | Some("AUTH-SCOPE-v2") => {}
+        _ => {
+            return Err("authorization_scope_missing_locally".to_string());
+        }
+    }
+    validate_authorization_scope(scope, job)?;
+    effective_job_policy(job, Some(scope))
 }
 
 #[cfg(test)]
@@ -3738,6 +3801,10 @@ fn authorization_scope_allows_approval(floor: &str, requested: &str, allow_never
 
 fn local_policy_denial_result(job: &BridgeJob, error: &str) -> Value {
     let (denied, reason) = local_policy_denial(error);
+    local_policy_denial_result_from_parts(job, denied, reason)
+}
+
+fn local_policy_denial_result_from_parts(job: &BridgeJob, denied: &str, reason: &str) -> Value {
     json!({
         "ok": false,
         "error": "local_policy_denied",
@@ -3751,6 +3818,10 @@ fn local_policy_denial_result(job: &BridgeJob, error: &str) -> Value {
 
 fn local_policy_denial_event(job: &BridgeJob, error: &str) -> Value {
     let (denied, reason) = local_policy_denial(error);
+    local_policy_denial_event_from_parts(job, denied, reason)
+}
+
+fn local_policy_denial_event_from_parts(job: &BridgeJob, denied: &str, reason: &str) -> Value {
     json!({
         "denied": denied,
         "reason": reason,
@@ -3782,6 +3853,18 @@ fn local_policy_denial(error: &str) -> (&'static str, &'static str) {
             "developerInstructions",
             "developer_instructions_not_allowed_locally",
         )
+    } else if error.starts_with("namespace_owner_mismatch_locally") {
+        ("namespace", "namespace_owner_mismatch_locally")
+    } else if error.starts_with("namespace_not_owned_locally") {
+        ("namespace", "namespace_not_owned_locally")
+    } else if error.starts_with("key_invalid_locally") {
+        ("key", "key_invalid_locally")
+    } else if error.starts_with("value_too_large_locally") {
+        ("value", "value_too_large_locally")
+    } else if error.starts_with("query_invalid_locally") {
+        ("key", "query_invalid_locally")
+    } else if error.starts_with("boundary_type_mismatch_locally") {
+        ("namespace", "boundary_type_mismatch_locally")
     } else {
         ("unknown", "local_policy_denied")
     }
@@ -3832,74 +3915,6 @@ impl CodexWarmSession {
         }
         let _ = session.send_request_raw("account/rateLimits/read", json!({}), timeout);
         Ok(session)
-    }
-
-    fn run_job(&mut self, credentials: &Credentials, job: &BridgeJob) -> Result<Value, String> {
-        let prompt = job
-            .input
-            .get("prompt")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .trim();
-        if prompt.is_empty() {
-            return Ok(
-                json!({ "ok": false, "error": "missing prompt", "cloud_openai_credentials": false }),
-            );
-        }
-        let timeout = Duration::from_millis(
-            job.policy
-                .get("timeout_ms")
-                .and_then(Value::as_u64)
-                .unwrap_or(240_000),
-        );
-        let policy = local_job_policy_for_credentials(credentials, job)?;
-        let mut final_text = String::new();
-        let thread_result = send_request(
-            &mut self.stdin,
-            &self.rx,
-            &mut self.next_id,
-            "thread/start",
-            thread_start_params(&policy, job),
-            timeout,
-            credentials,
-            job,
-            &mut final_text,
-        )?;
-        let thread_id = thread_result
-            .get("thread")
-            .and_then(|thread| thread.get("id"))
-            .and_then(Value::as_str)
-            .ok_or("codex app-server did not return a thread id")?
-            .to_string();
-        let _ = send_request(
-            &mut self.stdin,
-            &self.rx,
-            &mut self.next_id,
-            "turn/start",
-            json!({
-                "threadId": thread_id,
-                "input": [{ "type": "text", "text": prompt, "text_elements": [] }],
-                "approvalPolicy": policy.approval_policy
-            }),
-            timeout,
-            credentials,
-            job,
-            &mut final_text,
-        )?;
-        wait_for_turn(&self.rx, timeout, credentials, job, &mut final_text)?;
-        let reply = final_text.trim().to_string();
-        if reply.is_empty() {
-            let stderr_tail = self.err_rx.try_recv().unwrap_or_default();
-            return Ok(
-                json!({ "ok": false, "error": format!("codex completed without assistant text; {stderr_tail}"), "cloud_openai_credentials": false }),
-            );
-        }
-        Ok(json!({
-            "ok": true,
-            "reply": reply,
-            "codex_thread_id": thread_id,
-            "cloud_openai_credentials": false
-        }))
     }
 
     fn send_request_raw(
@@ -3997,222 +4012,10 @@ fn spawn_codex_app_server(
     Ok((child, stdin, rx, err_rx))
 }
 
-fn run_codex_app_server(credentials: &Credentials, job: &BridgeJob) -> Result<Value, String> {
-    let prompt = job
-        .input
-        .get("prompt")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .trim();
-    if prompt.is_empty() {
-        return Ok(
-            json!({ "ok": false, "error": "missing prompt", "cloud_openai_credentials": false }),
-        );
-    }
-    let policy = local_job_policy_for_credentials(credentials, job)?;
-    let cwd = policy.cwd.clone();
-    let timeout = Duration::from_millis(
-        job.policy
-            .get("timeout_ms")
-            .and_then(Value::as_u64)
-            .unwrap_or(240_000),
-    );
-    let (mut child, mut stdin, rx, err_rx) = spawn_codex_app_server(&cwd)?;
-
-    let result = (|| -> Result<Value, String> {
-        let mut next_id = 0_u64;
-        let mut final_text = String::new();
-        send_request(
-            &mut stdin,
-            &rx,
-            &mut next_id,
-            "initialize",
-            json!({
-                "clientInfo": { "name": "panda_bridge_desktop_lite", "title": "Panda Bridge Desktop", "version": VERSION },
-                "capabilities": {}
-            }),
-            timeout,
-            credentials,
-            job,
-            &mut final_text,
-        )?;
-        send_notify(&mut stdin, "initialized", json!({}))?;
-        let account = send_request(
-            &mut stdin,
-            &rx,
-            &mut next_id,
-            "account/read",
-            json!({ "refreshToken": false }),
-            timeout,
-            credentials,
-            job,
-            &mut final_text,
-        )?;
-        if account.get("account").is_none() {
-            return Ok(
-                json!({ "ok": false, "error": "local Codex is not signed in; run codex login on this machine", "cloud_openai_credentials": false }),
-            );
-        }
-        let _rate_limits = send_request(
-            &mut stdin,
-            &rx,
-            &mut next_id,
-            "account/rateLimits/read",
-            json!({}),
-            timeout,
-            credentials,
-            job,
-            &mut final_text,
-        )
-        .ok();
-        let thread_result = send_request(
-            &mut stdin,
-            &rx,
-            &mut next_id,
-            "thread/start",
-            thread_start_params(&policy, job),
-            timeout,
-            credentials,
-            job,
-            &mut final_text,
-        )?;
-        let thread_id = thread_result
-            .get("thread")
-            .and_then(|thread| thread.get("id"))
-            .and_then(Value::as_str)
-            .ok_or("codex app-server did not return a thread id")?
-            .to_string();
-        let _ = send_request(
-            &mut stdin,
-            &rx,
-            &mut next_id,
-            "turn/start",
-            json!({
-                "threadId": thread_id,
-                "input": [{ "type": "text", "text": prompt, "text_elements": [] }],
-                "approvalPolicy": policy.approval_policy
-            }),
-            timeout,
-            credentials,
-            job,
-            &mut final_text,
-        )?;
-        wait_for_turn(&rx, timeout, credentials, job, &mut final_text)?;
-        let reply = final_text.trim().to_string();
-        if reply.is_empty() {
-            let stderr_tail = err_rx.try_recv().unwrap_or_default();
-            return Ok(
-                json!({ "ok": false, "error": format!("codex completed without assistant text; {stderr_tail}"), "cloud_openai_credentials": false }),
-            );
-        }
-        Ok(json!({
-            "ok": true,
-            "reply": reply,
-            "codex_thread_id": thread_id,
-            "cloud_openai_credentials": false
-        }))
-    })();
-    let _ = child.kill();
-    result
-}
-
-fn send_request(
-    stdin: &mut impl Write,
-    rx: &mpsc::Receiver<Value>,
-    next_id: &mut u64,
-    method: &str,
-    params: Value,
-    timeout: Duration,
-    credentials: &Credentials,
-    job: &BridgeJob,
-    final_text: &mut String,
-) -> Result<Value, String> {
-    *next_id += 1;
-    let id = *next_id;
-    writeln!(
-        stdin,
-        "{}",
-        json!({ "method": method, "id": id, "params": params })
-    )
-    .map_err(|error| error.to_string())?;
-    stdin.flush().map_err(|error| error.to_string())?;
-    let started = Instant::now();
-    while started.elapsed() < timeout {
-        let message = match rx.recv_timeout(Duration::from_millis(500)) {
-            Ok(message) => message,
-            Err(mpsc::RecvTimeoutError::Timeout) => continue,
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                return Err(format!(
-                    "codex app-server closed while waiting for {method}"
-                ))
-            }
-        };
-        handle_codex_event(credentials, job, &message, final_text)?;
-        if message.get("id").and_then(Value::as_u64) == Some(id) {
-            if let Some(error) = message.get("error") {
-                return Err(format!("codex {method} error: {error}"));
-            }
-            return Ok(message.get("result").cloned().unwrap_or_else(|| json!({})));
-        }
-    }
-    Err(format!("codex app-server timeout waiting for {method}"))
-}
-
 fn send_notify(stdin: &mut impl Write, method: &str, params: Value) -> Result<(), String> {
     writeln!(stdin, "{}", json!({ "method": method, "params": params }))
         .map_err(|error| error.to_string())?;
     stdin.flush().map_err(|error| error.to_string())
-}
-
-fn wait_for_turn(
-    rx: &mpsc::Receiver<Value>,
-    timeout: Duration,
-    credentials: &Credentials,
-    job: &BridgeJob,
-    final_text: &mut String,
-) -> Result<(), String> {
-    let started = Instant::now();
-    while started.elapsed() < timeout {
-        let message = match rx.recv_timeout(Duration::from_millis(500)) {
-            Ok(message) => message,
-            Err(mpsc::RecvTimeoutError::Timeout) => continue,
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                return Err("codex app-server closed before turn completed".to_string())
-            }
-        };
-        handle_codex_event(credentials, job, &message, final_text)?;
-        if message.get("method").and_then(Value::as_str) == Some("turn/completed") {
-            return Ok(());
-        }
-    }
-    Err("codex app-server turn timed out".to_string())
-}
-
-fn handle_codex_event(
-    credentials: &Credentials,
-    job: &BridgeJob,
-    message: &Value,
-    final_text: &mut String,
-) -> Result<(), String> {
-    if let Some(delta) = assistant_text_from_message(message) {
-        if !delta.is_empty() {
-            final_text.push_str(&delta);
-            post_event_best_effort(
-                credentials,
-                &job.id,
-                "text_delta",
-                json!({ "delta": delta }),
-            );
-        }
-    } else if let Some(method) = message.get("method").and_then(Value::as_str) {
-        post_event_best_effort(
-            credentials,
-            &job.id,
-            "app_server_event",
-            json!({ "method": method }),
-        );
-    }
-    Ok(())
 }
 
 fn assistant_text_from_message(message: &Value) -> Option<String> {
@@ -4398,8 +4201,27 @@ fn parse_response<T: for<'de> Deserialize<'de>>(
 }
 
 fn capabilities() -> Value {
+    let registry = declaration_registry();
+    let connectors = registry
+        .declarations()
+        .iter()
+        .map(|declaration| {
+            json!({
+                "domain": declaration.domain.clone(),
+                "kinds": declaration.kinds.iter().map(|kind| {
+                    json!({
+                        "kind": kind.kind.clone(),
+                        "verb": kind.verb.clone(),
+                        "danger": kind.danger.as_str(),
+                        "boundary_type": kind.boundary_type.as_str()
+                    })
+                }).collect::<Vec<_>>()
+            })
+        })
+        .collect::<Vec<_>>();
     json!({
-        "runtime": LOW_TIER_CAPABILITIES,
+        "runtime": registry.all_kinds(),
+        "connectors": connectors,
         "app_server": true,
         "desktop": "tao-wry",
         "platform": env::consts::OS
@@ -4415,17 +4237,35 @@ fn local_state() -> Value {
 }
 
 fn low_tier_capabilities() -> Vec<String> {
-    LOW_TIER_CAPABILITIES
+    declaration_registry()
+        .declarations()
         .iter()
-        .map(|item| (*item).to_string())
+        .flat_map(|declaration| declaration.kinds.iter())
+        .filter(|kind| kind.danger == ConnectorDanger::Low)
+        .map(|kind| kind.kind.clone())
         .collect()
 }
 
-fn capability_metadata(kind: &str) -> Option<(&'static str, &'static str, &'static str)> {
-    match kind {
-        "codex.chat" | "codex.run" | "codex.rpc" => Some(("codex", "low", "workspace_sandbox")),
-        "saas.custom.run" => Some(("saas", "high", "opaque_runtime")),
-        _ => None,
+fn capability_metadata(kind: &str) -> Option<(String, String, String)> {
+    for declaration in declaration_registry().declarations() {
+        for item in &declaration.kinds {
+            if item.kind == kind {
+                return Some((
+                    declaration.domain.clone(),
+                    item.danger.as_str().to_string(),
+                    item.boundary_type.as_str().to_string(),
+                ));
+            }
+        }
+    }
+    if kind == "saas.custom.run" {
+        Some((
+            "saas".to_string(),
+            "high".to_string(),
+            "opaque_runtime".to_string(),
+        ))
+    } else {
+        None
     }
 }
 
@@ -4434,7 +4274,7 @@ fn scope_domain_boundaries_from_capabilities(capabilities: &[String]) -> Value {
     for capability in capabilities {
         if let Some((domain, danger, boundary_type)) = capability_metadata(capability) {
             domain_boundaries.insert(
-                domain.to_string(),
+                domain,
                 json!({
                     "granted": true,
                     "danger": danger,
@@ -4452,15 +4292,15 @@ fn scope_danger_metadata_from_capabilities(capabilities: &[String]) -> (Value, V
     let mut high = HashSet::new();
     for capability in capabilities {
         if let Some((domain, danger, _)) = capability_metadata(capability) {
-            match danger {
+            match danger.as_str() {
                 "low" => {
-                    low.insert(domain.to_string());
+                    low.insert(domain);
                 }
                 "medium" => {
-                    medium.insert(domain.to_string());
+                    medium.insert(domain);
                 }
                 "high" => {
-                    high.insert(domain.to_string());
+                    high.insert(domain);
                 }
                 _ => {}
             }
@@ -4486,6 +4326,7 @@ fn tier_metadata_value(domains: &HashSet<String>) -> Value {
     })
 }
 
+#[cfg(test)]
 fn project_v1_scope_to_v2(scope: &Value) -> Value {
     let mut projected = scope.clone();
     if let Some(map) = projected.as_object_mut() {
@@ -4618,9 +4459,39 @@ fn intent_authorization_policy(
                 .or_insert(danger_tiers);
             map.entry("domain_boundaries".to_string())
                 .or_insert(domain_boundaries);
+            ensure_data_boundary_for_policy(map, product_id, &capabilities);
         }
     }
     policy
+}
+
+fn ensure_data_boundary_for_policy(
+    map: &mut serde_json::Map<String, Value>,
+    product_id: &str,
+    capabilities: &[String],
+) {
+    if !capabilities
+        .iter()
+        .any(|capability| capability.starts_with("data."))
+    {
+        return;
+    }
+    let mut boundaries = map
+        .remove("boundaries")
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default();
+    boundaries.entry("data".to_string()).or_insert_with(|| {
+        json!({
+            "type": "namespace_kv",
+            "owner_product_id": product_id,
+            "namespace": format!("product:{product_id}"),
+            "max_key_bytes": DEFAULT_MAX_KEY_BYTES,
+            "max_value_bytes": DEFAULT_MAX_VALUE_BYTES,
+            "allow_query": true,
+            "allow_delete": true
+        })
+    });
+    map.insert("boundaries".to_string(), Value::Object(boundaries));
 }
 
 fn authorization_policy_capabilities(policy: &Value) -> Option<Vec<String>> {
@@ -6047,8 +5918,69 @@ mod tests {
         );
         assert_eq!(
             capabilities()["runtime"],
-            json!(["codex.chat", "codex.run", "codex.rpc"])
+            json!([
+                "codex.chat",
+                "codex.rpc",
+                "codex.run",
+                "data.delete",
+                "data.get",
+                "data.put",
+                "data.query"
+            ])
         );
+    }
+
+    #[test]
+    fn codex_fixture_runs_through_registry_without_result_regression() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        reset_policy_env();
+        env::set_var("PANDA_BRIDGE_FAKE_CODEX", "1");
+        let mut registry = declaration_registry();
+        let result = execute_via_registry(
+            &mut registry,
+            &test_credentials(vec!["codex.chat"]),
+            &test_job(json!({})),
+        )
+        .unwrap();
+        assert_eq!(result["ok"], true);
+        assert_eq!(result["reply"], "Panda Bridge fixture reply: hello");
+        assert_eq!(result["fixture"], true);
+        assert_eq!(result["cloud_openai_credentials"], false);
+        env::remove_var("PANDA_BRIDGE_FAKE_CODEX");
+    }
+
+    #[test]
+    fn data_registry_path_rejects_cross_product_namespace_locally() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        reset_policy_env();
+        let mut credentials = test_credentials(vec!["data.put"]);
+        credentials.authorized_products[0].policy = json!({
+            "version": "AUTH-SCOPE-v2",
+            "product_id": "panda-chat",
+            "capabilities": ["data.put"],
+            "boundaries": {
+                "data": {
+                    "type": "namespace_kv",
+                    "owner_product_id": "panda-chat",
+                    "namespace": "product:panda-chat",
+                    "max_key_bytes": 512,
+                    "max_value_bytes": 262144,
+                    "allow_query": true,
+                    "allow_delete": true
+                }
+            }
+        });
+        let job = BridgeJob {
+            kind: "data.put".to_string(),
+            input: json!({ "ns": "product:otherline", "key": "x", "value": 1 }),
+            ..test_job(json!({}))
+        };
+        let mut registry = declaration_registry();
+        let result = execute_via_registry(&mut registry, &credentials, &job).unwrap();
+        assert_eq!(result["ok"], false);
+        assert_eq!(result["error"], "local_policy_denied");
+        assert_eq!(result["denied"], "namespace");
+        assert_eq!(result["reason"], "namespace_not_owned_locally");
     }
 
     #[test]

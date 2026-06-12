@@ -178,6 +178,26 @@ assert.equal(explicitFullAccessPolicy.sandbox_floor, "danger-full-access");
 assert.equal(explicitFullAccessPolicy.approval_policy_floor, "never");
 assert.equal(explicitFullAccessPolicy.allow_approval_never, true);
 assert.equal(explicitFullAccessPolicy.allow_developer_instructions, true);
+assert.ok(explicitFullAccessPolicy.capabilities.includes("data.put"));
+assert.ok(explicitFullAccessPolicy.capabilities.includes("data.delete"));
+
+const dataCalls = [];
+const dataClient = createBridgeClient({
+  apiBase: "https://api.example.test",
+  productId: "otherline",
+  fetch: async (url, init) => {
+    dataCalls.push({ url, init });
+    return new Response(JSON.stringify({ job: { id: "job_data", status: "queued" } }), {
+      status: 201,
+      headers: { "content-type": "application/json" },
+    });
+  },
+});
+await dataClient.data.put({ deviceId: "dev_1", key: "settings/theme", value: { theme: "dark" } });
+const dataJob = JSON.parse(dataCalls[0].init.body);
+assert.equal(dataCalls[0].url, "https://api.example.test/v1/products/otherline/jobs");
+assert.equal(dataJob.kind, "data.put");
+assert.deepEqual(dataJob.input, { key: "settings/theme", value: { theme: "dark" } });
 
 await client.auth.share();
 assert.equal(calls[2].url, "https://api.example.test/v1/sessions/share");
