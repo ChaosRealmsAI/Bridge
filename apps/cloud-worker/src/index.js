@@ -2203,7 +2203,7 @@ function canonicalJson(value) {
   if (value === null || ["string", "number", "boolean"].includes(typeof value)) return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
   if (!value || typeof value !== "object") return "{}";
-  const entries = Object.entries(value).sort(([left], [right]) => left.localeCompare(right));
+  const entries = Object.entries(value).sort(([left], [right]) => codePointCompare(left, right));
   return `{${entries.map(([key, nested]) => `${JSON.stringify(key)}:${canonicalJson(nested)}`).join(",")}}`;
 }
 
@@ -2986,9 +2986,9 @@ function normalizeConnectorBoundaries(input, product, capabilities) {
       allow_delete: data.allow_delete !== false && data.allowDelete !== false,
     };
   }
-  if (capabilities.includes("fs.read")) {
+  if (capabilities.includes("fs.read") || capabilities.includes("fs.write")) {
     const fs = object(requested.fs);
-    const rawRoots = Array.isArray(fs.allowed_roots || fs.allowedRoots)
+    const rawRoots = capabilities.includes("fs.read") && Array.isArray(fs.allowed_roots || fs.allowedRoots)
       ? (fs.allowed_roots || fs.allowedRoots)
       : [];
     const allowedRoots = dedupeByCanonical(rawRoots.map((item, index) => {
@@ -2999,14 +2999,24 @@ function normalizeConnectorBoundaries(input, product, capabilities) {
         path_display: cleanKeepSlash(root.path_display || root.pathDisplay || root.label, 300),
       };
     }));
-    allowedRoots.sort((left, right) => {
-      const a = canonicalJson(left);
-      const b = canonicalJson(right);
-      return a < b ? -1 : a > b ? 1 : 0;
-    });
+    allowedRoots.sort((left, right) => codePointCompare(canonicalJson(left), canonicalJson(right)));
+    const rawWriteRoots = capabilities.includes("fs.write") && Array.isArray(fs.write_roots || fs.writeRoots)
+      ? (fs.write_roots || fs.writeRoots)
+      : [];
+    const writeRoots = dedupeByCanonical(rawWriteRoots.map((item, index) => {
+      const root = object(item);
+      const id = cleanKeepSlash(root.id, 120);
+      return {
+        id: id || `root-${index + 1}`,
+        path_display: cleanKeepSlash(root.path_display || root.pathDisplay || root.label, 300),
+      };
+    }));
+    writeRoots.sort((left, right) => codePointCompare(canonicalJson(left), canonicalJson(right)));
     boundaries.fs = {
       type: "directory_whitelist",
       allowed_roots: allowedRoots,
+      write_roots: writeRoots,
+      writable: capabilities.includes("fs.write"),
       max_bytes: boundedInteger(fs.max_bytes ?? fs.maxBytes, 8388608, 1, 67108864),
       follow_symlinks: fs.follow_symlinks === true || fs.followSymlinks === true,
     };
@@ -3024,13 +3034,17 @@ function normalizedPolicyCapabilities(requested, product, originalPolicy = {}) {
     error.public = { field: "capabilities", unsupported };
     throw error;
   }
-  if (capabilities.includes("fs.read") && !product.capabilities.includes("fs.read")) {
-    if (Array.isArray(originalPolicy.capabilities) && originalPolicy.capabilities.includes("fs.read")) {
+  const unsupportedByProduct = capabilities.filter((kind) => !product.capabilities.includes(kind));
+  const highUnsupportedByProduct = unsupportedByProduct.filter((kind) => capabilityDanger(kind) === "high");
+  if (highUnsupportedByProduct.length) {
+    const explicitRequested = Array.isArray(originalPolicy.capabilities)
+      && originalPolicy.capabilities.some((kind) => highUnsupportedByProduct.includes(kind));
+    if (explicitRequested) {
       const error = httpError("invalid_authorization_policy", 400);
-      error.public = { field: "capabilities", unsupported: ["fs.read"] };
+      error.public = { field: "capabilities", unsupported: highUnsupportedByProduct };
       throw error;
     }
-    capabilities = capabilities.filter((kind) => kind !== "fs.read");
+    capabilities = capabilities.filter((kind) => !highUnsupportedByProduct.includes(kind));
   }
   return capabilities;
 }
@@ -3049,6 +3063,10 @@ function authorizationPolicyDisplay(workspaceRoots, sandboxFloor, approvalFloor,
       .map((item) => item.path_display || item.id)
       .filter(Boolean)
       .join(", ");
+    display.fs_write = (boundaries.fs.write_roots || [])
+      .map((item) => item.path_display || item.id)
+      .filter(Boolean)
+      .join(", ");
   }
   return display;
 }
@@ -3058,7 +3076,7 @@ export function authorizationScopeDenial(scopeInput, job) {
   if (!["AUTH-SCOPE-v1", "AUTH-SCOPE-v2"].includes(scope.version)) {
     return { denied: "authorization", reason: "authorization_scope_missing" };
   }
-  if (scope.version === "AUTH-SCOPE-v1" && job.kind === "fs.read") {
+  if (scope.version === "AUTH-SCOPE-v1" && capabilityDomain(job.kind) === "fs") {
     return { denied: "tier", reason: "tier_not_granted" };
   }
   if (scope.version === "AUTH-SCOPE-v2" && scope.danger_tiers && scope.domain_boundaries) {
@@ -3073,7 +3091,7 @@ export function authorizationScopeDenial(scopeInput, job) {
     return authorizationDataScopeDenial(scope, job);
   }
   if (domain === "fs") {
-    return authorizationFsScopeDenial(scope);
+    return authorizationFsScopeDenial(scope, job);
   }
   const workspaceRef = job.workspace_ref || "default";
   if (!authorizationScopeAllowsWorkspace(scope, workspaceRef)) {
@@ -3095,11 +3113,19 @@ export function authorizationScopeDenial(scopeInput, job) {
   return null;
 }
 
-function authorizationFsScopeDenial(scope) {
+function authorizationFsScopeDenial(scope, job = {}) {
   const fs = object(scope.boundaries?.fs);
   const boundaryType = clean(fs.type || fs.boundary_type || fs.boundaryType, 80);
   if (boundaryType && boundaryType !== "directory_whitelist") {
     return { denied: "path", reason: "boundary_type_mismatch" };
+  }
+  if (job.kind === "fs.write") {
+    const writeRoots = Array.isArray(fs.write_roots || fs.writeRoots)
+      ? (fs.write_roots || fs.writeRoots)
+      : [];
+    if (fs.writable !== true || writeRoots.length === 0) {
+      return { denied: "path", reason: "write_boundary_not_granted" };
+    }
   }
   return null;
 }
@@ -3858,6 +3884,22 @@ function dedupeByCanonical(items) {
     result.push(item);
   }
   return result;
+}
+
+function codePointCompare(left, right) {
+  const a = String(left);
+  const b = String(right);
+  let ai = 0;
+  let bi = 0;
+  while (ai < a.length && bi < b.length) {
+    const ac = a.codePointAt(ai);
+    const bc = b.codePointAt(bi);
+    if (ac !== bc) return ac < bc ? -1 : 1;
+    ai += ac > 0xffff ? 2 : 1;
+    bi += bc > 0xffff ? 2 : 1;
+  }
+  if (ai === a.length && bi === b.length) return 0;
+  return ai === a.length ? -1 : 1;
 }
 
 function normalizeEmail(value) {

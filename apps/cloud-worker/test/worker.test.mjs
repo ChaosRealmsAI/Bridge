@@ -213,17 +213,25 @@ assert.equal(diagnostics.protocol, "panda-bridge-protocol-v0.1");
 assert.equal(diagnostics.storage, "memory");
 assert.ok(diagnostics.products.some((item) => item.id === "panda-chat" && item.capabilities.includes("codex.chat")));
 assert.equal(diagnostics.products.find((item) => item.id === "panda-chat").capabilities.includes("fs.read"), false);
+assert.equal(diagnostics.products.find((item) => item.id === "panda-chat").capabilities.includes("fs.write"), false);
 assert.equal(diagnostics.products.find((item) => item.id === "panda-spec").capabilities.includes("fs.read"), false);
+assert.equal(diagnostics.products.find((item) => item.id === "panda-spec").capabilities.includes("fs.write"), false);
 assert.equal(diagnostics.products.find((item) => item.id === "panda-dev").capabilities.includes("fs.read"), true);
+assert.equal(diagnostics.products.find((item) => item.id === "panda-dev").capabilities.includes("fs.write"), true);
 assert.equal(diagnostics.products.find((item) => item.id === "otherline").capabilities.includes("fs.read"), true);
+assert.equal(diagnostics.products.find((item) => item.id === "otherline").capabilities.includes("fs.write"), true);
 assert.ok(diagnostics.jobs.supported_kinds.includes("saas.custom.run"));
 assert.ok(diagnostics.jobs.supported_kinds.includes("fs.read"));
+assert.ok(diagnostics.jobs.supported_kinds.includes("fs.write"));
 assert.equal(diagnostics.jobs.registry["codex.chat"].verb, "chat");
 assert.equal(diagnostics.jobs.registry["codex.chat"].danger, "low");
 assert.equal(diagnostics.jobs.registry["codex.chat"].boundary_type, "workspace_sandbox");
 assert.equal(diagnostics.jobs.registry["fs.read"].verb, "read");
 assert.equal(diagnostics.jobs.registry["fs.read"].danger, "high");
 assert.equal(diagnostics.jobs.registry["fs.read"].boundary_type, "directory_whitelist");
+assert.equal(diagnostics.jobs.registry["fs.write"].verb, "write");
+assert.equal(diagnostics.jobs.registry["fs.write"].danger, "high");
+assert.equal(diagnostics.jobs.registry["fs.write"].boundary_type, "directory_whitelist");
 assert.equal(diagnostics.jobs.registry["saas.custom.run"].verb, "custom.run");
 assert.equal(diagnostics.jobs.registry["saas.custom.run"].danger, "high");
 assert.equal(diagnostics.jobs.registry["saas.custom.run"].boundary_type, "opaque_runtime");
@@ -299,6 +307,15 @@ assert.deepEqual(authorizationScopeDenial({
   input: { path: "/tmp/a.txt" },
   policy: {},
 }), { denied: "tier", reason: "tier_not_granted" });
+assert.deepEqual(authorizationScopeDenial({
+  ...v1Scope,
+  capabilities: ["fs.write"],
+}, {
+  kind: "fs.write",
+  product_id: "panda-dev",
+  input: { path: "/tmp/a.txt", text: "x" },
+  policy: {},
+}), { denied: "tier", reason: "tier_not_granted" });
 const v2LowScope = {
   ...v1Scope,
   version: "AUTH-SCOPE-v2",
@@ -319,6 +336,12 @@ assert.deepEqual(authorizationScopeDenial(v2LowScope, {
   kind: "fs.read",
   product_id: "panda-dev",
   input: { path: "/tmp/a.txt" },
+  policy: {},
+}), { denied: "tier", reason: "tier_not_granted" });
+assert.deepEqual(authorizationScopeDenial(v2LowScope, {
+  kind: "fs.write",
+  product_id: "panda-dev",
+  input: { path: "/tmp/a.txt", text: "x" },
   policy: {},
 }), { denied: "tier", reason: "tier_not_granted" });
 const v2DataScope = {
@@ -352,12 +375,14 @@ assert.deepEqual(authorizationScopeDenial({
 const v2FsScope = {
   ...v1Scope,
   version: "AUTH-SCOPE-v2",
-  capabilities: ["fs.read"],
-  ...scopeDangerMetadataFromCapabilities(["fs.read"]),
+  capabilities: ["fs.read", "fs.write"],
+  ...scopeDangerMetadataFromCapabilities(["fs.read", "fs.write"]),
   boundaries: {
     fs: {
       type: "directory_whitelist",
       allowed_roots: [{ id: "root-a", path_display: "[local]/root" }],
+      write_roots: [{ id: "root-w", path_display: "[local]/write" }],
+      writable: true,
       max_bytes: 8388608,
       follow_symlinks: false,
     },
@@ -369,6 +394,21 @@ assert.equal(authorizationScopeDenial(v2FsScope, {
   input: { path: "/tmp/a.txt" },
   policy: {},
 }), null);
+assert.equal(authorizationScopeDenial(v2FsScope, {
+  kind: "fs.write",
+  product_id: "panda-dev",
+  input: { path: "/tmp/a.txt", text: "x", mode: "create_new" },
+  policy: {},
+}), null);
+assert.deepEqual(authorizationScopeDenial({
+  ...v2FsScope,
+  boundaries: { fs: { ...v2FsScope.boundaries.fs, writable: false, write_roots: [] } },
+}, {
+  kind: "fs.write",
+  product_id: "panda-dev",
+  input: { path: "/tmp/a.txt", text: "x" },
+  policy: {},
+}), { denied: "path", reason: "write_boundary_not_granted" });
 assert.deepEqual(authorizationScopeDenial({
   ...v2FsScope,
   boundaries: { fs: { ...v2FsScope.boundaries.fs, type: "workspace_sandbox" } },
@@ -670,6 +710,7 @@ assert.equal(fullAccessClaim.authorization.policy.preset, "full-access");
 assert.ok(fullAccessClaim.authorization.policy.capabilities.includes("saas.custom.run"));
 assert.ok(fullAccessClaim.authorization.policy.capabilities.includes("data.put"));
 assert.equal(fullAccessClaim.authorization.policy.capabilities.includes("fs.read"), false);
+assert.equal(fullAccessClaim.authorization.policy.capabilities.includes("fs.write"), false);
 assert.equal(fullAccessClaim.authorization.policy.workspace_roots[0].allow_all, true);
 assert.equal(fullAccessClaim.authorization.policy.sandbox_floor, "danger-full-access");
 assert.equal(fullAccessClaim.authorization.policy.approval_policy_floor, "never");
@@ -695,10 +736,11 @@ const invalidFsIntent = await apiRaw("POST", "/v1/connect-intents", {
   product_id: "panda-chat",
   device_name: "Invalid Fs Capability Device",
   policy: {
-    capabilities: ["codex.chat", "fs.read"],
+    capabilities: ["codex.chat", "fs.read", "fs.write"],
     boundaries: {
       fs: {
         allowed_roots: [{ id: "root-a", path_display: "[local]/root" }],
+        write_roots: [{ id: "root-w", path_display: "[local]/write" }],
       },
     },
   },
@@ -710,7 +752,7 @@ const fsIntent = await api("POST", "/v1/connect-intents", {
   product_id: "panda-dev",
   device_name: "Explicit Fs Capability Device",
   policy: {
-    capabilities: ["codex.chat", "fs.read"],
+    capabilities: ["codex.chat", "fs.read", "fs.write"],
     workspace_roots: [{ id: "default", path_display: "[local]/default" }],
     boundaries: {
       fs: {
@@ -718,6 +760,11 @@ const fsIntent = await api("POST", "/v1/connect-intents", {
           { id: "root-b", path_display: "[local]/B" },
           { id: "root-a", path_display: "[local]/A" },
           { id: "root-a", path_display: "[local]/A" },
+        ],
+        write_roots: [
+          { id: "write-b", path_display: "[local]/WriteB" },
+          { id: "write-a", path_display: "[local]/WriteA" },
+          { id: "write-a", path_display: "[local]/WriteA" },
         ],
         max_bytes: 1024,
         follow_symlinks: true,
@@ -730,7 +777,7 @@ const fsClaim = await nativeClaimIntent(fsIntent.token, {
   install_id: "install-explicit-fs-capability",
   capabilities: { codex: ["codex.chat"] },
 });
-assert.deepEqual(fsClaim.authorization.policy.capabilities, ["codex.chat", "fs.read"]);
+assert.deepEqual(fsClaim.authorization.policy.capabilities, ["codex.chat", "fs.read", "fs.write"]);
 assert.equal(fsClaim.authorization.policy.danger_tiers.high.granted, true);
 assert.deepEqual(fsClaim.authorization.policy.danger_tiers.high.domains, ["fs"]);
 assert.deepEqual(fsClaim.authorization.policy.domain_boundaries.fs, {
@@ -744,10 +791,16 @@ assert.deepEqual(fsClaim.authorization.policy.boundaries.fs, {
     { id: "root-a", path_display: "[local]/A" },
     { id: "root-b", path_display: "[local]/B" },
   ],
+  write_roots: [
+    { id: "write-a", path_display: "[local]/WriteA" },
+    { id: "write-b", path_display: "[local]/WriteB" },
+  ],
+  writable: true,
   max_bytes: 1024,
   follow_symlinks: true,
 });
 assert.equal(fsClaim.authorization.policy.display.fs_read, "[local]/A, [local]/B");
+assert.equal(fsClaim.authorization.policy.display.fs_write, "[local]/WriteA, [local]/WriteB");
 const fsJob = await apiRaw("POST", "/v1/products/panda-dev/jobs", {
   kind: "fs.read",
   device_id: fsClaim.device.id,
@@ -757,6 +810,15 @@ const fsJob = await apiRaw("POST", "/v1/products/panda-dev/jobs", {
   policy: { timeout_ms: 60000 },
 }, "", { origin: "http://dev.local.test" });
 assert.equal(fsJob.response.status, 201);
+const fsWriteJob = await apiRaw("POST", "/v1/products/panda-dev/jobs", {
+  kind: "fs.write",
+  device_id: fsClaim.device.id,
+  product_id: "panda-dev",
+  input: { path: "/tmp/output.txt", text: "hello", mode: "create_new" },
+  request_key: "explicit-fs-write-allowed",
+  policy: { timeout_ms: 60000 },
+}, "", { origin: "http://dev.local.test" });
+assert.equal(fsWriteJob.response.status, 201);
 await api("DELETE", `/v1/products/panda-dev/authorization?device_id=${encodeURIComponent(fsClaim.device.id)}`, null, "", { origin: "http://dev.local.test" });
 
 const explicitSaasIntent = await api("POST", "/v1/connect-intents", {

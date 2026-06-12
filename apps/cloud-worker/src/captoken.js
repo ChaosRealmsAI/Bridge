@@ -148,10 +148,10 @@ export function canonicalJson(value) {
   if (value === null || ["string", "number", "boolean"].includes(typeof value)) return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
   if (!value || typeof value !== "object") return "{}";
-  // Ordinal (code-unit) sort to stay byte-identical with the Rust L2
-  // BTreeMap ordering; localeCompare is locale-dependent and diverges on
-  // uppercase/underscore keys, which would split the L1/L2 bnd fingerprint.
-  const entries = Object.entries(value).sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
+  // Ordinal code-point sort to stay byte-identical with Rust L2 String
+  // ordering. localeCompare is locale-dependent, and JS UTF-16 `<` diverges
+  // from Rust UTF-8 ordering for supplementary-plane characters.
+  const entries = Object.entries(value).sort(([left], [right]) => codePointCompare(left, right));
   return `{${entries.map(([key, nested]) => `${JSON.stringify(key)}:${canonicalJson(nested)}`).join(",")}}`;
 }
 
@@ -192,12 +192,11 @@ function normalizeCodexBoundary(policy) {
     };
   }));
   workspaceRoots.sort((left, right) => {
-    // Code-unit order to match Rust L2 `roots.sort_by_key(canonical_json)`;
-    // localeCompare diverges on uppercase/underscore/punctuation ids and would
-    // split the L1/L2 bnd fingerprint (rejecting legit jobs under enforce).
+    // Code-point order matches Rust L2 `roots.sort_by_key(canonical_json)`;
+    // localeCompare and JS UTF-16 `<` can split the L1/L2 bnd fingerprint.
     const a = canonicalJson(left);
     const b = canonicalJson(right);
-    return a < b ? -1 : a > b ? 1 : 0;
+    return codePointCompare(a, b);
   });
   return {
     capabilities: normalizeStringList(policy.capabilities),
@@ -230,14 +229,24 @@ function normalizeFsBoundary(policy) {
       path_display: trimNfcKeepSlash(root.path_display || root.pathDisplay || ""),
     };
   }));
-  allowedRoots.sort((left, right) => {
-    const a = canonicalJson(left);
-    const b = canonicalJson(right);
-    return a < b ? -1 : a > b ? 1 : 0;
-  });
+  allowedRoots.sort((left, right) => codePointCompare(canonicalJson(left), canonicalJson(right)));
+  const rawWriteRoots = Array.isArray(fs.write_roots || fs.writeRoots)
+    ? (fs.write_roots || fs.writeRoots)
+    : [];
+  const writeRoots = dedupeByCanonical(rawWriteRoots.map((item, index) => {
+    const root = object(item);
+    const id = trimNfcKeepSlash(root.id || "");
+    return {
+      id: id || `root-${index + 1}`,
+      path_display: trimNfcKeepSlash(root.path_display || root.pathDisplay || ""),
+    };
+  }));
+  writeRoots.sort((left, right) => codePointCompare(canonicalJson(left), canonicalJson(right)));
   return {
     type: "directory_whitelist",
     allowed_roots: allowedRoots,
+    write_roots: writeRoots,
+    writable: fs.writable === true,
     max_bytes: boundedInteger(fs.max_bytes ?? fs.maxBytes, 8388608, 1, 67108864),
     follow_symlinks: fs.follow_symlinks === true || fs.followSymlinks === true,
   };
@@ -266,6 +275,22 @@ function dedupeByCanonical(items) {
     result.push(item);
   }
   return result;
+}
+
+function codePointCompare(left, right) {
+  const a = String(left);
+  const b = String(right);
+  let ai = 0;
+  let bi = 0;
+  while (ai < a.length && bi < b.length) {
+    const ac = a.codePointAt(ai);
+    const bc = b.codePointAt(bi);
+    if (ac !== bc) return ac < bc ? -1 : 1;
+    ai += ac > 0xffff ? 2 : 1;
+    bi += bc > 0xffff ? 2 : 1;
+  }
+  if (ai === a.length && bi === b.length) return 0;
+  return ai === a.length ? -1 : 1;
 }
 
 function trimNfc(value) {
