@@ -131,6 +131,20 @@ export const PRODUCT_REGISTRY = {
     default_policy: {},
     requires_desktop_authorization: true,
   },
+  "panda-notes": {
+    id: "panda-notes",
+    name: "Panda Notes",
+    official_origin: "https://notes.otherline.cc",
+    official_origins: [
+      "https://notes.otherline.cc",
+      "https://bridge.otherline.cc",
+      "http://localhost:8787",
+      "http://127.0.0.1:8787",
+    ],
+    capabilities: ["codex.chat", "data.put", "data.get", "data.query", "data.delete", "fs.read", "fs.write"],
+    default_policy: {},
+    requires_desktop_authorization: true,
+  },
   "otherline": {
     id: "otherline",
     name: "Otherline",
