@@ -6915,12 +6915,17 @@ mod tests {
         assert_eq!(result["denied"], "cap_token");
         assert_eq!(result["reason"], "cap_token_missing");
         env::remove_var("PANDA_BRIDGE_CAPTOKEN_MODE");
+        env::remove_var("PANDA_BRIDGE_CAPTOKEN_NOW_SECONDS");
     }
 
     #[test]
     fn cap_token_epoch_stale_rejects_unexpired_token_in_enforce() {
         let _guard = ENV_LOCK.lock().unwrap();
         reset_policy_env();
+        // Freeze the clock to the vector epoch so the token is unexpired and the
+        // denial is epoch_stale (not expired); do not depend on a prior test
+        // leaking NOW_SECONDS — parallel test order is nondeterministic.
+        set_cap_token_vector_now();
         env::set_var("PANDA_BRIDGE_CAPTOKEN_MODE", "enforce");
         let mut registry = declaration_registry();
         let result = execute_via_registry(

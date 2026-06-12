@@ -112,10 +112,14 @@ pub(crate) fn verify_for_job(credentials: &Credentials, job: &BridgeJob) -> CapT
     };
     let decision = verify_claims(&parsed.claims, &context);
     if decision.is_allow() {
-        if let Some(jti) = decision.jti.as_deref() {
-            let uses = increment_jti(jti);
-            return CapTokenDecision::allow(decision.jti, decision.eph, Some(uses));
-        }
+        let Some(jti) = decision.jti.clone() else {
+            return CapTokenDecision::deny("cap_token_malformed", None, decision.eph);
+        };
+        let max = u64_field(&parsed.claims, "max").unwrap_or(1);
+        let Some(uses) = try_consume_jti(&jti, max) else {
+            return CapTokenDecision::deny("cap_token_replay", Some(jti), decision.eph);
+        };
+        return CapTokenDecision::allow(Some(jti), decision.eph, Some(uses));
     }
     decision
 }
@@ -498,13 +502,16 @@ fn jti_uses(jti: &str) -> u64 {
         .unwrap_or(0)
 }
 
-fn increment_jti(jti: &str) -> u64 {
+fn try_consume_jti(jti: &str, max: u64) -> Option<u64> {
     let Ok(mut store) = jti_store().lock() else {
-        return 1;
+        return None;
     };
     let uses = store.entry(jti.to_string()).or_insert(0);
+    if *uses >= max {
+        return None;
+    }
     *uses += 1;
-    *uses
+    Some(*uses)
 }
 
 #[cfg(test)]
@@ -686,5 +693,12 @@ mod tests {
                 case["name"]
             );
         }
+    }
+
+    #[test]
+    fn try_consume_jti_denies_second_max_one_use() {
+        let jti = "jti_atomic_consume_unit_test";
+        assert_eq!(try_consume_jti(jti, 1), Some(1));
+        assert_eq!(try_consume_jti(jti, 1), None);
     }
 }

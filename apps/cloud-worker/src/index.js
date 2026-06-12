@@ -3,6 +3,8 @@ import {
   authorizationEpoch,
   capTokenMode,
   issueCapToken,
+  parseCompactJws,
+  verifyCapTokenJws,
 } from "./captoken.js";
 import {
   BRIDGE_RUNTIME_CAPABILITY_REGISTRY,
@@ -845,6 +847,9 @@ async function connectorJobs(request, env) {
   if (available <= 0) return json({ items: [], queue: await publicDeviceQueue(env, connector.device.id) }, env);
   const jobs = [];
   for (const row of authorizedRows.slice(0, available)) {
+    const authorization = await authorizationForProduct(env, row.user_id, row.device_id, row.product_id);
+    const l1 = await cloudCapTokenAcceptGate(env, row, authorization);
+    if (!l1.allow) continue;
     const acceptedAt = now();
     const job = await store.update("bridge_jobs", row.id, {
       status: "running",
@@ -1379,6 +1384,105 @@ async function attachCapTokenToJob(env, ctx, { authorization, job, product, user
   return updated || { ...job, cap_token: issued.token };
 }
 
+async function cloudCapTokenAcceptGate(env, job, authorization) {
+  const mode = capTokenMode(env);
+  const token = clean(job.cap_token, 20000);
+  if (!token) {
+    await auditCapTokenL1(env, job, "cap_token.l1_missing", {
+      reason: "cap_token_missing",
+      mode,
+    });
+    return { allow: mode === "shadow", reason: "cap_token_missing", mode };
+  }
+
+  const parsed = parseCompactJws(token);
+  const claims = object(parsed?.claims);
+  const context = {
+    device_id: job.device_id,
+    job: {
+      id: job.id,
+      product_id: job.product_id,
+      request_key: job.request_key,
+      kind: job.kind,
+    },
+    epoch: authorizationEpoch(authorization),
+    authorization_policy: authorization?.policy || {},
+    user_id: job.user_id,
+    now: Math.trunc(Date.now() / 1000),
+    env,
+  };
+  const verified = await verifyCapTokenJws(token, context);
+  if (verified.verdict !== "allow") {
+    await auditCapTokenL1(env, job, "cap_token.l1_denied", {
+      ...capTokenAuditFields(claims),
+      reason: verified.reason || "cap_token_denied",
+      mode,
+    });
+    return { allow: mode === "shadow", reason: verified.reason || "cap_token_denied", mode };
+  }
+
+  const consumed = await consumeCapTokenJti(env, job, claims);
+  if (!consumed.ok) {
+    await auditCapTokenL1(env, job, "cap_token.l1_denied", {
+      ...capTokenAuditFields(claims),
+      reason: consumed.reason,
+      mode,
+    });
+    return { allow: mode === "shadow", reason: consumed.reason, mode };
+  }
+
+  await auditCapTokenL1(env, job, "cap_token.l1_verify_ok", {
+    ...capTokenAuditFields(claims),
+    uses: consumed.uses,
+    mode,
+  });
+  return { allow: true, reason: null, mode };
+}
+
+async function consumeCapTokenJti(env, job, claims) {
+  const jti = clean(claims.jti, 160);
+  const maxUses = Number(claims.max);
+  const exp = Number(claims.exp);
+  if (!jti || !Number.isInteger(maxUses) || maxUses < 1 || !Number.isFinite(exp)) {
+    return { ok: false, reason: "cap_token_malformed" };
+  }
+  try {
+    await storage(env).insert("bridge_cap_token_jti", {
+      jti,
+      job_id: job.id,
+      product_id: job.product_id,
+      device_id: job.device_id,
+      uses: 1,
+      max_uses: maxUses,
+      expires_at: new Date(exp * 1000).toISOString(),
+      created_at: now(),
+      updated_at: now(),
+    });
+    return { ok: true, uses: 1 };
+  } catch (error) {
+    if (isUniqueConflict(error, "cap_token_replay")) {
+      return { ok: false, reason: "cap_token_replay" };
+    }
+    return { ok: false, reason: "cap_token_jti_store_failed" };
+  }
+}
+
+async function auditCapTokenL1(env, job, action, payload) {
+  await audit(env, job.user_id, job.device_id, job.product_id, action, job.id, {
+    ...object(payload),
+    job_id: job.id,
+  });
+}
+
+function capTokenAuditFields(claims) {
+  return {
+    jti: clean(claims.jti, 160) || null,
+    eph: Number.isFinite(Number(claims.eph)) ? Number(claims.eph) : null,
+    exp: Number.isFinite(Number(claims.exp)) ? Number(claims.exp) : null,
+    max: Number.isFinite(Number(claims.max)) ? Number(claims.max) : null,
+  };
+}
+
 async function getDelegatedJob(request, env, productId, jobId) {
   const product = requireOfficialProduct(productId, env);
   const delegation = await requireProductDelegation(request, env, product, "");
@@ -1500,6 +1604,15 @@ async function acceptConnectorJob(request, env, jobId) {
       reason: "device_busy",
       queue: await publicDeviceQueue(env, connector.device.id),
     }, env);
+  }
+  const l1 = await cloudCapTokenAcceptGate(env, job, authorization);
+  if (!l1.allow) {
+    return json({
+      error: l1.reason,
+      job: publicJob(job),
+      accepted: false,
+      reason: l1.reason,
+    }, env, 403);
   }
   const acceptedAt = now();
   const desktopReceivedAt = clean(body.desktop_received_at, 80) || acceptedAt;
@@ -2207,6 +2320,7 @@ async function cleanupExpiredRows(env) {
     "bridge_pairing_codes",
     "bridge_connect_intents",
     "bridge_device_tokens",
+    "bridge_cap_token_jti",
     "bridge_password_attempts",
   ];
   const deleted = {};
@@ -3309,7 +3423,18 @@ function uniqueConflict(tableName, rows, row) {
     ));
     if (duplicate) return "product_delegation_replay";
   }
+  if (tableName === "bridge_cap_token_jti") {
+    const duplicate = rows.find((item) => item.jti === row.jti);
+    if (duplicate) return "cap_token_replay";
+  }
   return "";
+}
+
+function isUniqueConflict(error, code) {
+  return error?.code === code
+    || error?.message === code
+    || error?.status === 409
+    || /unique|duplicate|23505/i.test(String(error?.message || ""));
 }
 
 function selectRows(rows, filters = {}, options = {}) {
