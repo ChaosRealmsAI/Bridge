@@ -81,6 +81,34 @@ export const BRIDGE_RUNTIME_CAPABILITY_REGISTRY = Object.freeze({
     boundary_type: "command_sandbox",
     description: "Run a command in a sandboxed working dir",
   }),
+  "syllo.sessions": Object.freeze({
+    domain: "syllo",
+    verb: "sessions",
+    danger: "low",
+    boundary_type: "opaque_runtime",
+    description: "List local Syllo-observed Codex and Claude sessions",
+  }),
+  "syllo.issue": Object.freeze({
+    domain: "syllo",
+    verb: "issue",
+    danger: "medium",
+    boundary_type: "opaque_runtime",
+    description: "Read and write Syllo project issues through the local CLI",
+  }),
+  "syllo.highlight": Object.freeze({
+    domain: "syllo",
+    verb: "highlight",
+    danger: "medium",
+    boundary_type: "opaque_runtime",
+    description: "Read and write Syllo project highlights through the local CLI",
+  }),
+  "syllo.doc": Object.freeze({
+    domain: "syllo",
+    verb: "doc",
+    danger: "medium",
+    boundary_type: "opaque_runtime",
+    description: "Read and write Syllo project document links through the local CLI",
+  }),
   "saas.custom.run": Object.freeze({
     domain: "saas",
     verb: "custom.run",
@@ -93,7 +121,8 @@ export const BRIDGE_RUNTIME_CAPABILITY_REGISTRY = Object.freeze({
 export const BRIDGE_RUNTIME_CAPABILITIES = Object.freeze(Object.keys(BRIDGE_RUNTIME_CAPABILITY_REGISTRY));
 export const HIGH_TIER_RUNTIME_CAPABILITIES = Object.freeze(["fs.read", "fs.write"]);
 export const CRITICAL_TIER_RUNTIME_CAPABILITIES = Object.freeze(["shell.run"]);
-export const NON_DATA_RUNTIME_CAPABILITIES = Object.freeze(BRIDGE_RUNTIME_CAPABILITIES.filter((kind) => !kind.startsWith("data.") && !HIGH_TIER_RUNTIME_CAPABILITIES.includes(kind) && !CRITICAL_TIER_RUNTIME_CAPABILITIES.includes(kind)));
+export const SYLLO_RUNTIME_CAPABILITIES = Object.freeze(["syllo.sessions", "syllo.issue", "syllo.highlight", "syllo.doc"]);
+export const NON_DATA_RUNTIME_CAPABILITIES = Object.freeze(BRIDGE_RUNTIME_CAPABILITIES.filter((kind) => !kind.startsWith("data.") && !kind.startsWith("syllo.") && !HIGH_TIER_RUNTIME_CAPABILITIES.includes(kind) && !CRITICAL_TIER_RUNTIME_CAPABILITIES.includes(kind)));
 export const OTHERLINE_RUNTIME_CAPABILITIES = Object.freeze([
   ...NON_DATA_RUNTIME_CAPABILITIES,
   "data.put",
@@ -142,6 +171,15 @@ export const PRODUCT_REGISTRY = {
       "http://127.0.0.1:8787",
     ],
     capabilities: ["codex.chat", "data.put", "data.get", "data.query", "data.delete", "fs.read", "fs.write"],
+    default_policy: {},
+    requires_desktop_authorization: true,
+  },
+  "panda-syllo": {
+    id: "panda-syllo",
+    name: "Panda Syllo",
+    official_origin: "http://localhost:8790",
+    official_origins: ["http://localhost:8790", "https://bridge.otherline.cc"],
+    capabilities: ["codex.chat", ...SYLLO_RUNTIME_CAPABILITIES],
     default_policy: {},
     requires_desktop_authorization: true,
   },
@@ -195,10 +233,11 @@ export function scopeDangerMetadataFromCapabilities(capabilities) {
     const entry = BRIDGE_RUNTIME_CAPABILITY_REGISTRY[kind];
     if (!entry) continue;
     domainsByTier[entry.danger].add(entry.domain);
+    const existing = domainBoundaries[entry.domain];
     domainBoundaries[entry.domain] = {
       granted: true,
-      danger: entry.danger,
-      boundary_type: entry.boundary_type,
+      ...(existing && existing.danger !== entry.danger ? {} : { danger: entry.danger }),
+      boundary_type: existing?.boundary_type || entry.boundary_type,
     };
   }
   for (const tier of CAPABILITY_DANGER_LEVELS) {

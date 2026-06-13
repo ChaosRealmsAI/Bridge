@@ -2986,7 +2986,7 @@ function normalizeAuthorizationPolicy(input, product, source_origin) {
         };
       })
     : [{ id: "default", path_display: "[local]/default" }];
-  const capabilities = normalizedPolicyCapabilities(requested, product, policy);
+  const capabilities = normalizedPolicyCapabilities(requested, product, policy, !hasExplicitInput);
   const sandboxFloor = clean(requested.sandbox_floor || requested.sandboxFloor, 80);
   const approvalFloor = clean(requested.approval_policy_floor || requested.approvalPolicyFloor, 80);
   const normalizedSandboxFloor = ["danger-full-access", "workspace-write", "read-only"].includes(sandboxFloor) ? sandboxFloor : "workspace-write";
@@ -3101,8 +3101,8 @@ function normalizeShellLimits(input) {
   };
 }
 
-function normalizedPolicyCapabilities(requested, product, originalPolicy = {}) {
-  if (!Object.hasOwn(requested, "capabilities")) return lowTierCapabilities();
+function normalizedPolicyCapabilities(requested, product, originalPolicy = {}, defaultLowTier = false) {
+  if (defaultLowTier || !Object.hasOwn(requested, "capabilities")) return lowTierCapabilities().filter((kind) => product.capabilities.includes(kind));
   if (!Array.isArray(requested.capabilities)) throw httpError("invalid_authorization_policy", 400);
   let capabilities = [...new Set(requested.capabilities.map((item) => clean(item, 120)).filter(Boolean))];
   const unsupported = capabilities.filter((item) => !SUPPORTED_JOB_KINDS.includes(item));
