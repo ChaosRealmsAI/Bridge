@@ -26,9 +26,12 @@ export type BridgeErrorCode =
   | "invalid_job"
   | "invalid_json"
   | "invalid_origin"
+  | "invalid_relay_envelope"
   | "job_not_found"
+  | "legacy_runtime_api_removed"
   | "local_policy_denied"
   | "not_found"
+  | "plaintext_fields_forbidden"
   | "product_delegation_body_hash_invalid"
   | "product_delegation_not_configured"
   | "product_delegation_replay"
@@ -299,27 +302,46 @@ export type BridgeAuthorizationResponse = {
   cancelled_jobs?: number;
 };
 
-export type BridgeJobInput = {
-  kind?: string;
+export type BridgeRelayEnvelopeInput = {
+  envelopeVersion?: string;
+  envelope_version?: string;
   deviceId?: string;
   device_id?: string;
-  prompt?: string;
-  calls?: JsonValue[];
-  input?: JsonObject;
-  payload?: JsonObject;
-  workspaceRef?: string | null;
-  workspace_ref?: string | null;
+  channelId?: string;
+  channel_id?: string;
+  direction?: "product_to_device" | "device_to_product";
+  seq?: number;
   requestKey?: string | null;
   request_key?: string | null;
-  policy?: JsonObject;
+  ciphertext: string;
+  aad: string;
+  nonce?: string;
+  iv?: string;
+  algorithm?: string;
+  alg?: string;
+  senderKeyId?: string;
+  sender_key_id?: string;
+  recipientKeyId?: string;
+  recipient_key_id?: string;
+  ttlMs?: number;
+  ttl_ms?: number;
+  meta?: JsonObject;
 };
 
-export type BridgeDataJobInput = BridgeJobInput & {
-  ns?: string;
-  key?: string;
-  value?: JsonValue;
-  prefix?: string;
-  limit?: number;
+export type BridgeRelayListInput = {
+  deviceId?: string;
+  device_id?: string;
+  channelId?: string;
+  channel_id?: string;
+  afterSeq?: number;
+  after_seq?: number;
+};
+
+export type BridgeRelayWaitInput = BridgeRelayListInput & {
+  timeoutMs?: number;
+  timeout_ms?: number;
+  intervalMs?: number;
+  interval_ms?: number;
 };
 
 export type BridgeClient = {
@@ -365,24 +387,11 @@ export type BridgeClient = {
     pauseAuthorization(deviceId: string): Promise<BridgeAuthorizationResponse>;
     resumeAuthorization(deviceId: string): Promise<BridgeAuthorizationResponse>;
   };
-  codex: {
-    chat(input: BridgeJobInput): Promise<JsonObject>;
-    run(input: BridgeJobInput): Promise<JsonObject>;
-    rpc(input: BridgeJobInput): Promise<JsonObject>;
-  };
-  data: {
-    put(input: BridgeDataJobInput): Promise<JsonObject>;
-    get(input: BridgeDataJobInput): Promise<JsonObject>;
-    query(input: BridgeDataJobInput): Promise<JsonObject>;
-    delete(input: BridgeDataJobInput): Promise<JsonObject>;
-  };
-  jobs: {
-    create(input?: BridgeJobInput): Promise<JsonObject>;
-    get(jobId: string): Promise<JsonObject>;
-    events(jobId: string, after?: number): Promise<JsonObject>;
-    wait(jobId: string, options?: { timeoutMs?: number; intervalMs?: number }): Promise<JsonObject>;
-    stream(jobId: string, options?: { deviceId?: string; device_id?: string; after?: number; intervalMs?: number; timeoutMs?: number; realtime?: boolean }): AsyncGenerator<JsonObject>;
-    cancel(jobId: string): Promise<JsonObject>;
+  relay: {
+    create(input: BridgeRelayEnvelopeInput): Promise<JsonObject>;
+    list(input?: BridgeRelayListInput): Promise<JsonObject>;
+    ack(envelopeId: string, input?: JsonObject): Promise<JsonObject>;
+    wait(input?: BridgeRelayWaitInput): Promise<JsonObject>;
   };
 };
 

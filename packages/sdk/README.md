@@ -1,6 +1,6 @@
 # @panda-bridge/sdk
 
-Panda Bridge SDK 给产品调用方一套稳定 API：账号级授权、自动桌面连接、本机 Codex 任务、以及后端委托调用。
+Panda Bridge SDK 给产品调用方一套稳定 API：账号级授权、自动桌面连接、opaque relay envelope、以及后端委托调用。
 
 模型：每个 `(产品, 账号)` 只有两个正交开关 —— **授权**（用户控制 `active`/`paused`/删除）和 **连接**（系统全自动，调用方只读 `connected`）。完整接入指南见 [`docs/product-integration.md`](../../docs/product-integration.md)。
 
@@ -26,18 +26,23 @@ state.accounts.forEach((item) => render({
   connected: item.connected, // 全自动连接，只读
 }));
 
-// 2. 就绪后调 Codex（current_account 已帮你选好账号）
+// 2. 就绪后投递密文 envelope（current_account 已帮你选好账号）
 const current = state.current_account;
 if (current?.authorization?.status === "active" && current.connected) {
   const deviceId = current.current_device.id;
-  const created = await bridge.codex.chat({
+  const created = await bridge.relay.create({
     deviceId,
-    prompt: "只回复 OK",
+    channelId: "chan_1",
+    seq: 1,
+    ciphertext: encryptedBody,
+    aad: encodedAad,
+    nonce,
+    algorithm: "AES-GCM-256",
+    senderKeyId: "product-key-1",
+    recipientKeyId: "device-key-1",
     requestKey: crypto.randomUUID(),
   });
-  for await (const event of bridge.jobs.stream(created.job.id, { deviceId })) {
-    console.log(event);
-  }
+  console.log(created.envelope.id);
 }
 ```
 
@@ -115,8 +120,9 @@ await bridge.state({ userId });
 await bridge.createConnectIntent({ userId, deviceName, account });
 await bridge.intentStatus(token, { userId });
 await bridge.authorization.pause/resume/remove({ userId, accountId });
-await bridge.createJob({ userId, deviceId, kind, input, requestKey });
-await bridge.jobEvents(jobId, { userId, deviceId, after });
+await bridge.createRelayEnvelope({ userId, deviceId, channelId, seq, ciphertext, aad, nonce, algorithm, senderKeyId, recipientKeyId, requestKey });
+await bridge.listRelayEnvelopes({ userId, deviceId, channelId, afterSeq });
+await bridge.ackRelayEnvelope(envelopeId, { userId, deviceId });
 ```
 
 签名 payload（server client 内部自动生成）：
@@ -140,7 +146,7 @@ bodySha256
 
 ```js
 try {
-  await bridge.codex.chat({ deviceId, prompt });
+  await bridge.relay.create({ deviceId, channelId, seq, ciphertext, aad, nonce, algorithm, senderKeyId, recipientKeyId });
 } catch (error) {
   // error.status  → HTTP 状态码
   // error.code    → 稳定错误码
@@ -170,6 +176,8 @@ if (error.code === BridgeErrorCodes.product_not_authorized) { /* 走授权流程
 | `product_delegation_timestamp_invalid` | 同步后端时钟 |
 | `product_delegation_replay` | 用新 nonce 重试 |
 | `local_policy_denied` | 桌面端本地拒绝执行 |
+| `legacy_runtime_api_removed` | 旧 job/Codex 接口已迁出，改用 relay envelope |
+| `plaintext_fields_forbidden` | envelope 里包含明文字段，先在产品端加密 |
 | `request_body_too_large` / `invalid_json` / `invalid_content_type` | 修正请求序列化 |
 
 完整错误码表见 [`docs/product-integration.md` 第 5 节](../../docs/product-integration.md)。
@@ -182,6 +190,8 @@ if (error.code === BridgeErrorCodes.product_not_authorized) { /* 走授权流程
 
 ```bash
 node --test packages/sdk/test/
+npm run check:relay-boundary
+npm run check:e2ee
 npm run verify:sdk-examples
 node scripts/verify/spec-traceability.mjs
 ```

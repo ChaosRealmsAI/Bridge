@@ -1,143 +1,37 @@
 export const CAPABILITY_DANGER_LEVELS = Object.freeze(["low", "medium", "high", "critical"]);
 export const CAPABILITY_BOUNDARY_TYPES = Object.freeze([
-  "workspace_sandbox",
-  "namespace_kv",
-  "directory_whitelist",
-  "command_sandbox",
-  "opaque_runtime",
+  "relay_channel",
+  "adapter_boundary",
 ]);
 
-// v3.1+ registered data definitions:
-// fs.read/fs.write -> high / directory_whitelist
-// shell.run -> critical / command_sandbox
+export const RELAY_CAPABILITIES = Object.freeze([
+  "relay.envelope",
+  "relay.ack",
+]);
+
 export const BRIDGE_RUNTIME_CAPABILITY_REGISTRY = Object.freeze({
-  "codex.chat": Object.freeze({
-    domain: "codex",
-    verb: "chat",
+  "relay.envelope": Object.freeze({
+    domain: "relay",
+    verb: "envelope",
     danger: "low",
-    boundary_type: "workspace_sandbox",
-    description: "Codex chat completion",
+    boundary_type: "relay_channel",
+    description: "Opaque encrypted envelope relay",
   }),
-  "codex.run": Object.freeze({
-    domain: "codex",
-    verb: "run",
+  "relay.ack": Object.freeze({
+    domain: "relay",
+    verb: "ack",
     danger: "low",
-    boundary_type: "workspace_sandbox",
-    description: "Codex local run",
-  }),
-  "codex.rpc": Object.freeze({
-    domain: "codex",
-    verb: "rpc",
-    danger: "low",
-    boundary_type: "workspace_sandbox",
-    description: "Codex RPC call",
-  }),
-  "data.put": Object.freeze({
-    domain: "data",
-    verb: "put",
-    danger: "medium",
-    boundary_type: "namespace_kv",
-    description: "Write product-scoped local data",
-  }),
-  "data.get": Object.freeze({
-    domain: "data",
-    verb: "get",
-    danger: "medium",
-    boundary_type: "namespace_kv",
-    description: "Read product-scoped local data",
-  }),
-  "data.query": Object.freeze({
-    domain: "data",
-    verb: "query",
-    danger: "medium",
-    boundary_type: "namespace_kv",
-    description: "Query product-scoped local data",
-  }),
-  "data.delete": Object.freeze({
-    domain: "data",
-    verb: "delete",
-    danger: "medium",
-    boundary_type: "namespace_kv",
-    description: "Delete product-scoped local data",
-  }),
-  "fs.read": Object.freeze({
-    domain: "fs",
-    verb: "read",
-    danger: "high",
-    boundary_type: "directory_whitelist",
-    description: "Read files from explicitly authorized local directories",
-  }),
-  "fs.write": Object.freeze({
-    domain: "fs",
-    verb: "write",
-    danger: "high",
-    boundary_type: "directory_whitelist",
-    description: "Write files inside explicitly authorized local directories",
-  }),
-  "shell.run": Object.freeze({
-    domain: "shell",
-    verb: "run",
-    danger: "critical",
-    boundary_type: "command_sandbox",
-    description: "Run a command in a sandboxed working dir",
-  }),
-  "syllo.sessions": Object.freeze({
-    domain: "syllo",
-    verb: "sessions",
-    danger: "low",
-    boundary_type: "opaque_runtime",
-    description: "List local Syllo-observed Codex and Claude sessions",
-  }),
-  "syllo.issue": Object.freeze({
-    domain: "syllo",
-    verb: "issue",
-    danger: "medium",
-    boundary_type: "opaque_runtime",
-    description: "Read and write Syllo project issues through the local CLI",
-  }),
-  "syllo.highlight": Object.freeze({
-    domain: "syllo",
-    verb: "highlight",
-    danger: "medium",
-    boundary_type: "opaque_runtime",
-    description: "Read and write Syllo project highlights through the local CLI",
-  }),
-  "syllo.doc": Object.freeze({
-    domain: "syllo",
-    verb: "doc",
-    danger: "medium",
-    boundary_type: "opaque_runtime",
-    description: "Read and write Syllo project document links through the local CLI",
-  }),
-  "syllo.chat": Object.freeze({
-    domain: "syllo",
-    verb: "chat",
-    danger: "medium",
-    boundary_type: "opaque_runtime",
-    description: "Run or resume local Codex and Claude chat through the Syllo CLI",
-  }),
-  "saas.custom.run": Object.freeze({
-    domain: "saas",
-    verb: "custom.run",
-    danger: "high",
-    boundary_type: "opaque_runtime",
-    description: "Product-defined runtime request",
+    boundary_type: "relay_channel",
+    description: "Opaque encrypted envelope acknowledgement",
   }),
 });
 
 export const BRIDGE_RUNTIME_CAPABILITIES = Object.freeze(Object.keys(BRIDGE_RUNTIME_CAPABILITY_REGISTRY));
-export const HIGH_TIER_RUNTIME_CAPABILITIES = Object.freeze(["fs.read", "fs.write"]);
-export const CRITICAL_TIER_RUNTIME_CAPABILITIES = Object.freeze(["shell.run"]);
-export const SYLLO_RUNTIME_CAPABILITIES = Object.freeze(["syllo.sessions", "syllo.issue", "syllo.highlight", "syllo.doc", "syllo.chat"]);
-export const NON_DATA_RUNTIME_CAPABILITIES = Object.freeze(BRIDGE_RUNTIME_CAPABILITIES.filter((kind) => !kind.startsWith("data.") && !kind.startsWith("syllo.") && !HIGH_TIER_RUNTIME_CAPABILITIES.includes(kind) && !CRITICAL_TIER_RUNTIME_CAPABILITIES.includes(kind)));
-export const OTHERLINE_RUNTIME_CAPABILITIES = Object.freeze([
-  ...NON_DATA_RUNTIME_CAPABILITIES,
-  "data.put",
-  "data.get",
-  "data.query",
-  "data.delete",
-  ...HIGH_TIER_RUNTIME_CAPABILITIES,
-]);
+export const HIGH_TIER_RUNTIME_CAPABILITIES = Object.freeze([]);
+export const CRITICAL_TIER_RUNTIME_CAPABILITIES = Object.freeze([]);
+export const SYLLO_RUNTIME_CAPABILITIES = Object.freeze([]);
+export const NON_DATA_RUNTIME_CAPABILITIES = Object.freeze([...BRIDGE_RUNTIME_CAPABILITIES]);
+export const OTHERLINE_RUNTIME_CAPABILITIES = Object.freeze([...BRIDGE_RUNTIME_CAPABILITIES]);
 
 export const PRODUCT_REGISTRY = {
   "panda-chat": {
@@ -145,7 +39,8 @@ export const PRODUCT_REGISTRY = {
     name: "Panda Chat",
     official_origin: "https://bridge.otherline.cc",
     official_origins: ["https://bridge.otherline.cc", "https://panda.otherline.cc", "https://pandart.cc", "https://www.pandart.cc"],
-    capabilities: [...NON_DATA_RUNTIME_CAPABILITIES],
+    capabilities: [...RELAY_CAPABILITIES],
+    adapter_boundary: { adapter_id: "panda-chat", adapter_owner: "product" },
     default_policy: {},
     requires_desktop_authorization: true,
   },
@@ -154,7 +49,8 @@ export const PRODUCT_REGISTRY = {
     name: "Panda Dev",
     official_origin: "https://bridge.otherline.cc",
     official_origins: ["https://bridge.otherline.cc", "https://dev.otherline.cc"],
-    capabilities: [...NON_DATA_RUNTIME_CAPABILITIES, ...HIGH_TIER_RUNTIME_CAPABILITIES],
+    capabilities: [...RELAY_CAPABILITIES],
+    adapter_boundary: { adapter_id: "panda-dev", adapter_owner: "product" },
     default_policy: {},
     requires_desktop_authorization: true,
   },
@@ -163,7 +59,8 @@ export const PRODUCT_REGISTRY = {
     name: "Panda Spec",
     official_origin: "https://bridge.otherline.cc",
     official_origins: ["https://bridge.otherline.cc", "https://spec.otherline.cc"],
-    capabilities: [...NON_DATA_RUNTIME_CAPABILITIES],
+    capabilities: [...RELAY_CAPABILITIES],
+    adapter_boundary: { adapter_id: "panda-spec", adapter_owner: "product" },
     default_policy: {},
     requires_desktop_authorization: true,
   },
@@ -177,7 +74,8 @@ export const PRODUCT_REGISTRY = {
       "http://localhost:8787",
       "http://127.0.0.1:8787",
     ],
-    capabilities: ["codex.chat", "data.put", "data.get", "data.query", "data.delete", "fs.read", "fs.write"],
+    capabilities: [...RELAY_CAPABILITIES],
+    adapter_boundary: { adapter_id: "panda-notes", adapter_owner: "product" },
     default_policy: {},
     requires_desktop_authorization: true,
   },
@@ -186,16 +84,18 @@ export const PRODUCT_REGISTRY = {
     name: "Panda Syllo",
     official_origin: "http://localhost:8790",
     official_origins: ["http://localhost:8790", "https://bridge.otherline.cc"],
-    capabilities: ["codex.chat", ...SYLLO_RUNTIME_CAPABILITIES],
+    capabilities: [...RELAY_CAPABILITIES],
+    adapter_boundary: { adapter_id: "panda-syllo", adapter_owner: "product" },
     default_policy: {},
     requires_desktop_authorization: true,
   },
-  "otherline": {
+  otherline: {
     id: "otherline",
     name: "Otherline",
     official_origin: "https://otherline.cc",
     official_origins: ["https://otherline.cc", "https://app.test.example"],
-    capabilities: [...OTHERLINE_RUNTIME_CAPABILITIES],
+    capabilities: [...RELAY_CAPABILITIES],
+    adapter_boundary: { adapter_id: "otherline", adapter_owner: "product" },
     default_policy: {},
     requires_desktop_authorization: true,
   },
@@ -240,11 +140,10 @@ export function scopeDangerMetadataFromCapabilities(capabilities) {
     const entry = BRIDGE_RUNTIME_CAPABILITY_REGISTRY[kind];
     if (!entry) continue;
     domainsByTier[entry.danger].add(entry.domain);
-    const existing = domainBoundaries[entry.domain];
     domainBoundaries[entry.domain] = {
       granted: true,
-      ...(existing && existing.danger !== entry.danger ? {} : { danger: entry.danger }),
-      boundary_type: existing?.boundary_type || entry.boundary_type,
+      danger: entry.danger,
+      boundary_type: entry.boundary_type,
     };
   }
   for (const tier of CAPABILITY_DANGER_LEVELS) {
@@ -283,6 +182,7 @@ function publicProduct(product, origin) {
     official_origin: product.official_origin,
     official_origins: [...(product.official_origins || [product.official_origin])],
     capabilities: [...product.capabilities],
+    adapter_boundary: structuredClone(product.adapter_boundary || {}),
     default_policy: structuredClone(product.default_policy),
     requires_desktop_authorization: product.requires_desktop_authorization !== false,
   };

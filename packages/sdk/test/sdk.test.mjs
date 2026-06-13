@@ -19,18 +19,44 @@ const client = createBridgeClient({
   productId: "panda-chat",
   fetch: async (url, init) => {
     calls.push({ url, init });
-    return new Response(JSON.stringify({ job: { id: "job_1", status: "queued" } }), {
+    return new Response(JSON.stringify({ envelope: { id: "env_1", delivery_status: "queued" } }), {
       status: 201,
       headers: { "content-type": "application/json" },
     });
   },
 });
 
-const job = await client.codex.run({ deviceId: "dev_1", prompt: "hello" });
-assert.equal(job.job.id, "job_1");
-assert.equal(calls[0].url, "https://api.example.test/v1/products/panda-chat/jobs");
-assert.equal(JSON.parse(calls[0].init.body).kind, "codex.run");
-assert.deepEqual(JSON.parse(calls[0].init.body).policy, {});
+const envelope = await client.relay.create({
+  deviceId: "dev_1",
+  channelId: "chan_1",
+  ciphertext: "base64:ciphertext",
+  aad: "base64:aad",
+  nonce: "base64:nonce",
+  algorithm: "Noise_XX_25519_ChaChaPoly_BLAKE2s",
+  senderKeyId: "product-key-1",
+  recipientKeyId: "device-key-1",
+  requestKey: "rq_1",
+  meta: { adapter_id: "panda-syllo" },
+});
+assert.equal(envelope.envelope.id, "env_1");
+assert.equal(calls[0].url, "https://api.example.test/v1/products/panda-chat/relay/envelopes");
+assert.deepEqual(JSON.parse(calls[0].init.body), {
+  envelope_version: "relay-envelope-v1",
+  product_id: "panda-chat",
+  device_id: "dev_1",
+  channel_id: "chan_1",
+  direction: "product_to_device",
+  seq: 0,
+  request_key: "rq_1",
+  ciphertext: "base64:ciphertext",
+  aad: "base64:aad",
+  nonce: "base64:nonce",
+  algorithm: "Noise_XX_25519_ChaChaPoly_BLAKE2s",
+  sender_key_id: "product-key-1",
+  recipient_key_id: "device-key-1",
+  ttl_ms: 300000,
+  meta: { adapter_id: "panda-syllo" },
+});
 
 assert.equal(bridgeDesktopInstallDefaults.macos.fileName, "panda-bridge-macos.dmg");
 assert.equal(
@@ -75,7 +101,7 @@ const directState = bridgeStateModel({
   install: stateInstall(),
   accounts: [{
     account: { id: "acct_1", email: "panda@example.test" },
-    authorization: { id: "auth_1", status: "active", policy: { capabilities: ["codex.chat"] } },
+    authorization: { id: "auth_1", status: "active", policy: { capabilities: ["relay.envelope"] } },
     connected: true,
     current_device: { id: "dev_1", device_name: "Mac Studio", status: "online" },
   }],
@@ -102,7 +128,7 @@ assert.equal(legacyOffline.bridge_state, undefined);
 const delegatedReady = bridgeDelegatedAccountStatusModel({
   devices: [{ id: "dev_1", device_name: "Mac Studio", status: "online" }],
   authorized_devices: [{ id: "dev_1", device_name: "Mac Studio", status: "online" }],
-  authorizations: [{ id: "auth_1", device_id: "dev_1", status: "active", policy: { capabilities: ["codex.chat"] } }],
+  authorizations: [{ id: "auth_1", device_id: "dev_1", status: "active", policy: { capabilities: ["relay.envelope"] } }],
   selected_device: { id: "dev_1", device_name: "Mac Studio", status: "online" },
   authorization: { id: "auth_1", device_id: "dev_1", status: "active" },
 });
@@ -148,7 +174,7 @@ const defaultIntentPolicy = JSON.parse(calls[1].init.body).policy;
 assert.equal(defaultIntentPolicy.version, "AUTH-SCOPE-v2");
 assert.equal(defaultIntentPolicy.preset, "workspace-default");
 assert.equal(defaultIntentPolicy.request_source, "sdk_default_low_tier");
-assert.deepEqual(defaultIntentPolicy.capabilities, ["codex.chat", "codex.run", "codex.rpc"]);
+assert.deepEqual(defaultIntentPolicy.capabilities, ["relay.envelope", "relay.ack"]);
 assert.deepEqual(defaultIntentPolicy.workspace_roots, [{ id: "default", path_display: "[local]/default" }]);
 assert.equal(defaultIntentPolicy.sandbox_floor, "workspace-write");
 assert.equal(defaultIntentPolicy.approval_policy_floor, "on-request");
@@ -172,32 +198,12 @@ await fullAccessClient.connect.createIntent({ permissions: { fullAccess: true } 
 const explicitFullAccessPolicy = JSON.parse(fullAccessCalls[0].init.body).policy;
 assert.equal(explicitFullAccessPolicy.version, "AUTH-SCOPE-v2");
 assert.equal(explicitFullAccessPolicy.preset, "full-access");
-assert.ok(explicitFullAccessPolicy.capabilities.includes("saas.custom.run"));
+assert.deepEqual(explicitFullAccessPolicy.capabilities, ["relay.envelope", "relay.ack"]);
 assert.equal(explicitFullAccessPolicy.workspace_roots[0].allow_all, true);
 assert.equal(explicitFullAccessPolicy.sandbox_floor, "danger-full-access");
 assert.equal(explicitFullAccessPolicy.approval_policy_floor, "never");
 assert.equal(explicitFullAccessPolicy.allow_approval_never, true);
 assert.equal(explicitFullAccessPolicy.allow_developer_instructions, true);
-assert.ok(explicitFullAccessPolicy.capabilities.includes("data.put"));
-assert.ok(explicitFullAccessPolicy.capabilities.includes("data.delete"));
-
-const dataCalls = [];
-const dataClient = createBridgeClient({
-  apiBase: "https://api.example.test",
-  productId: "otherline",
-  fetch: async (url, init) => {
-    dataCalls.push({ url, init });
-    return new Response(JSON.stringify({ job: { id: "job_data", status: "queued" } }), {
-      status: 201,
-      headers: { "content-type": "application/json" },
-    });
-  },
-});
-await dataClient.data.put({ deviceId: "dev_1", key: "settings/theme", value: { theme: "dark" } });
-const dataJob = JSON.parse(dataCalls[0].init.body);
-assert.equal(dataCalls[0].url, "https://api.example.test/v1/products/otherline/jobs");
-assert.equal(dataJob.kind, "data.put");
-assert.deepEqual(dataJob.input, { key: "settings/theme", value: { theme: "dark" } });
 
 await client.auth.share();
 assert.equal(calls[2].url, "https://api.example.test/v1/sessions/share");
@@ -221,7 +227,7 @@ const authClient = createBridgeClient({
     authCalls.push({ url, init });
     const body = init.body ? JSON.parse(init.body) : {};
     return new Response(JSON.stringify({
-      authorization: { id: "auth_1", device_id: "dev_1", status: body.status || "active", policy: { capabilities: ["codex.chat"] } },
+      authorization: { id: "auth_1", device_id: "dev_1", status: body.status || "active", policy: { capabilities: ["relay.envelope"] } },
       device: { id: "dev_1", status: body.status === "paused" ? "online" : "online" },
       cancelled_jobs: init.method === "DELETE" ? 2 : 0,
     }), {
@@ -269,46 +275,44 @@ const customClient = createBridgeClient({
   productId: "panda-chat",
   fetch: async (url, init) => {
     customCalls.push({ url, init });
-    return new Response(JSON.stringify({ job: { id: "job_custom_1", status: "queued" } }), {
+    return new Response(JSON.stringify({ envelope: { id: "env_custom_1", delivery_status: "queued" } }), {
       status: 201,
       headers: { "content-type": "application/json" },
     });
   },
 });
 
-await customClient.jobs.create({
-  kind: "saas.custom.run",
+await customClient.relay.create({
   deviceId: "dev_custom_1",
-  input: { task: "passthrough" },
-  policy: {
-    sandbox: "danger-full-access",
-    approvalPolicy: "never",
-    cwd: "/tmp/x",
-    developerInstructions: "hi",
-    token_budget: 9999999,
-    timeout_ms: 3600000,
-  },
+  channelId: "chan_custom_1",
+  ciphertext: "base64:custom",
+  aad: "base64:aad",
+  nonce: "base64:nonce",
+  algorithm: "XChaCha20-Poly1305",
+  senderKeyId: "product-key-1",
+  recipientKeyId: "device-key-1",
 });
-assert.equal(customCalls[0].url, "https://api.example.test/v1/products/panda-chat/jobs");
+assert.equal(customCalls[0].url, "https://api.example.test/v1/products/panda-chat/relay/envelopes");
 assert.deepEqual(JSON.parse(customCalls[0].init.body), {
-  kind: "saas.custom.run",
+  envelope_version: "relay-envelope-v1",
   product_id: "panda-chat",
   device_id: "dev_custom_1",
-  workspace_ref: null,
+  channel_id: "chan_custom_1",
+  direction: "product_to_device",
+  seq: 0,
   request_key: null,
-  input: { task: "passthrough" },
-  policy: {
-    sandbox: "danger-full-access",
-    approvalPolicy: "never",
-    cwd: "/tmp/x",
-    developerInstructions: "hi",
-    token_budget: 9999999,
-    timeout_ms: 3600000,
-  },
+  ciphertext: "base64:custom",
+  aad: "base64:aad",
+  nonce: "base64:nonce",
+  algorithm: "XChaCha20-Poly1305",
+  sender_key_id: "product-key-1",
+  recipient_key_id: "device-key-1",
+  ttl_ms: 300000,
+  meta: {},
 });
 
 const unauthPreflight = mockClient([
-  { body: { ok: true, protocol: "panda-bridge-protocol-v0.1" } },
+  { body: { ok: true, protocol: "panda-bridge-protocol-v0.2" } },
   { status: 401, body: { authenticated: false, error: "unauthorized" } },
 ]);
 const unauthPreflightResult = await unauthPreflight.client.preflight();
@@ -320,7 +324,7 @@ assert.deepEqual(unauthPreflight.calls.map((call) => call.path), ["/v1/diagnosti
 assert.ok(unauthPreflight.calls.every((call) => call.method === "GET"));
 
 const readyPreflight = mockClient([
-  { body: { ok: true, protocol: "panda-bridge-protocol-v0.1" } },
+  { body: { ok: true, protocol: "panda-bridge-protocol-v0.2" } },
   { body: { authenticated: true, user: { id: "user_1" } } },
   { body: { items: [{ id: "dev_1", status: "online", device_name: "Mac" }] } },
   { body: { authorization: { device_id: "dev_1", product_id: "panda-chat", status: "active" } } },
@@ -428,7 +432,8 @@ await assert.rejects(
     assert.equal(error instanceof BridgeError, true);
     assert.equal(BridgeErrorCodes.authorization_paused, "authorization_paused");
     assert.equal(BridgeErrorCodes.device_offline, "device_offline");
-    assert.equal(BridgeErrorCodes.unsupported_job_kind, "unsupported_job_kind");
+    assert.equal(BridgeErrorCodes.legacy_runtime_api_removed, "legacy_runtime_api_removed");
+    assert.equal(BridgeErrorCodes.plaintext_fields_forbidden, "plaintext_fields_forbidden");
     assert.equal(BridgeErrorCodes.not_found, "not_found");
     assert.equal(error.code, "authorization_paused");
     // .code stays the raw code; .message is a human-readable mapping when the
@@ -449,7 +454,7 @@ function bridgeStateFixture(status, connected) {
     install: stateInstall(),
     accounts: [{
       account: { id: "acct_1", email: "panda@example.test" },
-      authorization: { id: "auth_1", status, policy: { capabilities: ["codex.chat"] } },
+      authorization: { id: "auth_1", status, policy: { capabilities: ["relay.envelope"] } },
       connected,
       current_device: {
         id: "dev_1",

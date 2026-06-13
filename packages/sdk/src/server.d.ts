@@ -36,15 +36,35 @@ export type BridgeServerConnectIntentInput = BridgeServerUserInput & {
   permissions?: BridgeAuthorizationPolicy;
 };
 
-export type BridgeServerJobInput = BridgeServerUserInput & {
-  kind: string;
-  input?: JsonObject;
-  payload?: JsonObject;
-  policy?: JsonObject;
-  workspaceRef?: string | null;
-  workspace_ref?: string | null;
+export type BridgeServerRelayEnvelopeInput = BridgeServerUserInput & {
+  envelopeVersion?: string;
+  envelope_version?: string;
+  channelId?: string;
+  channel_id?: string;
+  direction?: "product_to_device" | "device_to_product";
+  seq?: number;
   requestKey?: string | null;
   request_key?: string | null;
+  ciphertext: string;
+  aad: string;
+  nonce?: string;
+  iv?: string;
+  algorithm?: string;
+  alg?: string;
+  senderKeyId?: string;
+  sender_key_id?: string;
+  recipientKeyId?: string;
+  recipient_key_id?: string;
+  ttlMs?: number;
+  ttl_ms?: number;
+  meta?: JsonObject;
+};
+
+export type BridgeServerRelayListInput = BridgeServerUserInput & {
+  channelId?: string;
+  channel_id?: string;
+  afterSeq?: number;
+  after_seq?: number;
 };
 
 export type BridgeServerAuthorizationApi = {
@@ -67,8 +87,9 @@ export type BridgeServerClient = {
   pause(input: BridgeServerAuthorizationInput): Promise<BridgeAuthorizationResponse>;
   resume(input: BridgeServerAuthorizationInput): Promise<BridgeAuthorizationResponse>;
   revoke(input: BridgeServerAuthorizationInput): Promise<BridgeAuthorizationResponse>;
-  createJob(input: BridgeServerJobInput): Promise<JsonObject>;
-  jobEvents(jobId: string, input: BridgeServerUserInput & { after?: number }): Promise<JsonObject>;
+  createRelayEnvelope(input: BridgeServerRelayEnvelopeInput): Promise<JsonObject>;
+  listRelayEnvelopes(input: BridgeServerRelayListInput): Promise<JsonObject>;
+  ackRelayEnvelope(envelopeId: string, input: BridgeServerUserInput): Promise<JsonObject>;
 };
 
 export function createBridgeServerClient(options: BridgeServerClientOptions): BridgeServerClient;

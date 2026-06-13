@@ -14,6 +14,7 @@ use super::{
     GrantedBoundary,
 };
 
+// Legacy Syllo vertical adapter kept for migration tests; Bridge runtime routes via AdapterRouter.
 pub struct SylloConnector;
 
 impl SylloConnector {
@@ -192,7 +193,11 @@ fn chat_args(
         "--project".to_string(),
         project.to_string_lossy().to_string(),
     ];
-    push_optional(&mut args, "--resume", string_opt(input, "resume_session_id"));
+    push_optional(
+        &mut args,
+        "--resume",
+        string_opt(input, "resume_session_id"),
+    );
     push_pair(&mut args, "--prompt", &prompt);
     push_optional(&mut args, "--model", string_opt(input, "model"));
     args.push("--json".to_string());

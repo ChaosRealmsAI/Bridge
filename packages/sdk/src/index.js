@@ -25,9 +25,12 @@ export const BridgeErrorCodes = Object.freeze({
   invalid_job: "invalid_job",
   invalid_json: "invalid_json",
   invalid_origin: "invalid_origin",
+  invalid_relay_envelope: "invalid_relay_envelope",
   job_not_found: "job_not_found",
+  legacy_runtime_api_removed: "legacy_runtime_api_removed",
   local_policy_denied: "local_policy_denied",
   not_found: "not_found",
+  plaintext_fields_forbidden: "plaintext_fields_forbidden",
   product_delegation_body_hash_invalid: "product_delegation_body_hash_invalid",
   product_delegation_not_configured: "product_delegation_not_configured",
   product_delegation_replay: "product_delegation_replay",
@@ -71,9 +74,12 @@ export const BRIDGE_ERROR_MESSAGES = Object.freeze({
   invalid_job: "任务参数不合法",
   invalid_json: "请求体不是合法 JSON",
   invalid_origin: "请求来源不在该产品的 origin 白名单内",
+  invalid_relay_envelope: "加密 envelope 参数不合法",
   job_not_found: "找不到该任务",
+  legacy_runtime_api_removed: "旧任务接口已迁出，请改用 relay envelope 接口",
   local_policy_denied: "桌面端本地策略拒绝了该越权任务",
   not_found: "请求的资源不存在",
+  plaintext_fields_forbidden: "relay envelope 不能包含明文业务字段",
   product_delegation_body_hash_invalid: "请求体哈希与实际请求体不一致",
   product_delegation_not_configured: "云端未为该产品配置委托 secret",
   product_delegation_replay: "该 nonce 已被使用，请用新的 nonce 重试",
@@ -373,43 +379,13 @@ export function createBridgeClient(options = {}) {
       pauseAuthorization: (deviceId) => authorization.pause({ deviceId }),
       resumeAuthorization: (deviceId) => authorization.resume({ deviceId }),
     },
-    codex: {
-      chat: (input) => createJob(request, productId, { ...input, kind: "codex.chat" }),
-      run: (input) => createJob(request, productId, { ...input, kind: "codex.run" }),
-      rpc: (input) => createJob(request, productId, { ...input, kind: "codex.rpc" }),
-    },
-    data: {
-      put: (input = {}) => createJob(request, productId, dataJob("data.put", input)),
-      get: (input = {}) => createJob(request, productId, dataJob("data.get", input)),
-      query: (input = {}) => createJob(request, productId, dataJob("data.query", input)),
-      delete: (input = {}) => createJob(request, productId, dataJob("data.delete", input)),
-    },
-    jobs: {
-      create: (input = {}) => createJob(request, productId, input),
-      get: (jobId) => request("GET", `/v1/jobs/${encodeURIComponent(jobId)}`),
-      events: (jobId, after = 0) =>
-        request("GET", `/v1/jobs/${encodeURIComponent(jobId)}/events?after=${encodeURIComponent(String(after))}`),
-      wait: (jobId, options = {}) => waitForJob(request, jobId, options),
-      stream: (jobId, options = {}) => streamEvents(request, apiBase, jobId, options),
-      cancel: (jobId) => request("POST", `/v1/jobs/${encodeURIComponent(jobId)}/cancel`),
+    relay: {
+      create: (input = {}) => createRelayEnvelope(request, productId, input),
+      list: (input = {}) => listRelayEnvelopes(request, productId, input),
+      ack: (envelopeId, input = {}) => ackRelayEnvelope(request, productId, envelopeId, input),
+      wait: (input = {}) => waitForRelayEnvelope(request, productId, input),
     },
   };
-}
-
-function dataJob(kind, input = {}) {
-  return {
-    ...input,
-    kind,
-    input: input.input || input.payload || dataOperationInput(input),
-  };
-}
-
-function dataOperationInput(input = {}) {
-  const out = {};
-  for (const key of ["ns", "key", "value", "prefix", "limit"]) {
-    if (Object.hasOwn(input, key)) out[key] = input[key];
-  }
-  return out;
 }
 
 function bridgeDefaultAuthorizationPolicy(overrides = {}) {
@@ -417,7 +393,7 @@ function bridgeDefaultAuthorizationPolicy(overrides = {}) {
     version: "AUTH-SCOPE-v2",
     preset: "workspace-default",
     request_source: "sdk_default_low_tier",
-    capabilities: ["codex.chat", "codex.run", "codex.rpc"],
+    capabilities: ["relay.envelope", "relay.ack"],
     workspace_roots: [{
       id: "default",
       path_display: "[local]/default",
@@ -437,7 +413,7 @@ function bridgeFullAccessAuthorizationPolicy(overrides = {}) {
     version: "AUTH-SCOPE-v2",
     preset: "full-access",
     request_source: "sdk_default_full_access",
-    capabilities: ["codex.chat", "codex.run", "codex.rpc", "data.put", "data.get", "data.query", "data.delete", "saas.custom.run"],
+    capabilities: ["relay.envelope", "relay.ack"],
     workspace_roots: [{
       id: "all",
       path_display: "All local files",
@@ -1020,57 +996,60 @@ function preflightAction(code) {
   return { code, label: labels[code] || "Review Bridge setup." };
 }
 
-async function createJob(request, productId, input) {
-  const deviceId = input.deviceId || input.device_id;
-  const jobInput = input.input || input.payload || { prompt: input.prompt, calls: input.calls };
-  const normalized = normalizeBridgeJob({
-    ...input,
-    productId,
-    deviceId,
-    input: jobInput,
-    policy: input.policy || {},
-  });
-  const validation = validateBridgeJob(normalized);
-  if (!validation.ok) {
-    const error = new Error(`invalid_bridge_job: ${validation.errors.join(",")}`);
-    error.errors = validation.errors;
-    throw error;
+function createRelayEnvelope(request, productId, input = {}) {
+  return request("POST", `/v1/products/${encodeURIComponent(productId)}/relay/envelopes`, normalizeRelayEnvelopeInput(input, productId, "product_to_device"));
+}
+
+function listRelayEnvelopes(request, productId, input = {}) {
+  const params = new URLSearchParams();
+  const deviceId = stringValue(input.deviceId || input.device_id, 200);
+  const channelId = stringValue(input.channelId || input.channel_id, 200);
+  const afterSeq = input.afterSeq ?? input.after_seq;
+  if (deviceId) params.set("device_id", deviceId);
+  if (channelId) params.set("channel_id", channelId);
+  if (afterSeq != null) params.set("after_seq", String(afterSeq));
+  const query = params.toString();
+  return request("GET", `/v1/products/${encodeURIComponent(productId)}/relay/envelopes${query ? `?${query}` : ""}`);
+}
+
+function ackRelayEnvelope(request, productId, envelopeId, input = {}) {
+  return request("POST", `/v1/products/${encodeURIComponent(productId)}/relay/envelopes/${encodeURIComponent(envelopeId)}/ack`, objectValue(input));
+}
+
+async function waitForRelayEnvelope(request, productId, input = {}) {
+  const timeoutMs = boundedNumber(input.timeoutMs ?? input.timeout_ms, 30000, 1, 600000);
+  const intervalMs = boundedNumber(input.intervalMs ?? input.interval_ms, 1000, 100, 10000);
+  const started = Date.now();
+  for (;;) {
+    const payload = await listRelayEnvelopes(request, productId, input);
+    const items = Array.isArray(payload.items) ? payload.items : [];
+    if (items.length) return items[0];
+    if (Date.now() - started >= timeoutMs) {
+      throw new BridgeError("bridge_ready_timeout", { code: "bridge_ready_timeout", status: 408 });
+    }
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
   }
-  return request("POST", `/v1/products/${encodeURIComponent(productId)}/jobs`, validation.job);
 }
 
-function normalizeBridgeJob(input = {}) {
-  const kind = normalizeKind(input.kind || input.job_kind);
-  const productId = stringValue(input.productId || input.product_id, 80);
-  const deviceId = stringValue(input.deviceId || input.device_id || input.connector_id, 80);
-  const workspaceRef = stringPassthrough(input.workspaceRef ?? input.workspace_ref);
-  const requestKey = stringValue(input.requestKey || input.request_key, 160);
+function normalizeRelayEnvelopeInput(input = {}, productId = "", direction = "product_to_device") {
+  const value = objectValue(input);
   return {
-    kind,
-    product_id: productId,
-    device_id: deviceId,
-    workspace_ref: workspaceRef || null,
-    request_key: requestKey || null,
-    input: objectValue(input.input || input.payload),
-    policy: normalizePolicy(input.policy || {}),
+    envelope_version: stringValue(value.envelopeVersion || value.envelope_version, 80) || "relay-envelope-v1",
+    product_id: stringValue(value.productId || value.product_id, 120) || productId,
+    device_id: stringValue(value.deviceId || value.device_id || value.connector_id, 200),
+    channel_id: stringValue(value.channelId || value.channel_id, 200),
+    direction: stringValue(value.direction, 80) || direction,
+    seq: boundedNumber(value.seq, 0, 0, Number.MAX_SAFE_INTEGER),
+    request_key: stringValue(value.requestKey || value.request_key, 180) || null,
+    ciphertext: stringValue(value.ciphertext, 1024 * 1024),
+    aad: stringValue(value.aad, 8192),
+    nonce: stringValue(value.nonce || value.iv, 256),
+    algorithm: stringValue(value.algorithm || value.alg, 120),
+    sender_key_id: stringValue(value.senderKeyId || value.sender_key_id, 160),
+    recipient_key_id: stringValue(value.recipientKeyId || value.recipient_key_id, 160),
+    ttl_ms: boundedNumber(value.ttlMs ?? value.ttl_ms, 5 * 60 * 1000, 1000, 24 * 60 * 60 * 1000),
+    meta: objectValue(value.meta),
   };
-}
-
-function validateBridgeJob(input = {}) {
-  const job = normalizeBridgeJob(input);
-  const errors = [];
-  if (!job.kind) errors.push("missing_kind");
-  if (!job.product_id) errors.push("missing_product_id");
-  if (!job.device_id) errors.push("missing_device_id");
-  return { ok: errors.length === 0, errors, job };
-}
-
-function normalizeKind(kind) {
-  return stringPassthrough(kind);
-}
-
-function normalizePolicy(input = {}) {
-  return objectValue(input);
 }
 
 function normalizeAuthorizationPolicyRequest(input = {}) {
@@ -1105,6 +1084,12 @@ function stringValue(value, max = 1000) {
 
 function stringPassthrough(value) {
   return typeof value === "string" ? value : "";
+}
+
+function boundedNumber(value, fallback, min, max) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.max(min, Math.min(max, Math.trunc(number)));
 }
 
 async function waitForJob(request, jobId, options = {}) {

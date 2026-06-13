@@ -1,4 +1,11 @@
-import { BRIDGE_PROTOCOL_VERSION, EVENT_TYPES, bridgeEvent, validateBridgeJob } from "@panda-bridge/protocol";
+import {
+  BRIDGE_PROTOCOL_VERSION,
+  EVENT_TYPES,
+  bridgeEvent,
+  publicRelayEnvelope,
+  relayEnvelopeRecord,
+  validateRelayEnvelope,
+} from "@panda-bridge/protocol";
 import {
   authorizationEpoch,
   capTokenMode,
@@ -24,6 +31,7 @@ const AUTHORIZATION_IMPORT_PROOF_TTL_MS = 1000 * 60 * 5;
 const DEVICE_ONLINE_GRACE_MS = 1000 * 90;
 const DEVICE_HEARTBEAT_INTERVAL_MS = 1000 * 30;
 const BRIDGE_JOB_RETENTION_DAYS = 7;
+const RELAY_ENVELOPE_TTL_MS = 1000 * 60 * 5;
 const PASSWORD_MAX_FAILED_ATTEMPTS = 5;
 const PASSWORD_ATTEMPT_WINDOW_MS = 1000 * 60 * 15;
 const PASSWORD_LOCK_MS = 1000 * 60 * 15;
@@ -95,7 +103,11 @@ export default {
       const connectorAuthMatch = path.match(/^\/v1\/connectors\/products\/([^/]+)\/authorization$/);
       if (connectorAuthMatch && request.method === "PATCH") return await updateConnectorAuthorization(request, env, decodeURIComponent(connectorAuthMatch[1]));
       if (connectorAuthMatch && request.method === "DELETE") return await revokeConnectorAuthorization(request, env, decodeURIComponent(connectorAuthMatch[1]));
-      if (path === "/v1/connectors/jobs" && request.method === "GET") return await connectorJobs(request, env);
+      if (path === "/v1/connectors/jobs" && request.method === "GET") return legacyRuntimeApiRemoved(env);
+      if (path === "/v1/connectors/relay/envelopes" && request.method === "GET") return await connectorRelayEnvelopes(request, env);
+      if (path === "/v1/connectors/relay/envelopes" && request.method === "POST") return await createConnectorRelayEnvelope(request, env, ctx);
+      const connectorRelayAckMatch = path.match(/^\/v1\/connectors\/relay\/envelopes\/([^/]+)\/ack$/);
+      if (connectorRelayAckMatch && request.method === "POST") return await ackConnectorRelayEnvelope(request, env, decodeURIComponent(connectorRelayAckMatch[1]));
       const realtimeDeviceMatch = path.match(/^\/v1\/realtime\/devices\/([^/]+)$/);
       if (realtimeDeviceMatch && request.method === "GET") return await realtimeDevice(request, env, decodeURIComponent(realtimeDeviceMatch[1]));
 
@@ -114,8 +126,13 @@ export default {
       if (authImportProofMatch && request.method === "POST") return await createAuthorizationImportProof(request, env, decodeURIComponent(authImportProofMatch[1]));
       if (authMatch && request.method === "PATCH") return await updateAuthorization(request, env, decodeURIComponent(authMatch[1]));
       if (authMatch && request.method === "DELETE") return await revokeAuthorization(request, env, decodeURIComponent(authMatch[1]));
+      const productRelayMatch = path.match(/^\/v1\/products\/([^/]+)\/relay\/envelopes$/);
+      if (productRelayMatch && request.method === "POST") return await createProductRelayEnvelope(request, env, decodeURIComponent(productRelayMatch[1]), ctx);
+      if (productRelayMatch && request.method === "GET") return await listProductRelayEnvelopes(request, env, decodeURIComponent(productRelayMatch[1]));
+      const productRelayAckMatch = path.match(/^\/v1\/products\/([^/]+)\/relay\/envelopes\/([^/]+)\/ack$/);
+      if (productRelayAckMatch && request.method === "POST") return await ackProductRelayEnvelope(request, env, decodeURIComponent(productRelayAckMatch[1]), decodeURIComponent(productRelayAckMatch[2]));
       const productJobMatch = path.match(/^\/v1\/products\/([^/]+)\/jobs$/);
-      if (productJobMatch && request.method === "POST") return await createProductJob(request, env, decodeURIComponent(productJobMatch[1]), ctx);
+      if (productJobMatch && request.method === "POST") return legacyRuntimeApiRemoved(env);
       const delegatedAuthorizationMatch = path.match(/^\/v1\/products\/([^/]+)\/delegated\/authorization$/);
       if (delegatedAuthorizationMatch && request.method === "GET") return await delegatedProductAuthorization(request, env, decodeURIComponent(delegatedAuthorizationMatch[1]));
       if (delegatedAuthorizationMatch && request.method === "PATCH") return await updateDelegatedProductAuthorization(request, env, decodeURIComponent(delegatedAuthorizationMatch[1]));
@@ -130,30 +147,35 @@ export default {
       if (delegatedConnectIntentMatch && request.method === "POST") return await createDelegatedConnectIntent(request, env, decodeURIComponent(delegatedConnectIntentMatch[1]));
       const delegatedConnectIntentInspectMatch = path.match(/^\/v1\/products\/([^/]+)\/delegated\/connect-intents\/([^/]+)$/);
       if (delegatedConnectIntentInspectMatch && request.method === "GET") return await getDelegatedConnectIntent(request, env, decodeURIComponent(delegatedConnectIntentInspectMatch[1]), decodeURIComponent(delegatedConnectIntentInspectMatch[2]));
+      const delegatedProductRelayMatch = path.match(/^\/v1\/products\/([^/]+)\/delegated\/relay\/envelopes$/);
+      if (delegatedProductRelayMatch && request.method === "POST") return await createDelegatedProductRelayEnvelope(request, env, decodeURIComponent(delegatedProductRelayMatch[1]), ctx);
+      if (delegatedProductRelayMatch && request.method === "GET") return await listDelegatedProductRelayEnvelopes(request, env, decodeURIComponent(delegatedProductRelayMatch[1]));
+      const delegatedProductRelayAckMatch = path.match(/^\/v1\/products\/([^/]+)\/delegated\/relay\/envelopes\/([^/]+)\/ack$/);
+      if (delegatedProductRelayAckMatch && request.method === "POST") return await ackDelegatedProductRelayEnvelope(request, env, decodeURIComponent(delegatedProductRelayAckMatch[1]), decodeURIComponent(delegatedProductRelayAckMatch[2]));
       const delegatedProductJobMatch = path.match(/^\/v1\/products\/([^/]+)\/delegated\/jobs$/);
-      if (delegatedProductJobMatch && request.method === "POST") return await createDelegatedProductJob(request, env, decodeURIComponent(delegatedProductJobMatch[1]), ctx);
+      if (delegatedProductJobMatch && request.method === "POST") return legacyRuntimeApiRemoved(env);
       const delegatedJobEventsMatch = path.match(/^\/v1\/products\/([^/]+)\/delegated\/jobs\/([^/]+)\/events$/);
-      if (delegatedJobEventsMatch && request.method === "GET") return await getDelegatedJobEvents(request, env, decodeURIComponent(delegatedJobEventsMatch[1]), decodeURIComponent(delegatedJobEventsMatch[2]));
+      if (delegatedJobEventsMatch && request.method === "GET") return legacyRuntimeApiRemoved(env);
       const delegatedCancelMatch = path.match(/^\/v1\/products\/([^/]+)\/delegated\/jobs\/([^/]+)\/cancel$/);
-      if (delegatedCancelMatch && request.method === "POST") return await cancelDelegatedJob(request, env, decodeURIComponent(delegatedCancelMatch[1]), decodeURIComponent(delegatedCancelMatch[2]));
+      if (delegatedCancelMatch && request.method === "POST") return legacyRuntimeApiRemoved(env);
       const delegatedJobMatch = path.match(/^\/v1\/products\/([^/]+)\/delegated\/jobs\/([^/]+)$/);
-      if (delegatedJobMatch && request.method === "GET") return await getDelegatedJob(request, env, decodeURIComponent(delegatedJobMatch[1]), decodeURIComponent(delegatedJobMatch[2]));
+      if (delegatedJobMatch && request.method === "GET") return legacyRuntimeApiRemoved(env);
 
       const jobMatch = path.match(/^\/v1\/jobs\/([^/]+)$/);
-      if (jobMatch && request.method === "GET") return await getJob(request, env, decodeURIComponent(jobMatch[1]));
+      if (jobMatch && request.method === "GET") return legacyRuntimeApiRemoved(env);
       if (jobMatch && request.method === "POST" && url.pathname.endsWith("/cancel")) return notFound(env);
 
       const jobEventsMatch = path.match(/^\/v1\/jobs\/([^/]+)\/events$/);
-      if (jobEventsMatch && request.method === "GET") return await getJobEvents(request, env, decodeURIComponent(jobEventsMatch[1]));
+      if (jobEventsMatch && request.method === "GET") return legacyRuntimeApiRemoved(env);
       const cancelMatch = path.match(/^\/v1\/jobs\/([^/]+)\/cancel$/);
-      if (cancelMatch && request.method === "POST") return await cancelJob(request, env, decodeURIComponent(cancelMatch[1]));
+      if (cancelMatch && request.method === "POST") return legacyRuntimeApiRemoved(env);
 
       const connectorEventMatch = path.match(/^\/v1\/connectors\/jobs\/([^/]+)\/events$/);
-      if (connectorEventMatch && request.method === "POST") return await postConnectorEvents(request, env, decodeURIComponent(connectorEventMatch[1]));
+      if (connectorEventMatch && request.method === "POST") return legacyRuntimeApiRemoved(env);
       const acceptMatch = path.match(/^\/v1\/connectors\/jobs\/([^/]+)\/accept$/);
-      if (acceptMatch && request.method === "POST") return await acceptConnectorJob(request, env, decodeURIComponent(acceptMatch[1]));
+      if (acceptMatch && request.method === "POST") return legacyRuntimeApiRemoved(env);
       const ackMatch = path.match(/^\/v1\/connectors\/jobs\/([^/]+)\/ack$/);
-      if (ackMatch && request.method === "POST") return await ackConnectorJob(request, env, decodeURIComponent(ackMatch[1]));
+      if (ackMatch && request.method === "POST") return legacyRuntimeApiRemoved(env);
 
       if (["GET", "HEAD"].includes(request.method) && !path.startsWith("/v1/")) return await assetResponse(request, env);
       return notFound(env);
@@ -238,6 +260,9 @@ export class BridgeDeviceRoom {
     if (message?.type === "job.assign") {
       desktopDelivered = this.safeSend(this.desktop?.socket, message);
       webDelivered = this.broadcastWeb({ type: "job.created", job: message.job, sent_at: message.sent_at || new Date().toISOString() });
+    } else if (message?.type === "relay.envelope") {
+      desktopDelivered = this.safeSend(this.desktop?.socket, message);
+      webDelivered = this.broadcastWeb({ type: "relay.envelope.created", envelope: message.envelope, sent_at: message.sent_at || new Date().toISOString() });
     } else if (message?.type === "job.event") {
       webDelivered = this.broadcastWeb(message);
     } else {
@@ -631,8 +656,8 @@ async function claimConnector(request, env) {
   const { device, token, tokenExpiresAt } = await createDeviceWithToken(env, pairing.user_id, {
     device_name: clean(body.device_name, 120) || pairing.device_name || "Panda Bridge Desktop",
     app_version: clean(body.app_version, 80) || null,
-    capabilities: object(body.capabilities),
-    local_state: object(body.local_state),
+    capabilities: safeDeviceCapabilities(body.capabilities),
+    local_state: safeLocalState(body.local_state),
     install_id: installId,
   });
   await store.update("bridge_pairing_codes", pairing.id, { consumed_at: now(), device_id: device.id });
@@ -739,8 +764,8 @@ async function claimConnectIntent(request, env, token) {
   const input = {
     device_name: clean(body.device_name, 120) || intent.device_name || "Panda Bridge Desktop",
     app_version: clean(body.app_version, 80) || null,
-    capabilities: object(body.capabilities),
-    local_state: object(body.local_state),
+    capabilities: safeDeviceCapabilities(body.capabilities),
+    local_state: safeLocalState(body.local_state),
     install_id: installId,
   };
   const { device, token: deviceToken, tokenExpiresAt } = reuseDevice
@@ -778,8 +803,8 @@ async function connectorHeartbeat(request, env) {
     ...installPatch,
     status: "online",
     app_version: clean(body.app_version, 80) || connector.device.app_version || null,
-    capabilities: object(body.capabilities),
-    local_state: object(body.local_state),
+    capabilities: safeDeviceCapabilities(body.capabilities),
+    local_state: safeLocalState(body.local_state),
     last_seen_at: now(),
     updated_at: now(),
   };
@@ -813,8 +838,8 @@ async function rotateConnectorToken(request, env) {
     ...installPatch,
     status: "online",
     app_version: clean(body.app_version, 80) || connector.device.app_version || null,
-    capabilities: object(body.capabilities).runtime ? object(body.capabilities) : connector.device.capabilities || {},
-    local_state: object(body.local_state).platform ? object(body.local_state) : connector.device.local_state || {},
+    capabilities: Object.keys(object(body.capabilities)).length ? safeDeviceCapabilities(body.capabilities) : safeDeviceCapabilities(connector.device.capabilities),
+    local_state: object(body.local_state).platform ? safeLocalState(body.local_state) : safeLocalState(connector.device.local_state),
     last_seen_at: issuedAt,
     updated_at: issuedAt,
   });
@@ -872,6 +897,319 @@ async function connectorJobs(request, env) {
     jobs.push(publicJob(job));
   }
   return json({ items: jobs, queue: await publicDeviceQueue(env, connector.device.id) }, env);
+}
+
+function legacyRuntimeApiRemoved(env) {
+  return json({
+    error: "legacy_runtime_api_removed",
+    message: "Panda Bridge V0.2 only relays opaque encrypted envelopes. Use /v1/*/relay/envelopes.",
+    relay: {
+      product_create: "/v1/products/{product_id}/relay/envelopes",
+      delegated_create: "/v1/products/{product_id}/delegated/relay/envelopes",
+      connector_poll: "/v1/connectors/relay/envelopes",
+    },
+  }, env, 410);
+}
+
+async function createProductRelayEnvelope(request, env, productId, ctx = {}) {
+  const product = requireOfficialProduct(productId, env);
+  const source_origin = sourceOrigin(env);
+  const originError = rejectProductOrigin(product, source_origin, env);
+  if (originError) return originError;
+  const session = await requireSession(request, env);
+  const body = await readJson(request, env);
+  return createAuthorizedRelayEnvelope(env, product, session.user.id, source_origin, body, ctx, {
+    direction: "product_to_device",
+    auditAction: "relay.envelope.create",
+  });
+}
+
+async function createDelegatedProductRelayEnvelope(request, env, productId, ctx = {}) {
+  const product = requireOfficialProduct(productId, env);
+  const rawBody = await readJsonText(request, env);
+  const delegation = await requireProductDelegation(request, env, product, rawBody);
+  const body = rawBody ? parseJsonText(rawBody) : {};
+  return createAuthorizedRelayEnvelope(env, product, delegation.bridgeUserId, delegation.sourceOrigin, body, ctx, {
+    direction: "product_to_device",
+    auditAction: "relay.envelope.create.delegated",
+    delegatedDeviceId: delegation.deviceId,
+  });
+}
+
+async function listProductRelayEnvelopes(request, env, productId) {
+  const product = requireOfficialProduct(productId, env);
+  const source_origin = sourceOrigin(env);
+  const originError = rejectProductOrigin(product, source_origin, env);
+  if (originError) return originError;
+  const session = await requireSession(request, env);
+  return listRelayEnvelopesForProduct(request, env, product, session.user.id, "device_to_product");
+}
+
+async function listDelegatedProductRelayEnvelopes(request, env, productId) {
+  const product = requireOfficialProduct(productId, env);
+  const delegation = await requireProductDelegation(request, env, product, "");
+  return listRelayEnvelopesForProduct(request, env, product, delegation.bridgeUserId, "device_to_product", delegation.deviceId);
+}
+
+async function ackProductRelayEnvelope(request, env, productId, envelopeId) {
+  const product = requireOfficialProduct(productId, env);
+  const source_origin = sourceOrigin(env);
+  const originError = rejectProductOrigin(product, source_origin, env);
+  if (originError) return originError;
+  const session = await requireSession(request, env);
+  return ackRelayEnvelope(env, {
+    envelopeId,
+    userId: session.user.id,
+    productId: product.id,
+    direction: "device_to_product",
+    status: "acked",
+    auditAction: "relay.envelope.ack.product",
+  });
+}
+
+async function ackDelegatedProductRelayEnvelope(request, env, productId, envelopeId) {
+  const product = requireOfficialProduct(productId, env);
+  const rawBody = await readJsonText(request, env);
+  const delegation = await requireProductDelegation(request, env, product, rawBody);
+  return ackRelayEnvelope(env, {
+    envelopeId,
+    userId: delegation.bridgeUserId,
+    productId: product.id,
+    deviceId: delegation.deviceId,
+    direction: "device_to_product",
+    status: "acked",
+    auditAction: "relay.envelope.ack.delegated",
+  });
+}
+
+async function connectorRelayEnvelopes(request, env) {
+  const connector = await requireConnector(request, env);
+  await cleanupExpiredRelayEnvelopes(env);
+  const url = new URL(request.url);
+  const channelId = clean(url.searchParams.get("channel_id"), 160);
+  const productId = clean(url.searchParams.get("product_id"), 80);
+  const afterSeq = Number(url.searchParams.get("after_seq") || 0);
+  const filters = {
+    user_id: connector.device.user_id,
+    device_id: connector.device.id,
+    direction: "product_to_device",
+    delivery_status: "queued",
+  };
+  if (productId) filters.product_id = productId;
+  if (channelId) filters.channel_id = channelId;
+  const rows = await storage(env).select("bridge_relay_envelopes", filters, { order: "created_at" });
+  const items = [];
+  for (const row of rows.filter((item) => Number(item.seq || 0) > afterSeq && !isExpired(item.expires_at))) {
+    const authorization = await authorizationForProduct(env, row.user_id, row.device_id, row.product_id);
+    const denial = authorizationJobDenial(authorization);
+    if (denial) {
+      await expireRelayEnvelope(env, row, denial.reason);
+      continue;
+    }
+    const deliveredAt = now();
+    const delivered = await storage(env).update("bridge_relay_envelopes", row.id, {
+      delivery_status: "delivered",
+      delivered_at: row.delivered_at || deliveredAt,
+      updated_at: deliveredAt,
+    });
+    items.push(publicRelayEnvelope(delivered || row));
+  }
+  return json({ items, transport: realtimeEnabled(env) ? "websocket_or_poll" : "poll" }, env);
+}
+
+async function createConnectorRelayEnvelope(request, env, ctx = {}) {
+  const connector = await requireConnector(request, env);
+  const body = await readJson(request, env);
+  const productId = clean(body.product_id || body.productId, 80);
+  const product = requireOfficialProduct(productId, env);
+  return createAuthorizedRelayEnvelope(env, product, connector.device.user_id, product.official_origin || sourceOrigin(env), {
+    ...body,
+    device_id: connector.device.id,
+    direction: "device_to_product",
+  }, ctx, {
+    direction: "device_to_product",
+    auditAction: "relay.envelope.create.connector",
+    delegatedDeviceId: connector.device.id,
+  });
+}
+
+async function ackConnectorRelayEnvelope(request, env, envelopeId) {
+  const connector = await requireConnector(request, env);
+  return ackRelayEnvelope(env, {
+    envelopeId,
+    userId: connector.device.user_id,
+    deviceId: connector.device.id,
+    direction: "product_to_device",
+    status: "acked",
+    auditAction: "relay.envelope.ack.connector",
+  });
+}
+
+async function createAuthorizedRelayEnvelope(env, product, userId, source_origin, body, ctx = {}, options = {}) {
+  const direction = options.direction || clean(body.direction, 80) || "product_to_device";
+  const validation = validateRelayEnvelope({ ...body, productId: product.id, direction }, {
+    productId: product.id,
+    direction,
+    ...(options.delegatedDeviceId ? { deviceId: options.delegatedDeviceId } : {}),
+  });
+  if (!validation.ok) {
+    return json({
+      error: validation.errors.includes("plaintext_fields_forbidden") ? "plaintext_fields_forbidden" : "invalid_relay_envelope",
+      errors: validation.errors,
+      plaintext_fields: validation.plaintext_fields,
+    }, env, 400);
+  }
+  const envelope = validation.envelope;
+  const device = await ownedDevice(env, userId, envelope.device_id);
+  if (!device || device.status === "revoked") return json({ error: "device_not_found" }, env, 404);
+  if (!isDeviceOnline(device, env)) return json({ error: "device_offline" }, env, 409);
+  const authorization = await authorizationForProduct(env, userId, device.id, product.id);
+  const denial = authorizationJobDenial(authorization);
+  if (denial) return json({ error: denial.error }, env, 403);
+  const existing = await existingRequestKeyRelayEnvelope(env, userId, device.id, product.id, envelope.request_key);
+  if (existing) {
+    if (!sameRelayEnvelope(existing, envelope)) return json({ error: "idempotency_key_conflict" }, env, 409);
+    return json({ envelope: publicRelayEnvelope(existing), reused: true }, env);
+  }
+  const queuedAt = now();
+  let row;
+  try {
+    row = await storage(env).insert("bridge_relay_envelopes", relayEnvelopeRecord({
+      ...envelope,
+      ttl_ms: Math.min(envelope.ttl_ms, relayEnvelopeTtlMs(env)),
+    }, {
+      userId,
+      queuedAt,
+    }));
+  } catch (error) {
+    const duplicate = await existingRequestKeyRelayEnvelope(env, userId, device.id, product.id, envelope.request_key);
+    if (duplicate && sameRelayEnvelope(duplicate, envelope)) {
+      return json({ envelope: publicRelayEnvelope(duplicate), reused: true }, env);
+    }
+    if (duplicate) return json({ error: "idempotency_key_conflict" }, env, 409);
+    throw error;
+  }
+  await runBackground(ctx, audit(env, userId, device.id, product.id, options.auditAction || "relay.envelope.create", row.id, {
+    source_origin,
+    direction: row.direction,
+    channel_id: row.channel_id,
+    request_key: row.request_key,
+    ciphertext_bytes: row.ciphertext.length,
+    expires_at: row.expires_at,
+  }));
+  await runBackground(ctx, notifyRelayEnvelope(env, device.id, row));
+  return json({ envelope: publicRelayEnvelope(row), product: publicStateProduct(product) }, env, 201);
+}
+
+async function listRelayEnvelopesForProduct(request, env, product, userId, direction, delegatedDeviceId = "") {
+  await cleanupExpiredRelayEnvelopes(env);
+  const url = new URL(request.url);
+  const channelId = clean(url.searchParams.get("channel_id"), 160);
+  const deviceId = clean(url.searchParams.get("device_id"), 120) || clean(delegatedDeviceId, 120);
+  const afterSeq = Number(url.searchParams.get("after_seq") || 0);
+  const filters = {
+    user_id: userId,
+    product_id: product.id,
+    direction,
+  };
+  if (deviceId) filters.device_id = deviceId;
+  if (channelId) filters.channel_id = channelId;
+  const rows = await storage(env).select("bridge_relay_envelopes", filters, { order: "created_at" });
+  const items = rows
+    .filter((item) => ["queued", "delivered"].includes(item.delivery_status || "queued"))
+    .filter((item) => Number(item.seq || 0) > afterSeq)
+    .filter((item) => !isExpired(item.expires_at))
+    .map(publicRelayEnvelope);
+  return json({ items, product: publicStateProduct(product) }, env);
+}
+
+async function ackRelayEnvelope(env, options = {}) {
+  const envelopeId = clean(options.envelopeId, 120);
+  const filters = { id: envelopeId };
+  if (options.userId) filters.user_id = options.userId;
+  if (options.productId) filters.product_id = options.productId;
+  if (options.deviceId) filters.device_id = options.deviceId;
+  if (options.direction) filters.direction = options.direction;
+  const row = (await storage(env).select("bridge_relay_envelopes", filters))[0] || null;
+  if (!row) return json({ error: "relay_envelope_not_found" }, env, 404);
+  if (isExpired(row.expires_at)) {
+    const expired = await expireRelayEnvelope(env, row, "ttl_expired");
+    return json({ envelope: publicRelayEnvelope(expired), acked: false, error: "relay_envelope_expired" }, env, 410);
+  }
+  const ackedAt = now();
+  const next = await storage(env).update("bridge_relay_envelopes", row.id, {
+    delivery_status: "acked",
+    acked_at: row.acked_at || ackedAt,
+    updated_at: ackedAt,
+  });
+  await audit(env, row.user_id, row.device_id, row.product_id, options.auditAction || "relay.envelope.ack", row.id, {
+    direction: row.direction,
+    channel_id: row.channel_id,
+  });
+  await notifyRelayEvent(env, row.device_id, next || row);
+  return json({ envelope: publicRelayEnvelope(next || row), acked: true }, env);
+}
+
+async function existingRequestKeyRelayEnvelope(env, userId, deviceId, productId, requestKey) {
+  if (!requestKey) return null;
+  const rows = await storage(env).select("bridge_relay_envelopes", {
+    user_id: userId,
+    device_id: deviceId,
+    product_id: productId,
+    request_key: requestKey,
+  });
+  return rows[0] || null;
+}
+
+function sameRelayEnvelope(row, envelope) {
+  return row.product_id === envelope.product_id
+    && row.device_id === envelope.device_id
+    && row.channel_id === envelope.channel_id
+    && row.direction === envelope.direction
+    && String(row.ciphertext || "") === String(envelope.ciphertext || "")
+    && String(row.aad || "") === String(envelope.aad || "")
+    && String(row.nonce || "") === String(envelope.nonce || "")
+    && String(row.sender_key_id || "") === String(envelope.sender_key_id || "")
+    && String(row.recipient_key_id || "") === String(envelope.recipient_key_id || "");
+}
+
+async function expireRelayEnvelope(env, row, reason = "expired") {
+  return await storage(env).update("bridge_relay_envelopes", row.id, {
+    delivery_status: "expired",
+    updated_at: now(),
+    meta: { ...object(row.meta), expired_reason: reason },
+  }) || row;
+}
+
+async function cleanupExpiredRelayEnvelopes(env) {
+  const store = storage(env);
+  if (typeof store.deleteExpired !== "function") return 0;
+  return await store.deleteExpired("bridge_relay_envelopes", "expires_at");
+}
+
+function isExpired(expiresAt) {
+  const expiresMs = Date.parse(expiresAt || "");
+  return Number.isFinite(expiresMs) && expiresMs <= Date.now();
+}
+
+function relayEnvelopeTtlMs(env) {
+  return boundedInteger(env.BRIDGE_RELAY_ENVELOPE_TTL_MS, RELAY_ENVELOPE_TTL_MS, 1000, 24 * 60 * 60 * 1000);
+}
+
+async function notifyRelayEnvelope(env, deviceId, envelope) {
+  return notifyDeviceRoom(env, deviceId, {
+    type: "relay.envelope",
+    envelope: publicRelayEnvelope(envelope),
+    sent_at: now(),
+  });
+}
+
+async function notifyRelayEvent(env, deviceId, envelope) {
+  return notifyDeviceRoom(env, deviceId, {
+    type: "relay.envelope.event",
+    envelope: publicRelayEnvelope(envelope),
+    sent_at: now(),
+  });
 }
 
 async function productAuthorization(request, env, productId) {
@@ -1259,7 +1597,7 @@ async function revokeDelegatedProductAuthorization(request, env, productId) {
 }
 
 async function createAuthorizedProductJob(env, product, userId, source_origin, body, ctx = {}, options = {}) {
-  const validation = validateBridgeJob({ ...body, productId: product.id });
+  const validation = validateLegacyBridgeJob({ ...body, productId: product.id });
   if (!validation.ok) return json({ error: "invalid_job", errors: validation.errors }, env, 400);
   const normalized = validation.job;
   if (!Object.hasOwn(SUPPORTED_JOB_KIND_REGISTRY, normalized.kind)) return json({ error: "unsupported_job_kind" }, env, 400);
@@ -1367,6 +1705,24 @@ async function createAuthorizedProductJob(env, product, userId, source_origin, b
       max_queued: limits.deviceMaxQueued,
     },
   }, env, 201);
+}
+
+function validateLegacyBridgeJob(input = {}) {
+  const value = object(input);
+  const job = {
+    kind: clean(value.kind || value.job_kind, 120),
+    product_id: clean(value.productId || value.product_id, 120),
+    device_id: clean(value.deviceId || value.device_id || value.connector_id, 120),
+    workspace_ref: clean(value.workspaceRef ?? value.workspace_ref, 200) || null,
+    request_key: clean(value.requestKey || value.request_key, 180) || null,
+    input: object(value.input || value.payload),
+    policy: object(value.policy),
+  };
+  const errors = [];
+  if (!job.kind) errors.push("missing_kind");
+  if (!job.product_id) errors.push("missing_product_id");
+  if (!job.device_id) errors.push("missing_device_id");
+  return { ok: errors.length === 0, errors, job };
 }
 
 async function attachCapTokenToJob(env, ctx, { authorization, job, product, userId, device }) {
@@ -2369,6 +2725,7 @@ async function cleanupExpiredRows(env) {
   for (const table of tables) {
     deleted[table] = await store.deleteExpired(table, "expires_at");
   }
+  deleted.bridge_relay_envelopes = await cleanupExpiredRelayEnvelopes(env);
   deleted.bridge_jobs = await cleanupExpiredJobs(env);
   return deleted;
 }
@@ -2500,12 +2857,12 @@ function diagnosticsPayload(env) {
       official_origin: product.official_origin,
       official_origins: product.official_origins,
       capabilities: product.capabilities,
+      adapter_boundary: product.adapter_boundary || {},
       requires_desktop_authorization: product.requires_desktop_authorization,
     })),
-    jobs: {
-      supported_kinds: [...SUPPORTED_JOB_KINDS],
-      registry: structuredClone(SUPPORTED_JOB_KIND_REGISTRY),
-      event_types: [...EVENT_TYPES],
+    relay: {
+      supported_directions: ["product_to_device", "device_to_product"],
+      envelope_route_template: "/v1/*/relay/envelopes",
       queue_limits: {
         device_max_running: limits.deviceMaxRunning,
         device_max_queued: limits.deviceMaxQueued,
@@ -2513,7 +2870,18 @@ function diagnosticsPayload(env) {
         product_max_active: limits.productMaxActive,
       },
       assignment_grace_ms: boundedInteger(env.BRIDGE_JOB_ASSIGNMENT_GRACE_MS, JOB_ASSIGNMENT_GRACE_MS, 1000, 1000 * 60 * 10),
-      retention_days: bridgeJobRetentionDays(env),
+      envelope_ttl_ms: relayEnvelopeTtlMs(env),
+      stores_plaintext: false,
+    },
+    legacy_runtime_api: {
+      removed: true,
+      status: 410,
+      removed_routes: [
+        "/v1/products/{product_id}/jobs",
+        "/v1/products/{product_id}/delegated/jobs",
+        "/v1/connectors/jobs",
+        "/v1/jobs/{job_id}",
+      ],
     },
     install: bridgeInstallPayload(env),
     connect_intents: {
@@ -2827,8 +3195,8 @@ async function createDeviceWithToken(env, userId, input) {
     device_name: clean(input.device_name, 120) || existing?.device_name || "Panda Bridge Desktop",
     status: "online",
     app_version: clean(input.app_version, 80) || existing?.app_version || null,
-    capabilities: object(input.capabilities),
-    local_state: object(input.local_state),
+    capabilities: safeDeviceCapabilities(input.capabilities),
+    local_state: safeLocalState(input.local_state),
     last_seen_at: now(),
     updated_at: now(),
   };
@@ -2852,8 +3220,8 @@ async function updateDeviceForIntent(env, device, token, input) {
     device_name: clean(input.device_name, 120) || device.device_name,
     status: "online",
     app_version: clean(input.app_version, 80) || device.app_version || null,
-    capabilities: object(input.capabilities),
-    local_state: object(input.local_state),
+    capabilities: safeDeviceCapabilities(input.capabilities),
+    local_state: safeLocalState(input.local_state),
     last_seen_at: now(),
     updated_at: now(),
   });
@@ -2939,7 +3307,7 @@ async function createDeviceToken(env, deviceId) {
 }
 
 function defaultDeviceTokenScope() {
-  return ["heartbeat", "jobs:read", "jobs:ack", "events:write"];
+  return ["heartbeat", "relay:read", "relay:ack", "relay:write"];
 }
 
 function deviceTokenRotationGraceMs(env) {
@@ -3605,6 +3973,15 @@ function uniqueConflict(tableName, rows, row) {
     ));
     if (duplicate) return "duplicate_request_key";
   }
+  if (tableName === "bridge_relay_envelopes" && row.request_key) {
+    const duplicate = rows.find((item) => (
+      item.user_id === row.user_id
+      && item.device_id === row.device_id
+      && item.product_id === row.product_id
+      && item.request_key === row.request_key
+    ));
+    if (duplicate) return "duplicate_request_key";
+  }
   if (tableName === "bridge_product_delegation_nonces") {
     const duplicate = rows.find((item) => (
       item.product_id === row.product_id
@@ -3686,12 +4063,46 @@ function publicDevice(device, env = {}) {
     device_name: device.device_name,
     status: publicDeviceStatus(device, env),
     app_version: device.app_version,
-    capabilities: device.capabilities || {},
-    local_state: device.local_state || {},
+    capabilities: safeDeviceCapabilities(device.capabilities),
+    local_state: safeLocalState(device.local_state),
     last_seen_at: device.last_seen_at,
     created_at: device.created_at,
     updated_at: device.updated_at,
   } : null;
+}
+
+function safeDeviceCapabilities(input = {}) {
+  const value = object(input);
+  const requestedRelay = Array.isArray(value.relay)
+    ? value.relay.map((item) => clean(item, 80)).filter((item) => item === "relay.envelope" || item === "relay.ack")
+    : [];
+  const relay = requestedRelay.length ? requestedRelay : ["relay.envelope", "relay.ack"];
+  const adapter = object(value.adapter_router || value.adapterRouter);
+  return {
+    relay,
+    adapter_router: {
+      mode: clean(adapter.mode, 80) || "external_http",
+    },
+  };
+}
+
+function safeLocalState(input = {}) {
+  const value = object(input);
+  const relay = object(value.relay);
+  const adapter = object(value.adapter_router || value.adapterRouter);
+  const out = {
+    relay: {
+      envelopes: relay.envelopes !== false,
+      ack: relay.ack !== false,
+    },
+    adapter_router: {
+      mode: clean(adapter.mode, 80) || "external_http",
+      configured: adapter.configured === true,
+    },
+  };
+  const platform = clean(value.platform, 80);
+  if (platform) out.platform = platform;
+  return out;
 }
 
 function publicDeviceStatus(device, env = {}) {

@@ -63,6 +63,22 @@ assert.equal(removed.cancelled_jobs, 1);
 assert.equal(calls[4].path, "/v1/products/otherline/delegated/authorization?device_id=dev_1");
 assert.equal(calls[4].init.method, "DELETE");
 
+await server.createRelayEnvelope({
+  userId: "user_1",
+  deviceId: "dev_1",
+  channelId: "chan_1",
+  ciphertext: "base64:ciphertext",
+  aad: "base64:aad",
+  nonce: "base64:nonce",
+  algorithm: "Noise_XX_25519_ChaChaPoly_BLAKE2s",
+  senderKeyId: "product-key-1",
+  recipientKeyId: "device-key-1",
+});
+assert.equal(calls[5].path, "/v1/products/otherline/delegated/relay/envelopes");
+assert.equal(calls[5].init.method, "POST");
+assert.equal(new Headers(calls[5].init.headers).get("x-panda-bridge-device-id"), "dev_1");
+assert.equal(JSON.parse(calls[5].init.body).direction, "product_to_device");
+
 const fallbackCalls = [];
 const fallbackServer = createBridgeServerClient({
   apiBase: "https://api.example.test",

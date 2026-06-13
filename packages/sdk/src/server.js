@@ -116,28 +116,51 @@ export function createBridgeServerClient(options = {}) {
     pause: authorization.pause,
     resume: authorization.resume,
     revoke: authorization.remove,
-    createJob: (input = {}) => request(
+    createRelayEnvelope: (input = {}) => request(
       "POST",
-      `/v1/products/${encodeURIComponent(productId)}/delegated/jobs`,
-      normalizeDelegatedJob(input, productId),
+      `/v1/products/${encodeURIComponent(productId)}/delegated/relay/envelopes`,
+      normalizeDelegatedRelayEnvelope(input, productId),
       input,
     ),
-    jobEvents: (jobId, input = {}) => {
-      const after = input.after == null ? "" : `?after=${encodeURIComponent(String(input.after))}`;
-      return request("GET", `/v1/products/${encodeURIComponent(productId)}/delegated/jobs/${encodeURIComponent(jobId)}/events${after}`, null, input);
+    listRelayEnvelopes: (input = {}) => {
+      const params = new URLSearchParams();
+      const deviceId = stringValue(input.deviceId || input.device_id, 200);
+      const channelId = stringValue(input.channelId || input.channel_id, 200);
+      const afterSeq = input.afterSeq ?? input.after_seq;
+      if (deviceId) params.set("device_id", deviceId);
+      if (channelId) params.set("channel_id", channelId);
+      if (afterSeq != null) params.set("after_seq", String(afterSeq));
+      const query = params.toString();
+      return request("GET", `/v1/products/${encodeURIComponent(productId)}/delegated/relay/envelopes${query ? `?${query}` : ""}`, null, input);
+    },
+    ackRelayEnvelope: (envelopeId, input = {}) => {
+      return request(
+        "POST",
+        `/v1/products/${encodeURIComponent(productId)}/delegated/relay/envelopes/${encodeURIComponent(envelopeId)}/ack`,
+        {},
+        input,
+      );
     },
   };
 }
 
-function normalizeDelegatedJob(input = {}, productId = "") {
+function normalizeDelegatedRelayEnvelope(input = {}, productId = "") {
   return {
-    kind: input.kind,
+    envelope_version: input.envelopeVersion || input.envelope_version || "relay-envelope-v1",
     product_id: productId,
     device_id: input.deviceId || input.device_id,
-    workspace_ref: input.workspaceRef ?? input.workspace_ref ?? null,
+    channel_id: input.channelId || input.channel_id,
+    direction: input.direction || "product_to_device",
+    seq: input.seq || 0,
     request_key: input.requestKey || input.request_key || null,
-    input: input.input || input.payload || {},
-    policy: input.policy || {},
+    ciphertext: input.ciphertext || "",
+    aad: input.aad || "",
+    nonce: input.nonce || input.iv || "",
+    algorithm: input.algorithm || input.alg || "",
+    sender_key_id: input.senderKeyId || input.sender_key_id || "",
+    recipient_key_id: input.recipientKeyId || input.recipient_key_id || "",
+    ttl_ms: input.ttlMs || input.ttl_ms || undefined,
+    meta: objectValue(input.meta),
   };
 }
 

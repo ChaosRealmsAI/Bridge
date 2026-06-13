@@ -409,6 +409,11 @@ struct JobsResponse {
     items: Vec<BridgeJob>,
 }
 
+#[derive(Debug, Deserialize, Clone)]
+struct RelayEnvelopesResponse {
+    items: Vec<RelayEnvelope>,
+}
+
 #[derive(Debug, Deserialize)]
 struct AcceptJobResponse {
     job: BridgeJob,
@@ -421,6 +426,8 @@ struct RealtimeEnvelope {
     message_type: String,
     #[serde(default)]
     job: Option<BridgeJob>,
+    #[serde(default)]
+    envelope: Option<RelayEnvelope>,
     #[serde(default)]
     authorization: Option<RealtimeAuthorization>,
     #[serde(default)]
@@ -449,6 +456,29 @@ struct BridgeJob {
     request_key: Option<String>,
     #[serde(default)]
     cap_token: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+struct RelayEnvelope {
+    id: String,
+    product_id: String,
+    device_id: String,
+    channel_id: String,
+    direction: String,
+    #[serde(default)]
+    seq: u64,
+    #[serde(default)]
+    request_key: Option<String>,
+    ciphertext: String,
+    aad: String,
+    nonce: String,
+    algorithm: String,
+    sender_key_id: String,
+    recipient_key_id: String,
+    #[serde(default)]
+    meta: Value,
+    #[serde(default)]
+    delivery_status: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -3906,8 +3936,6 @@ fn run_realtime_worker(
     let _ = proxy.send_event(UserEvent::UiEvent(
         json!({ "type": "event", "event": "refresh" }),
     ));
-    let codex_connector = warm_codex_connector(credentials, state, proxy);
-    let mut registry = execution_registry(codex_connector)?;
     let mut processed = std::collections::HashSet::<String>::new();
     while running.load(Ordering::SeqCst) {
         let message = socket
@@ -3946,20 +3974,20 @@ fn run_realtime_worker(
                     }
                     continue;
                 }
-                if envelope.message_type == "job.assign" {
-                    if let Some(job) = envelope.job {
-                        if !processed.contains(&job.id) {
+                if envelope.message_type == "relay.envelope" {
+                    if let Some(relay) = envelope.envelope {
+                        if !processed.contains(&relay.id) {
                             let current_connection = refreshed_connection(credentials);
                             if !connection_authorizes_product_active(
                                 &current_connection,
-                                &job.product_id,
+                                &relay.product_id,
                             ) {
                                 push_event(
                                     state,
-                                    "realtime_job_skipped",
+                                    "realtime_relay_skipped",
                                     json!({
-                                        "job_id": job.id,
-                                        "product_id": job.product_id,
+                                        "envelope_id": relay.id,
+                                        "product_id": relay.product_id,
                                         "reason": "authorization_paused_locally"
                                     }),
                                 );
@@ -3967,11 +3995,11 @@ fn run_realtime_worker(
                             }
                             push_event(
                                 state,
-                                "realtime_job",
+                                "realtime_relay_envelope",
                                 json!({
-                                    "job_id": job.id,
-                                    "kind": job.kind,
-                                    "product_id": job.product_id,
+                                    "envelope_id": relay.id,
+                                    "product_id": relay.product_id,
+                                    "channel_id": relay.channel_id,
                                     "device_id": credentials.device_id,
                                     "account_id": credentials.account_id,
                                     "transport": "websocket"
@@ -3980,14 +4008,8 @@ fn run_realtime_worker(
                             let _ = proxy.send_event(UserEvent::UiEvent(
                                 json!({ "type": "event", "event": "refresh" }),
                             ));
-                            if accept_job(&current_connection, &job, "websocket")? {
-                                processed.insert(job.id.clone());
-                                execute_and_ack_with_registry(
-                                    &current_connection,
-                                    &job,
-                                    &mut registry,
-                                )?;
-                            }
+                            route_and_ack_relay_envelope(&current_connection, &relay)?;
+                            processed.insert(relay.id.clone());
                         }
                     }
                 }
@@ -4191,23 +4213,23 @@ fn poll_all_connections(credentials: &Credentials) -> Result<Value, String> {
         "count": total,
         "connections": results,
         "errors": errors,
-        "message": format!("worker tick ok, jobs={total}")
+            "message": format!("worker tick ok, relay_envelopes={total}")
     }))
 }
 
 fn poll_once(credentials: &Credentials) -> Result<usize, String> {
-    let url = format!("{}/v1/connectors/jobs", credentials.api_base);
-    let payload: JobsResponse = get_json_with_install(
+    let url = format!("{}/v1/connectors/relay/envelopes", credentials.api_base);
+    let payload: RelayEnvelopesResponse = get_json_with_install(
         &url,
         Some(&credentials.device_token),
         credentials.install_id.as_deref(),
     )?;
     let count = payload.items.len();
-    for job in payload.items {
-        if !connection_authorizes_product_active(credentials, &job.product_id) {
+    for envelope in payload.items {
+        if !connection_authorizes_product_active(credentials, &envelope.product_id) {
             continue;
         }
-        execute_and_ack(credentials, &job)?;
+        route_and_ack_relay_envelope(credentials, &envelope)?;
     }
     Ok(count)
 }
@@ -4216,6 +4238,84 @@ fn connection_authorizes_product_active(credentials: &Credentials, product_id: &
     active_connection_products(credentials)
         .iter()
         .any(|product| product.id == product_id)
+}
+
+fn route_and_ack_relay_envelope(
+    credentials: &Credentials,
+    envelope: &RelayEnvelope,
+) -> Result<(), String> {
+    if envelope.device_id != credentials.device_id {
+        return Err(format!(
+            "relay_envelope_device_mismatch: {}",
+            envelope.product_id
+        ));
+    }
+    route_relay_envelope_to_adapter(envelope)?;
+    let ack_url = format!(
+        "{}/v1/connectors/relay/envelopes/{}/ack",
+        credentials.api_base,
+        urlencoding::encode(&envelope.id)
+    );
+    let _: Value = post_json_with_install(
+        &ack_url,
+        &json!({ "status": "acked" }),
+        Some(&credentials.device_token),
+        credentials.install_id.as_deref(),
+    )?;
+    Ok(())
+}
+
+fn route_relay_envelope_to_adapter(envelope: &RelayEnvelope) -> Result<(), String> {
+    let endpoint = adapter_endpoint_for_product(&envelope.product_id)
+        .ok_or_else(|| format!("adapter_not_found: {}", envelope.product_id))?;
+    let response = Client::new()
+        .post(&endpoint)
+        .json(&json!({
+            "id": envelope.id,
+            "product_id": envelope.product_id,
+            "device_id": envelope.device_id,
+            "channel_id": envelope.channel_id,
+            "direction": envelope.direction,
+            "seq": envelope.seq,
+            "request_key": envelope.request_key,
+            "ciphertext": envelope.ciphertext,
+            "aad": envelope.aad,
+            "nonce": envelope.nonce,
+            "algorithm": envelope.algorithm,
+            "sender_key_id": envelope.sender_key_id,
+            "recipient_key_id": envelope.recipient_key_id,
+            "meta": envelope.meta,
+            "delivery_status": envelope.delivery_status,
+        }))
+        .send()
+        .map_err(|error| format!("adapter_route_failed: {error}"))?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "adapter_route_failed: status={}",
+            response.status().as_u16()
+        ));
+    }
+    Ok(())
+}
+
+fn adapter_endpoint_for_product(product_id: &str) -> Option<String> {
+    let specific = format!(
+        "PANDA_BRIDGE_ADAPTER_{}_URL",
+        product_id
+            .chars()
+            .map(|ch| if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_uppercase()
+            } else {
+                '_'
+            })
+            .collect::<String>()
+    );
+    env::var(&specific)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| env::var("PANDA_BRIDGE_ADAPTER_URL").ok())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 fn refreshed_connection(credentials: &Credentials) -> Credentials {
@@ -4283,33 +4383,48 @@ fn execute_and_ack_with_registry(
 }
 
 fn execution_registry(codex: CodexConnector) -> Result<ConnectorRegistry, String> {
-    let mut registry = ConnectorRegistry::new();
-    registry.register(Box::new(codex))?;
-    registry.register(Box::new(DataConnector::new(ProductSqliteKv::new())))?;
-    registry.register(Box::new(FsConnector::new()))?;
-    registry.register(Box::new(ShellConnector::new()))?;
-    registry.register(Box::new(SylloConnector::new()))?;
-    Ok(registry)
+    #[cfg(test)]
+    {
+        let mut registry = ConnectorRegistry::new();
+        registry.register(Box::new(codex))?;
+        registry.register(Box::new(DataConnector::new(ProductSqliteKv::new())))?;
+        registry.register(Box::new(FsConnector::new()))?;
+        registry.register(Box::new(ShellConnector::new()))?;
+        registry.register(Box::new(SylloConnector::new()))?;
+        return Ok(registry);
+    }
+    #[cfg(not(test))]
+    {
+        let _ = codex;
+        Ok(ConnectorRegistry::new())
+    }
 }
 
 fn declaration_registry() -> ConnectorRegistry {
-    let mut registry = ConnectorRegistry::new();
-    registry
-        .register(Box::new(CodexConnector::new()))
-        .expect("codex connector declaration should be valid");
-    registry
-        .register(Box::new(DataConnector::new(MemKv::new())))
-        .expect("data connector declaration should be valid");
-    registry
-        .register(Box::new(FsConnector::new()))
-        .expect("fs connector declaration should be valid");
-    registry
-        .register(Box::new(ShellConnector::new()))
-        .expect("shell connector declaration should be valid");
-    registry
-        .register(Box::new(SylloConnector::new()))
-        .expect("syllo connector declaration should be valid");
-    registry
+    #[cfg(test)]
+    {
+        let mut registry = ConnectorRegistry::new();
+        registry
+            .register(Box::new(CodexConnector::new()))
+            .expect("codex connector declaration should be valid");
+        registry
+            .register(Box::new(DataConnector::new(MemKv::new())))
+            .expect("data connector declaration should be valid");
+        registry
+            .register(Box::new(FsConnector::new()))
+            .expect("fs connector declaration should be valid");
+        registry
+            .register(Box::new(ShellConnector::new()))
+            .expect("shell connector declaration should be valid");
+        registry
+            .register(Box::new(SylloConnector::new()))
+            .expect("syllo connector declaration should be valid");
+        return registry;
+    }
+    #[cfg(not(test))]
+    {
+        ConnectorRegistry::new()
+    }
 }
 
 fn post_cap_token_decision_event(
@@ -5470,28 +5585,9 @@ fn parse_response<T: for<'de> Deserialize<'de>>(
 }
 
 fn capabilities() -> Value {
-    let registry = declaration_registry();
-    let connectors = registry
-        .declarations()
-        .iter()
-        .map(|declaration| {
-            json!({
-                "domain": declaration.domain.clone(),
-                "kinds": declaration.kinds.iter().map(|kind| {
-                    json!({
-                        "kind": kind.kind.clone(),
-                        "verb": kind.verb.clone(),
-                        "danger": kind.danger.as_str(),
-                        "boundary_type": kind.boundary_type.as_str()
-                    })
-                }).collect::<Vec<_>>()
-            })
-        })
-        .collect::<Vec<_>>();
     json!({
-        "runtime": registry.all_kinds(),
-        "connectors": connectors,
-        "app_server": true,
+        "relay": ["relay.envelope", "relay.ack"],
+        "adapter_router": { "mode": "external_http" },
         "desktop": "tao-wry",
         "platform": env::consts::OS
     })
@@ -5500,8 +5596,11 @@ fn capabilities() -> Value {
 fn local_state() -> Value {
     json!({
         "platform": env::consts::OS,
-        "commands": { "codex": command_exists(&codex_bin()) },
-        "workspaces": { "default": workspace_path("default") }
+        "relay": { "envelopes": true, "ack": true },
+        "adapter_router": {
+            "mode": "external_http",
+            "configured": env::var("PANDA_BRIDGE_ADAPTER_URL").ok().map(|value| !value.trim().is_empty()).unwrap_or(false)
+        }
     })
 }
 
@@ -8078,7 +8177,7 @@ mod tests {
         assert_eq!(preview["request_source"], "desktop_fallback_low_tier");
         assert_eq!(
             preview["capabilities"],
-            json!(["codex.chat", "codex.run", "codex.rpc"])
+            json!(["codex.chat", "codex.run", "codex.rpc", "syllo.sessions"])
         );
         assert_eq!(
             preview["capabilities"]
@@ -8134,19 +8233,11 @@ mod tests {
         );
         assert_eq!(
             capabilities()["runtime"],
-            json!([
-                "codex.chat",
-                "codex.rpc",
-                "codex.run",
-                "data.delete",
-                "data.get",
-                "data.put",
-                "data.query",
-                "fs.read",
-                "fs.write",
-                "shell.run"
-            ])
+            Value::Null
         );
+        assert_eq!(capabilities()["relay"], json!(["relay.envelope", "relay.ack"]));
+        assert_eq!(local_state()["commands"], Value::Null);
+        assert_eq!(local_state()["workspaces"], Value::Null);
     }
 
     #[test]
@@ -8318,7 +8409,7 @@ mod tests {
         assert_eq!(policy["request_source"], "desktop_fallback_low_tier");
         assert_eq!(
             policy["capabilities"],
-            json!(["codex.chat", "codex.run", "codex.rpc"])
+            json!(["codex.chat", "codex.run", "codex.rpc", "syllo.sessions"])
         );
         assert_eq!(
             policy["workspace_roots"],
