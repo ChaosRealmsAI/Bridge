@@ -286,6 +286,10 @@ const deviceInbox = await api("GET", "/v1/connectors/relay/envelopes", null, cla
 assert.equal(deviceInbox.items.length, 1);
 assert.equal(deviceInbox.items[0].id, created.envelope.id);
 assert.equal(deviceInbox.items[0].delivery_status, "delivered");
+const redeliveredInbox = await api("GET", "/v1/connectors/relay/envelopes", null, claimed.device_token);
+assert.equal(redeliveredInbox.items.length, 1);
+assert.equal(redeliveredInbox.items[0].id, created.envelope.id);
+assert.equal(redeliveredInbox.items[0].delivery_status, "delivered");
 await api("POST", `/v1/connectors/relay/envelopes/${created.envelope.id}/ack`, {}, claimed.device_token);
 
 const deviceReply = await api("POST", "/v1/connectors/relay/envelopes", relayEnvelope({

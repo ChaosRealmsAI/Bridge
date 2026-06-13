@@ -21,6 +21,8 @@ assert.ok(adapterRouter.includes('"nonce"'));
 assert.equal(adapterRouter.includes("prompt"), false, "AdapterRouter must not parse product prompt");
 assert.equal(adapterRouter.includes("syllo."), false, "AdapterRouter must not parse Syllo kinds");
 assert.equal(adapterRouter.includes("codex."), false, "AdapterRouter must not parse Codex kinds");
+assert.ok(adapterRouter.includes("response_envelope"), "AdapterRouter must forward opaque adapter response envelopes");
+assert.ok(main.includes("fn post_connector_relay_envelope("), "Desktop must post adapter response envelopes through connector relay");
 
 const syllo = readFileSync(new URL("../../apps/desktop/src/connector/syllo.rs", import.meta.url), "utf8");
 assert.ok(syllo.includes("Legacy Syllo vertical adapter"));

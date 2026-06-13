@@ -993,25 +993,27 @@ async function connectorRelayEnvelopes(request, env) {
     user_id: connector.device.user_id,
     device_id: connector.device.id,
     direction: "product_to_device",
-    delivery_status: "queued",
   };
   if (productId) filters.product_id = productId;
   if (channelId) filters.channel_id = channelId;
   const rows = await storage(env).select("bridge_relay_envelopes", filters, { order: "created_at" });
   const items = [];
-  for (const row of rows.filter((item) => Number(item.seq || 0) > afterSeq && !isExpired(item.expires_at))) {
+  for (const row of rows
+    .filter((item) => ["queued", "delivered"].includes(item.delivery_status || "queued"))
+    .filter((item) => Number(item.seq || 0) > afterSeq && !isExpired(item.expires_at))) {
     const authorization = await authorizationForProduct(env, row.user_id, row.device_id, row.product_id);
     const denial = authorizationJobDenial(authorization);
     if (denial) {
       await expireRelayEnvelope(env, row, denial.reason);
       continue;
     }
-    const deliveredAt = now();
-    const delivered = await storage(env).update("bridge_relay_envelopes", row.id, {
-      delivery_status: "delivered",
-      delivered_at: row.delivered_at || deliveredAt,
-      updated_at: deliveredAt,
-    });
+    const delivered = row.delivery_status === "queued"
+      ? await storage(env).update("bridge_relay_envelopes", row.id, {
+        delivery_status: "delivered",
+        delivered_at: row.delivered_at || now(),
+        updated_at: now(),
+      })
+      : row;
     items.push(publicRelayEnvelope(delivered || row));
   }
   return json({ items, transport: realtimeEnabled(env) ? "websocket_or_poll" : "poll" }, env);

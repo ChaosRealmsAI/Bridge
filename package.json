@@ -32,6 +32,8 @@
     "verify:desktop-ai-cli": "node scripts/verify/desktop-ai-cli-control.mjs",
     "verify:relay-e2ee": "node scripts/verify/relay-e2ee.mjs",
     "verify:adapter-syllo": "node scripts/verify/adapter-syllo.mjs",
+    "verify:relay-local-control": "node examples/relay-local-control/run-local.mjs",
+    "verify:relay-local-control:blackbox": "node examples/relay-local-control/blackbox.mjs",
     "verify:multi-account-realtime": "node scripts/verify/multi-account-realtime-fanout.mjs",
     "verify:fake-source-matrix": "node scripts/verify/fake-source-matrix.mjs",
     "verify:desktop-lite": "node scripts/verify/desktop-lite-smoke.mjs",

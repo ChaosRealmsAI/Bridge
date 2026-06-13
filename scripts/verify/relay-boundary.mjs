@@ -117,4 +117,23 @@ assert.equal(localState.includes("commands"), false, "local_state must not publi
 assert.equal(localState.includes("workspaces"), false, "local_state must not publish workspaces");
 assert.equal(localState.includes("codex"), false, "local_state must not publish codex state");
 
+const readme = readFileSync(new URL("../../README.md", import.meta.url), "utf8");
+for (const marker of [
+  "Cloud-to-Local AI Runtime Bridge",
+  "Bridge Job Protocol",
+  "JSON job",
+  "local Codex app-server",
+]) {
+  assert.equal(readme.includes(marker), false, `README still contains old runtime positioning: ${marker}`);
+}
+for (const marker of [
+  "Cloud-to-Local Secure Relay / Jump Host",
+  "Relay Envelope Protocol",
+  "Product Adapter",
+  "npm run verify:relay-local-control",
+  "npm run verify:relay-local-control:blackbox",
+]) {
+  assert.equal(readme.includes(marker), true, `README missing relay positioning: ${marker}`);
+}
+
 console.log("[relay-boundary] pass");

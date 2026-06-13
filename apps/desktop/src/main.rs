@@ -481,6 +481,12 @@ struct RelayEnvelope {
     delivery_status: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct AdapterRelayResponse {
+    #[serde(default)]
+    response_envelope: Option<Value>,
+}
+
 #[derive(Debug, Clone)]
 struct LocalJobPolicy {
     cwd: String,
@@ -4250,7 +4256,9 @@ fn route_and_ack_relay_envelope(
             envelope.product_id
         ));
     }
-    route_relay_envelope_to_adapter(envelope)?;
+    if let Some(response_envelope) = route_relay_envelope_to_adapter(envelope)? {
+        post_connector_relay_envelope(credentials, &response_envelope)?;
+    }
     let ack_url = format!(
         "{}/v1/connectors/relay/envelopes/{}/ack",
         credentials.api_base,
@@ -4265,7 +4273,7 @@ fn route_and_ack_relay_envelope(
     Ok(())
 }
 
-fn route_relay_envelope_to_adapter(envelope: &RelayEnvelope) -> Result<(), String> {
+fn route_relay_envelope_to_adapter(envelope: &RelayEnvelope) -> Result<Option<Value>, String> {
     let endpoint = adapter_endpoint_for_product(&envelope.product_id)
         .ok_or_else(|| format!("adapter_not_found: {}", envelope.product_id))?;
     let response = Client::new()
@@ -4289,12 +4297,32 @@ fn route_relay_envelope_to_adapter(envelope: &RelayEnvelope) -> Result<(), Strin
         }))
         .send()
         .map_err(|error| format!("adapter_route_failed: {error}"))?;
-    if !response.status().is_success() {
-        return Err(format!(
-            "adapter_route_failed: status={}",
-            response.status().as_u16()
-        ));
+    let status = response.status();
+    if !status.is_success() {
+        return Err(format!("adapter_route_failed: status={}", status.as_u16()));
     }
+    let text = response
+        .text()
+        .map_err(|error| format!("adapter_route_failed: {error}"))?;
+    if text.trim().is_empty() {
+        return Ok(None);
+    }
+    let payload: AdapterRelayResponse = serde_json::from_str(&text)
+        .map_err(|error| format!("adapter_route_failed: invalid response json: {error}"))?;
+    Ok(payload.response_envelope)
+}
+
+fn post_connector_relay_envelope(
+    credentials: &Credentials,
+    envelope: &Value,
+) -> Result<(), String> {
+    let url = format!("{}/v1/connectors/relay/envelopes", credentials.api_base);
+    let _: Value = post_json_with_install(
+        &url,
+        envelope,
+        Some(&credentials.device_token),
+        credentials.install_id.as_deref(),
+    )?;
     Ok(())
 }
 
@@ -8231,11 +8259,11 @@ mod tests {
                 "boundary_type": "workspace_sandbox"
             })
         );
+        assert_eq!(capabilities()["runtime"], Value::Null);
         assert_eq!(
-            capabilities()["runtime"],
-            Value::Null
+            capabilities()["relay"],
+            json!(["relay.envelope", "relay.ack"])
         );
-        assert_eq!(capabilities()["relay"], json!(["relay.envelope", "relay.ack"]));
         assert_eq!(local_state()["commands"], Value::Null);
         assert_eq!(local_state()["workspaces"], Value::Null);
     }
