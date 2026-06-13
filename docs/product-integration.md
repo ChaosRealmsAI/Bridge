@@ -35,6 +35,8 @@ import { createBridgeServerClient } from "@panda-bridge/sdk/server";
 
 浏览器 client 适合用户状态、授权管理和用户会话下的 relay 调用；server client 适合产品后端用委托 HMAC 调 Bridge。
 
+SDK 级最终调用细节见 [`docs/sdk-calling-guide.md`](./sdk-calling-guide.md)：该文档是调用方写代码时的主参考，覆盖字段、ACK、backpressure、幂等、E2EE、错误处理和 checklist。
+
 ## 1. 心智模型
 
 每个 `(产品, 账号)` 只有两个外部状态：

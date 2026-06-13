@@ -2,7 +2,9 @@
 
 Panda Bridge SDK 给产品调用方一套稳定 API：账号级授权、自动桌面连接、opaque relay envelope、以及后端委托调用。
 
-模型：每个 `(产品, 账号)` 只有两个正交开关 —— **授权**（用户控制 `active`/`paused`/删除）和 **连接**（系统全自动，调用方只读 `connected`）。完整接入指南见 [`docs/product-integration.md`](../../docs/product-integration.md)。
+模型：每个 `(产品, 账号)` 只有两个正交开关 —— **授权**（用户控制 `active`/`paused`/删除）和 **连接**（系统全自动，调用方只读 `connected`）。
+
+最终调用手册见 [`docs/sdk-calling-guide.md`](../../docs/sdk-calling-guide.md)：里面包含 browser/server client 选择、relay envelope 字段契约、`waitForResponse`、ACK 规则、backpressure、幂等重试、Product Adapter 责任、E2EE 边界、错误表和上线 checklist。产品整体接入指南见 [`docs/product-integration.md`](../../docs/product-integration.md)。
 
 ---
 
