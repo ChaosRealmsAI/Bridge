@@ -68,34 +68,6 @@ export const EVENT_TYPES = Object.freeze([
   "cancelled",
 ]);
 
-function normalizeBridgeJob(input = {}) {
-  const kind = normalizeKind(input.kind || input.job_kind);
-  const productId = stringValue(input.productId || input.product_id, 80);
-  const deviceId = stringValue(input.deviceId || input.device_id || input.connector_id, 80);
-  const workspaceRef = stringPassthrough(input.workspaceRef ?? input.workspace_ref);
-  const requestKey = stringValue(input.requestKey || input.request_key, 160);
-  const body = objectValue(input.input || input.payload);
-  const policy = normalizePolicy(input.policy || {});
-  return {
-    kind,
-    product_id: productId,
-    device_id: deviceId,
-    workspace_ref: workspaceRef || null,
-    request_key: requestKey || null,
-    input: body,
-    policy,
-  };
-}
-
-function validateBridgeJob(input = {}) {
-  const job = normalizeBridgeJob(input);
-  const errors = [];
-  if (!job.kind) errors.push("missing_kind");
-  if (!job.product_id) errors.push("missing_product_id");
-  if (!job.device_id) errors.push("missing_device_id");
-  return { ok: errors.length === 0, errors, job };
-}
-
 export function normalizeRelayEnvelope(input = {}) {
   const value = objectValue(input);
   const meta = normalizeRelayMeta(value.meta);
@@ -164,6 +136,7 @@ export function relayEnvelopeRecord(envelope, fields = {}) {
     algorithm: envelope.algorithm,
     sender_key_id: envelope.sender_key_id,
     recipient_key_id: envelope.recipient_key_id,
+    idempotency_hash: stringValue(fields.idempotency_hash || fields.idempotencyHash, 128) || null,
     meta: normalizeRelayMeta(envelope.meta),
     delivery_status: "queued",
     queued_at: queuedAt,

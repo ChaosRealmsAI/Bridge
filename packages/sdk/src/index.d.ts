@@ -41,6 +41,11 @@ export type BridgeErrorCode =
   | "product_not_authorized"
   | "product_origin_mismatch"
   | "product_queue_full"
+  | "relay_account_queue_full"
+  | "relay_channel_queue_full"
+  | "relay_device_queue_full"
+  | "relay_product_queue_full"
+  | "relay_response_timeout"
   | "request_body_too_large"
   | "scope_insufficient"
   | "unauthorized"
@@ -344,6 +349,11 @@ export type BridgeRelayWaitInput = BridgeRelayListInput & {
   interval_ms?: number;
 };
 
+export type BridgeRelayWaitForResponseResult = {
+  envelope: JsonObject;
+  ack(input?: JsonObject): Promise<JsonObject>;
+};
+
 export type BridgeClient = {
   productId: string;
   state(): Promise<BridgeStateModel>;
@@ -352,7 +362,6 @@ export type BridgeClient = {
   install(options?: BridgeDesktopInstallOptions): { downloadUrl: string; version: string; sha256: string; openUrl: string; platform: string };
   diagnostics(): Promise<JsonObject>;
   preflight(input?: { deviceId?: string; device_id?: string }): Promise<JsonObject>;
-  queue: { summary(): Promise<JsonObject> };
   auth: {
     session(): Promise<JsonObject>;
     password(email: string, password: string, displayName?: string): Promise<JsonObject>;
@@ -391,7 +400,7 @@ export type BridgeClient = {
     create(input: BridgeRelayEnvelopeInput): Promise<JsonObject>;
     list(input?: BridgeRelayListInput): Promise<JsonObject>;
     ack(envelopeId: string, input?: JsonObject): Promise<JsonObject>;
-    wait(input?: BridgeRelayWaitInput): Promise<JsonObject>;
+    waitForResponse(input?: BridgeRelayWaitInput): Promise<BridgeRelayWaitForResponseResult>;
   };
 };
 

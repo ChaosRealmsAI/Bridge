@@ -157,7 +157,22 @@ const created = await bridge.createRelayEnvelope({
 });
 ```
 
-Adapter 处理完后，产品侧读取本 channel 的 `device_to_product` envelope，并在产品侧解密：
+Adapter 处理完后，产品侧读取本 channel 的 `device_to_product` envelope，并在产品侧解密。推荐用 SDK 的窄等待接口：
+
+```js
+const { envelope, ack } = await bridge.waitForResponse({
+  userId: user.id,
+  deviceId,
+  channelId: "my-product-channel",
+  afterSeq: 1,
+  timeoutMs: 120000,
+});
+
+const plaintext = await decryptInProduct(envelope);
+await ack(); // 只有成功解密并处理后才 ACK
+```
+
+也可以手动 list + ack：
 
 ```js
 const inbox = await bridge.listRelayEnvelopes({
@@ -234,6 +249,11 @@ npm run verify:relay-local-control:blackbox
 | `plaintext_fields_forbidden` | envelope 带了明文字段 | 产品侧先加密，只传密文 envelope |
 | `invalid_relay_envelope` | envelope 字段不合法 | 按 `relay-envelope-v1` 补字段 |
 | `legacy_runtime_api_removed` | 旧 job/runtime API 已迁出 | 改用 `/relay/envelopes` |
+| `relay_device_queue_full` | 设备未 ACK envelope 达到上限 | 读取 `queue.retry_after_ms` 后重试或先消费响应 |
+| `relay_account_queue_full` | 账号未 ACK envelope 达到上限 | 降低并发，按 channel 消费响应 |
+| `relay_product_queue_full` | 产品未 ACK envelope 达到上限 | 限制该产品并发请求 |
+| `relay_channel_queue_full` | 单 channel 未 ACK envelope 达到上限 | 按 seq 顺序消费并 ACK |
+| `relay_response_timeout` | 等待 Adapter 回包超时 | 由产品协议决定取消、重试或展示失败 |
 
 ## 10. 接入顺序
 

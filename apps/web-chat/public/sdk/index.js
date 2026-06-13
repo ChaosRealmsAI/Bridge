@@ -4,24 +4,33 @@ export const BridgeErrorCodes = Object.freeze({
   already_authorized: "already_authorized",
   authorization_import_proof_required: "authorization_import_proof_required",
   authorization_paused: "authorization_paused",
+  authorization_revoked: "authorization_revoked",
   authorization_scope_denied: "authorization_scope_denied",
   bridge_cloud_unavailable: "bridge_cloud_unavailable",
   connect_intent_not_found: "connect_intent_not_found",
   delegated_authorization_proof_mismatch: "delegated_authorization_proof_mismatch",
   delegated_device_mismatch: "delegated_device_mismatch",
+  desktop_authorization_required: "desktop_authorization_required",
   desktop_claim_required: "desktop_claim_required",
   device_not_found: "device_not_found",
+  device_offline: "device_offline",
   device_queue_full: "device_queue_full",
   idempotency_key_conflict: "idempotency_key_conflict",
   install_id_required: "install_id_required",
   invalid_authorization_import_proof: "invalid_authorization_import_proof",
   invalid_authorization_policy: "invalid_authorization_policy",
+  invalid_authorization_status: "invalid_authorization_status",
   invalid_connect_intent: "invalid_connect_intent",
   invalid_content_type: "invalid_content_type",
+  invalid_job: "invalid_job",
   invalid_json: "invalid_json",
   invalid_origin: "invalid_origin",
+  invalid_relay_envelope: "invalid_relay_envelope",
   job_not_found: "job_not_found",
+  legacy_runtime_api_removed: "legacy_runtime_api_removed",
   local_policy_denied: "local_policy_denied",
+  not_found: "not_found",
+  plaintext_fields_forbidden: "plaintext_fields_forbidden",
   product_delegation_body_hash_invalid: "product_delegation_body_hash_invalid",
   product_delegation_not_configured: "product_delegation_not_configured",
   product_delegation_replay: "product_delegation_replay",
@@ -31,17 +40,89 @@ export const BridgeErrorCodes = Object.freeze({
   product_not_authorized: "product_not_authorized",
   product_origin_mismatch: "product_origin_mismatch",
   product_queue_full: "product_queue_full",
+  relay_account_queue_full: "relay_account_queue_full",
+  relay_channel_queue_full: "relay_channel_queue_full",
+  relay_device_queue_full: "relay_device_queue_full",
+  relay_product_queue_full: "relay_product_queue_full",
+  relay_response_timeout: "relay_response_timeout",
   request_body_too_large: "request_body_too_large",
   scope_insufficient: "scope_insufficient",
   unauthorized: "unauthorized",
+  unsupported_job_kind: "unsupported_job_kind",
 });
+
+// Human-readable fallback messages, keyed by error code. Used when the worker
+// did not return a `message` so BridgeError.message is not just a copy of the
+// code. `.code` always stays the raw machine code.
+export const BRIDGE_ERROR_MESSAGES = Object.freeze({
+  already_authorized: "该账号已授权，无需再次授权",
+  authorization_import_proof_required: "缺少授权导入凭证（proof_token）",
+  authorization_paused: "该账号授权已被用户暂停，请引导用户恢复授权",
+  authorization_revoked: "该账号授权已被移除，请重新走授权流程",
+  authorization_scope_denied: "本次任务超出了该授权允许的范围",
+  bridge_cloud_unavailable: "Bridge 云端暂时不可用，请稍后重试",
+  bridge_ready_timeout: "等待设备就绪超时",
+  connect_intent_not_found: "找不到该连接意图（可能已消费或过期）",
+  delegated_authorization_proof_mismatch: "授权凭证与当前账号/设备不匹配",
+  delegated_device_mismatch: "请求的设备与签名中的设备不一致",
+  desktop_claim_required: "该连接意图只能由桌面端 claim，浏览器不能 claim",
+  device_not_found: "找不到该设备（可能不存在或已撤销）",
+  device_offline: "目标设备当前离线，正在重连，请稍后重试",
+  device_queue_full: "该设备的任务队列已满，请稍后重试",
+  idempotency_key_conflict: "相同 requestKey 但请求体不同，请换新的 requestKey",
+  install_id_required: "桌面端 claim 缺少 install_id",
+  invalid_authorization_import_proof: "授权导入凭证无效、已使用或已过期",
+  invalid_authorization_policy: "授权策略参数不合法",
+  invalid_authorization_status: "授权状态值不合法（只能是 active 或 paused）",
+  invalid_connect_intent: "连接意图不存在、已消费或已过期，请重新创建",
+  invalid_content_type: "写请求必须使用 application/json",
+  invalid_job: "任务参数不合法",
+  invalid_json: "请求体不是合法 JSON",
+  invalid_origin: "请求来源不在该产品的 origin 白名单内",
+  invalid_relay_envelope: "加密 envelope 参数不合法",
+  job_not_found: "找不到该任务",
+  legacy_runtime_api_removed: "旧任务接口已迁出，请改用 relay envelope 接口",
+  local_policy_denied: "桌面端本地策略拒绝了该越权任务",
+  not_found: "请求的资源不存在",
+  plaintext_fields_forbidden: "relay envelope 不能包含明文业务字段",
+  product_delegation_body_hash_invalid: "请求体哈希与实际请求体不一致",
+  product_delegation_not_configured: "云端未为该产品配置委托 secret",
+  product_delegation_replay: "该 nonce 已被使用，请用新的 nonce 重试",
+  product_delegation_signature_invalid: "委托签名校验失败，请逐字段核对 8 行（注意 path 含 query）与 secret",
+  product_delegation_timestamp_invalid: "委托请求时间戳超出允许偏移，请同步后端时钟",
+  product_delegation_unauthorized: "委托签名头缺失或身份无效",
+  product_not_authorized: "该产品对此账号没有 active 授权，请走授权流程",
+  product_origin_mismatch: "Origin 与 product_id 不匹配",
+  product_queue_full: "该产品的任务队列已满，请稍后重试",
+  relay_account_queue_full: "该账号的 relay 未确认信封过多，请稍后重试",
+  relay_channel_queue_full: "该 relay channel 未确认信封过多，请稍后重试",
+  relay_device_queue_full: "该设备的 relay 未确认信封过多，请稍后重试",
+  relay_product_queue_full: "该产品的 relay 未确认信封过多，请稍后重试",
+  relay_response_timeout: "等待 relay 响应超时",
+  request_body_too_large: "请求体超出大小限制",
+  scope_insufficient: "该任务类型不在产品能力范围内",
+  unsupported_job_kind: "不支持的任务类型（kind）",
+  unauthorized: "未登录或会话无效",
+});
+
+export function bridgeErrorMessageForCode(code, status = 0) {
+  return BRIDGE_ERROR_MESSAGES[code] || (status ? `Bridge API ${status}` : "bridge_error");
+}
 
 export class BridgeError extends Error {
   constructor(message, options = {}) {
-    super(message || "bridge_error");
+    const code = stringValue(options.code, 160) || "bridge_error";
+    const status = Number.isFinite(Number(options.status)) ? Number(options.status) : 0;
+    const text = stringValue(message, 300);
+    // Fall back to a human-readable, code-mapped message when the caller passed
+    // nothing or just a copy of the code itself.
+    const resolved = text && text !== code
+      ? text
+      : (BRIDGE_ERROR_MESSAGES[code] || text || (status ? `Bridge API ${status}` : "bridge_error"));
+    super(resolved);
     this.name = "BridgeError";
-    this.code = stringValue(options.code, 160) || "bridge_error";
-    this.status = Number.isFinite(Number(options.status)) ? Number(options.status) : 0;
+    this.code = code;
+    this.status = status;
     this.payload = options.payload ?? null;
   }
 }
@@ -264,9 +345,6 @@ export function createBridgeClient(options = {}) {
     install: (input = {}) => bridgeInstallModel(input),
     diagnostics: () => request("GET", "/v1/diagnostics"),
     preflight: (input = {}) => preflight(request, productId, input),
-    queue: {
-      summary: () => request("GET", "/v1/queue/summary"),
-    },
     auth: {
       session: () => request("GET", "/v1/session"),
       password: (email, password, displayName = "") =>
@@ -308,29 +386,41 @@ export function createBridgeClient(options = {}) {
       pauseAuthorization: (deviceId) => authorization.pause({ deviceId }),
       resumeAuthorization: (deviceId) => authorization.resume({ deviceId }),
     },
-    codex: {
-      chat: (input) => createJob(request, productId, { ...input, kind: "codex.chat" }),
-      run: (input) => createJob(request, productId, { ...input, kind: "codex.run" }),
-      rpc: (input) => createJob(request, productId, { ...input, kind: "codex.rpc" }),
-    },
-    jobs: {
-      create: (input = {}) => createJob(request, productId, input),
-      get: (jobId) => request("GET", `/v1/jobs/${encodeURIComponent(jobId)}`),
-      events: (jobId, after = 0) =>
-        request("GET", `/v1/jobs/${encodeURIComponent(jobId)}/events?after=${encodeURIComponent(String(after))}`),
-      wait: (jobId, options = {}) => waitForJob(request, jobId, options),
-      stream: (jobId, options = {}) => streamEvents(request, apiBase, jobId, options),
-      cancel: (jobId) => request("POST", `/v1/jobs/${encodeURIComponent(jobId)}/cancel`),
+    relay: {
+      create: (input = {}) => createRelayEnvelope(request, productId, input),
+      list: (input = {}) => listRelayEnvelopes(request, productId, input),
+      ack: (envelopeId, input = {}) => ackRelayEnvelope(request, productId, envelopeId, input),
+      waitForResponse: (input = {}) => waitForRelayResponse(request, productId, input),
     },
   };
 }
 
 function bridgeDefaultAuthorizationPolicy(overrides = {}) {
   const policy = {
-    version: "AUTH-SCOPE-v1",
+    version: "AUTH-SCOPE-v2",
+    preset: "workspace-default",
+    request_source: "sdk_default_low_tier",
+    capabilities: ["relay.envelope", "relay.ack"],
+    workspace_roots: [{
+      id: "default",
+      path_display: "[local]/default",
+    }],
+    sandbox_floor: "workspace-write",
+    approval_policy_floor: "on-request",
+    allow_approval_never: false,
+    allow_developer_instructions: false,
+    ...objectValue(overrides),
+  };
+  delete policy.display;
+  return policy;
+}
+
+function bridgeFullAccessAuthorizationPolicy(overrides = {}) {
+  const policy = {
+    version: "AUTH-SCOPE-v2",
     preset: "full-access",
     request_source: "sdk_default_full_access",
-    capabilities: ["codex.chat", "codex.run", "codex.rpc", "saas.custom.run"],
+    capabilities: ["relay.envelope", "relay.ack"],
     workspace_roots: [{
       id: "all",
       path_display: "All local files",
@@ -389,6 +479,11 @@ function normalizeBridgeStateAccounts(data = {}) {
     .map(normalizeBridgeStateAccount)
     .filter((account) => account.account || account.authorization || account.current_device);
   if (directAccounts.length) return directAccounts;
+  // An explicit (present) accounts array is authoritative — even when empty.
+  // The worker returns accounts: [] after a removed/revoked authorization, and
+  // the account must then disappear from state instead of being re-synthesized
+  // from a still-online device row. Only synthesize when accounts is absent.
+  if (Array.isArray(value.accounts)) return [];
 
   const rootDevice = normalizeStateDevice(value.device);
   const devices = [
@@ -750,7 +845,9 @@ function deviceOnline(device = {}) {
 function bridgeErrorFromResponse(status, payload = {}) {
   const data = objectValue(payload);
   const code = stringValue(data.error || data.code || data.message, 160) || `bridge_http_${status}`;
-  return new BridgeError(stringValue(data.message, 300) || code || `Bridge API ${status}`, {
+  // Pass the worker-provided message when present; otherwise BridgeError maps the
+  // code to a human-readable message so `.message` is never just the raw code.
+  return new BridgeError(stringValue(data.message, 300), {
     code,
     status,
     payload: data,
@@ -773,7 +870,6 @@ async function preflight(request, productId, input = {}) {
     authorizations: [],
     authorized_devices: [],
     selected_device: null,
-    queue: null,
     issues,
     actions,
   };
@@ -850,13 +946,6 @@ async function preflight(request, productId, input = {}) {
     }
   }
 
-  const queue = await preflightCall(() => request("GET", "/v1/queue/summary"));
-  if (queue.ok) {
-    result.queue = queue.payload;
-  } else {
-    addPreflightIssue(result, "queue_unavailable", "Bridge queue summary could not be read.", "retry_queue", queue.error);
-  }
-
   result.selected_device = targetDeviceId
     ? result.authorized_devices.find((device) => device.id === targetDeviceId) || null
     : result.authorized_devices[0] || null;
@@ -896,7 +985,6 @@ function preflightAction(code) {
     retry_bridge: "Retry Bridge diagnostics or check the API base.",
     retry_session: "Retry session lookup.",
     retry_devices: "Retry device lookup.",
-    retry_queue: "Retry queue summary.",
     login: "Sign in or create a Bridge session.",
     connect_device: "Connect Panda Bridge Desktop to this account.",
     open_desktop: "Open Panda Bridge Desktop and keep it online.",
@@ -906,64 +994,77 @@ function preflightAction(code) {
   return { code, label: labels[code] || "Review Bridge setup." };
 }
 
-async function createJob(request, productId, input) {
-  const deviceId = input.deviceId || input.device_id;
-  const jobInput = input.input || input.payload || { prompt: input.prompt, calls: input.calls };
-  const normalized = normalizeBridgeJob({
-    ...input,
-    productId,
-    deviceId,
-    input: jobInput,
-    policy: input.policy || {},
-  });
-  const validation = validateBridgeJob(normalized);
-  if (!validation.ok) {
-    const error = new Error(`invalid_bridge_job: ${validation.errors.join(",")}`);
-    error.errors = validation.errors;
-    throw error;
+function createRelayEnvelope(request, productId, input = {}) {
+  return request("POST", `/v1/products/${encodeURIComponent(productId)}/relay/envelopes`, normalizeRelayEnvelopeInput(input, productId, "product_to_device"));
+}
+
+function listRelayEnvelopes(request, productId, input = {}) {
+  const params = new URLSearchParams();
+  const deviceId = stringValue(input.deviceId || input.device_id, 200);
+  const channelId = stringValue(input.channelId || input.channel_id, 200);
+  const afterSeq = input.afterSeq ?? input.after_seq;
+  if (deviceId) params.set("device_id", deviceId);
+  if (channelId) params.set("channel_id", channelId);
+  if (afterSeq != null) params.set("after_seq", String(afterSeq));
+  const query = params.toString();
+  return request("GET", `/v1/products/${encodeURIComponent(productId)}/relay/envelopes${query ? `?${query}` : ""}`);
+}
+
+function ackRelayEnvelope(request, productId, envelopeId, input = {}) {
+  return request("POST", `/v1/products/${encodeURIComponent(productId)}/relay/envelopes/${encodeURIComponent(envelopeId)}/ack`, objectValue(input));
+}
+
+async function waitForRelayResponse(request, productId, input = {}) {
+  const timeoutMs = boundedNumber(input.timeoutMs ?? input.timeout_ms, 120000, 1, 600000);
+  const intervalMs = boundedNumber(input.intervalMs ?? input.interval_ms, 900, 100, 10000);
+  const started = Date.now();
+  for (;;) {
+    const payload = await listRelayEnvelopes(request, productId, input);
+    const items = Array.isArray(payload.items) ? payload.items : [];
+    const envelope = items[0] || null;
+    if (envelope) {
+      return {
+        envelope,
+        ack: (ackInput = {}) => ackRelayEnvelope(request, productId, envelope.id, ackInput),
+      };
+    }
+    if (Date.now() - started >= timeoutMs) {
+      throw new BridgeError("relay_response_timeout", {
+        code: "relay_response_timeout",
+        status: 408,
+        payload: { timeout_ms: timeoutMs },
+      });
+    }
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
   }
-  return request("POST", `/v1/products/${encodeURIComponent(productId)}/jobs`, validation.job);
 }
 
-function normalizeBridgeJob(input = {}) {
-  const kind = normalizeKind(input.kind || input.job_kind);
-  const productId = stringValue(input.productId || input.product_id, 80);
-  const deviceId = stringValue(input.deviceId || input.device_id || input.connector_id, 80);
-  const workspaceRef = stringPassthrough(input.workspaceRef ?? input.workspace_ref);
-  const requestKey = stringValue(input.requestKey || input.request_key, 160);
+function normalizeRelayEnvelopeInput(input = {}, productId = "", direction = "product_to_device") {
+  const value = objectValue(input);
   return {
-    kind,
-    product_id: productId,
-    device_id: deviceId,
-    workspace_ref: workspaceRef || null,
-    request_key: requestKey || null,
-    input: objectValue(input.input || input.payload),
-    policy: normalizePolicy(input.policy || {}),
+    envelope_version: stringValue(value.envelopeVersion || value.envelope_version, 80) || "relay-envelope-v1",
+    product_id: stringValue(value.productId || value.product_id, 120) || productId,
+    device_id: stringValue(value.deviceId || value.device_id || value.connector_id, 200),
+    channel_id: stringValue(value.channelId || value.channel_id, 200),
+    direction: stringValue(value.direction, 80) || direction,
+    seq: boundedNumber(value.seq, 0, 0, Number.MAX_SAFE_INTEGER),
+    request_key: stringValue(value.requestKey || value.request_key, 180) || null,
+    ciphertext: stringValue(value.ciphertext, 1024 * 1024),
+    aad: stringValue(value.aad, 8192),
+    nonce: stringValue(value.nonce || value.iv, 256),
+    algorithm: stringValue(value.algorithm || value.alg, 120),
+    sender_key_id: stringValue(value.senderKeyId || value.sender_key_id, 160),
+    recipient_key_id: stringValue(value.recipientKeyId || value.recipient_key_id, 160),
+    ttl_ms: boundedNumber(value.ttlMs ?? value.ttl_ms, 5 * 60 * 1000, 1000, 24 * 60 * 60 * 1000),
+    meta: objectValue(value.meta),
   };
-}
-
-function validateBridgeJob(input = {}) {
-  const job = normalizeBridgeJob(input);
-  const errors = [];
-  if (!job.kind) errors.push("missing_kind");
-  if (!job.product_id) errors.push("missing_product_id");
-  if (!job.device_id) errors.push("missing_device_id");
-  return { ok: errors.length === 0, errors, job };
-}
-
-function normalizeKind(kind) {
-  return stringPassthrough(kind);
-}
-
-function normalizePolicy(input = {}) {
-  return objectValue(input);
 }
 
 function normalizeAuthorizationPolicyRequest(input = {}) {
   const policy = objectValue(input);
   if (!Object.keys(policy).length) return bridgeDefaultAuthorizationPolicy();
   if (policy.fullAccess === true || policy.full_access === true || policy.preset === "full-access") {
-    return bridgeDefaultAuthorizationPolicy(policy);
+    return bridgeFullAccessAuthorizationPolicy(policy);
   }
   return policy;
 }
@@ -993,118 +1094,10 @@ function stringPassthrough(value) {
   return typeof value === "string" ? value : "";
 }
 
-async function waitForJob(request, jobId, options = {}) {
-  const timeoutMs = options.timeoutMs || 300000;
-  const intervalMs = options.intervalMs || 1500;
-  const started = Date.now();
-  while (Date.now() - started < timeoutMs) {
-    const payload = await request("GET", `/v1/jobs/${encodeURIComponent(jobId)}`);
-    if (payload.job && !["queued", "pending", "running"].includes(payload.job.status)) return payload.job;
-    await sleep(intervalMs);
-  }
-  throw new Error("bridge_job_timeout");
-}
-
-async function* pollEvents(request, jobId, options = {}) {
-  let after = Number(options.after || 0);
-  const intervalMs = options.intervalMs || 900;
-  const timeoutMs = options.timeoutMs || 300000;
-  const started = Date.now();
-  while (Date.now() - started < timeoutMs) {
-    const payload = await request("GET", `/v1/jobs/${encodeURIComponent(jobId)}/events?after=${after}`);
-    for (const event of payload.items || []) {
-      after = Math.max(after, Number(event.seq || 0));
-      yield event;
-    }
-    const job = payload.job;
-    if (job && !["queued", "pending", "running"].includes(job.status)) return;
-    await sleep(intervalMs);
-  }
-}
-
-async function* streamEvents(request, apiBase, jobId, options = {}) {
-  const deviceId = stringValue(options.deviceId || options.device_id, 120);
-  if (options.realtime === false || !deviceId || typeof WebSocket === "undefined") {
-    yield* pollEvents(request, jobId, options);
-    return;
-  }
-
-  let after = Number(options.after || 0);
-  const timeoutMs = options.timeoutMs || 300000;
-  const fallbackIntervalMs = options.intervalMs || 900;
-  const started = Date.now();
-  const queue = [];
-  let ws = null;
-  let opened = false;
-  let closed = false;
-  let failed = null;
-  let wake = null;
-  const wakeWaiter = () => {
-    if (wake) {
-      wake();
-      wake = null;
-    }
-  };
-
-  try {
-    ws = new WebSocket(realtimeDeviceUrl(apiBase, deviceId, "web"));
-    ws.addEventListener("open", () => {
-      opened = true;
-      wakeWaiter();
-    });
-    ws.addEventListener("message", (message) => {
-      let payload = null;
-      try {
-        payload = JSON.parse(String(message.data || ""));
-      } catch {
-        return;
-      }
-      if (payload.type === "job.event" && payload.event?.job_id === jobId) {
-        queue.push(payload.event);
-        wakeWaiter();
-      }
-    });
-    ws.addEventListener("error", () => {
-      failed = new Error("bridge_realtime_error");
-      wakeWaiter();
-    });
-    ws.addEventListener("close", () => {
-      closed = true;
-      wakeWaiter();
-    });
-
-    await waitFor(() => opened || failed || closed, 5000);
-    if (!opened) throw failed || new Error("bridge_realtime_unavailable");
-
-    const initial = await request("GET", `/v1/jobs/${encodeURIComponent(jobId)}/events?after=${after}`);
-    for (const event of initial.items || []) {
-      after = Math.max(after, Number(event.seq || 0));
-      yield event;
-    }
-    if (isTerminalJob(initial.job)) return;
-
-    while (Date.now() - started < timeoutMs) {
-      while (queue.length) {
-        const event = queue.shift();
-        const seq = Number(event.seq || 0);
-        if (seq <= after) continue;
-        after = seq;
-        yield event;
-        if (isTerminalEvent(event)) return;
-      }
-      if (closed || failed) break;
-      await new Promise((resolve) => {
-        wake = resolve;
-        setTimeout(resolve, 15000);
-      });
-    }
-  } catch {
-    // Fall back to the durable HTTP event log without surfacing transport details to users.
-  } finally {
-    if (ws && ws.readyState < 2) ws.close();
-  }
-
-  yield* pollEvents(request, jobId, { ...options, after, intervalMs: fallbackIntervalMs });
+function boundedNumber(value, fallback, min, max) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.max(min, Math.min(max, Math.trunc(number)));
 }
 
 function realtimeDeviceUrl(apiBase, deviceId, role) {
@@ -1113,23 +1106,6 @@ function realtimeDeviceUrl(apiBase, deviceId, role) {
   url.pathname = `/v1/realtime/devices/${encodeURIComponent(deviceId)}`;
   url.search = `?role=${encodeURIComponent(role)}`;
   return url.toString();
-}
-
-function isTerminalJob(job) {
-  return job && !["queued", "pending", "running"].includes(job.status);
-}
-
-function isTerminalEvent(event) {
-  return ["completed", "failed", "cancelled"].includes(event?.type);
-}
-
-async function waitFor(predicate, timeoutMs) {
-  const started = Date.now();
-  while (Date.now() - started < timeoutMs) {
-    if (predicate()) return true;
-    await sleep(50);
-  }
-  return predicate();
 }
 
 function sleep(ms) {

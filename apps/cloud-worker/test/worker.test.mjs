@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, createHmac, randomUUID } from "node:crypto";
-import worker, { BridgeDeviceRoom, __bridgeTestMemorySnapshot } from "../src/index.js";
+import worker, { BridgeDeviceRoom, __bridgeTestMemorySnapshot, __bridgeTestRelayEnvelopeMatches } from "../src/index.js";
 import { assertRegistryWellFormed, scopeDangerMetadataFromCapabilities } from "../src/products.js";
 
 const assetRequests = [];
@@ -139,6 +139,13 @@ const diagnostics = await api("GET", "/v1/diagnostics");
 assert.equal(diagnostics.protocol, "panda-bridge-protocol-v0.2");
 assert.equal(diagnostics.relay.stores_plaintext, false);
 assert.equal(diagnostics.relay.envelope_ttl_ms, 300000);
+assert.deepEqual(diagnostics.relay.queue_limits, {
+  device_max_unacked: 150,
+  account_max_unacked: 500,
+  product_max_unacked: 300,
+  channel_max_unacked: 50,
+  retry_after_ms: 3000,
+});
 assert.equal(diagnostics.legacy_runtime_api.removed, true);
 assert.equal("jobs" in diagnostics, false);
 for (const product of diagnostics.products) {
@@ -264,6 +271,29 @@ const duplicate = await api("POST", "/v1/products/panda-chat/relay/envelopes", r
 }));
 assert.equal(duplicate.reused, true);
 assert.equal(duplicate.envelope.id, created.envelope.id);
+const legacyNoHashRow = { ...created.envelope };
+delete legacyNoHashRow.idempotency_hash;
+assert.equal(__bridgeTestRelayEnvelopeMatches(legacyNoHashRow, relayEnvelope({
+  product_id: "panda-chat",
+  device_id: claimed.device.id,
+  direction: "product_to_device",
+  request_key: "rq_product_to_device",
+}), 300000), true);
+for (const [field, overrides] of [
+  ["seq", { seq: 99 }],
+  ["algorithm", { algorithm: "X25519-AES-GCM-v2" }],
+  ["ttl_ms", { ttl_ms: 299000 }],
+  ["meta", { meta: { adapter_id: "panda-syllo", priority: "high" } }],
+  ["envelope_version", { envelope_version: "relay-envelope-v2" }],
+]) {
+  assert.equal(__bridgeTestRelayEnvelopeMatches(legacyNoHashRow, relayEnvelope({
+    product_id: "panda-chat",
+    device_id: claimed.device.id,
+    direction: "product_to_device",
+    request_key: "rq_product_to_device",
+    ...overrides,
+  }), 300000), false, `legacy no-hash ${field} conflict must fail closed`);
+}
 
 const conflict = await apiRaw("POST", "/v1/products/panda-chat/relay/envelopes", relayEnvelope({
   device_id: claimed.device.id,
@@ -272,6 +302,21 @@ const conflict = await apiRaw("POST", "/v1/products/panda-chat/relay/envelopes",
 }));
 assert.equal(conflict.response.status, 409);
 assert.equal(conflict.payload.error, "idempotency_key_conflict");
+for (const [field, overrides] of [
+  ["seq", { seq: 99 }],
+  ["algorithm", { algorithm: "X25519-AES-GCM-v2" }],
+  ["ttl_ms", { ttl_ms: 299000 }],
+  ["meta", { meta: { adapter_id: "panda-syllo", priority: "high" } }],
+  ["envelope_version", { envelope_version: "relay-envelope-v2" }],
+]) {
+  const changed = await apiRaw("POST", "/v1/products/panda-chat/relay/envelopes", relayEnvelope({
+    device_id: claimed.device.id,
+    request_key: "rq_product_to_device",
+    ...overrides,
+  }));
+  assert.equal(changed.response.status, 409, `${field} conflict must fail closed`);
+  assert.equal(changed.payload.error, "idempotency_key_conflict");
+}
 
 const legacyJobCreate = await apiRaw("POST", "/v1/products/panda-chat/jobs", {
   kind: "codex.chat",
@@ -281,6 +326,9 @@ const legacyJobCreate = await apiRaw("POST", "/v1/products/panda-chat/jobs", {
 assert.equal(legacyJobCreate.response.status, 410);
 assert.equal(legacyJobCreate.payload.error, "legacy_runtime_api_removed");
 assert.equal((await apiRaw("GET", "/v1/connectors/jobs", null, claimed.device_token)).response.status, 410);
+const legacyQueueSummary = await apiRaw("GET", "/v1/queue/summary");
+assert.equal(legacyQueueSummary.response.status, 410);
+assert.equal(legacyQueueSummary.payload.error, "legacy_runtime_api_removed");
 
 const deviceInbox = await api("GET", "/v1/connectors/relay/envelopes", null, claimed.device_token);
 assert.equal(deviceInbox.items.length, 1);
@@ -314,6 +362,7 @@ await api("POST", `/v1/products/panda-chat/relay/envelopes/${deviceReply.envelop
 const snapshot = __bridgeTestMemorySnapshot();
 assert.equal(snapshot.bridge_relay_envelopes.length, 2);
 assert.ok(snapshot.bridge_relay_envelopes.every((row) => row.ciphertext && row.aad && row.nonce));
+assert.ok(snapshot.bridge_relay_envelopes.every((row) => row.idempotency_hash));
 assert.doesNotMatch(JSON.stringify(snapshot.bridge_relay_envelopes), /prompt|stdout|stderr|"input"|"result"|"policy"|"kind"|"runtime"/);
 
 const otherlineIntent = await api("POST", "/v1/connect-intents", {

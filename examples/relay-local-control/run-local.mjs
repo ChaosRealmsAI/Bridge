@@ -114,11 +114,11 @@ async function runCommandThroughBridge(bridge, deviceId, channelId, seq, command
     assertPollProcessed(await runDesktop(["headless-poll"]));
   }
 
-  const responseEnvelope = await bridge.relay.wait({ deviceId, channelId, afterSeq: seq, timeoutMs: 10000, intervalMs: 250 });
+  const { envelope: responseEnvelope, ack } = await bridge.relay.waitForResponse({ deviceId, channelId, afterSeq: seq, timeoutMs: 10000, intervalMs: 250 });
   assert.equal(responseEnvelope.direction, "device_to_product");
   const result = await decryptResponseEnvelope(responseEnvelope, adapter.keyBytes);
   recordNoServerVisiblePlaintext(`${command.op}:response`, responseEnvelope, plaintextTokensFor(command, result));
-  await bridge.relay.ack(responseEnvelope.id, { status: "acked" });
+  await ack({ status: "acked" });
   return result;
 }
 

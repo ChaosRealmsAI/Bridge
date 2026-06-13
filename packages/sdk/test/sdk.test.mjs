@@ -265,10 +265,6 @@ await client.diagnostics();
 assert.equal(calls[6].url, "https://api.example.test/v1/diagnostics");
 assert.equal(calls[6].init.method, "GET");
 
-await client.queue.summary();
-assert.equal(calls[7].url, "https://api.example.test/v1/queue/summary");
-assert.equal(calls[7].init.method, "GET");
-
 const customCalls = [];
 const customClient = createBridgeClient({
   apiBase: "https://api.example.test",
@@ -311,6 +307,49 @@ assert.deepEqual(JSON.parse(customCalls[0].init.body), {
   meta: {},
 });
 
+const waitCalls = [];
+const waitClient = createBridgeClient({
+  apiBase: "https://api.example.test",
+  productId: "panda-chat",
+  fetch: async (url, init) => {
+    waitCalls.push({ url, init });
+    const parsed = new URL(url);
+    if (parsed.pathname.endsWith("/ack")) {
+      return new Response(JSON.stringify({ acked: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return new Response(JSON.stringify({
+      items: [{
+        id: "env_reply_1",
+        device_id: "dev_custom_1",
+        channel_id: "chan_custom_1",
+        direction: "device_to_product",
+        seq: 2,
+        ciphertext: "base64:reply",
+      }],
+    }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  },
+});
+const waited = await waitClient.relay.waitForResponse({
+  deviceId: "dev_custom_1",
+  channelId: "chan_custom_1",
+  afterSeq: 1,
+  intervalMs: 1,
+  timeoutMs: 20,
+});
+assert.equal(waited.envelope.id, "env_reply_1");
+assert.equal(waitCalls[0].url, "https://api.example.test/v1/products/panda-chat/relay/envelopes?device_id=dev_custom_1&channel_id=chan_custom_1&after_seq=1");
+assert.equal(waitCalls[0].init.method, "GET");
+await waited.ack();
+assert.equal(waitCalls[1].url, "https://api.example.test/v1/products/panda-chat/relay/envelopes/env_reply_1/ack");
+assert.equal(waitCalls[1].init.method, "POST");
+assert.deepEqual(JSON.parse(waitCalls[1].init.body), {});
+
 const unauthPreflight = mockClient([
   { body: { ok: true, protocol: "panda-bridge-protocol-v0.2" } },
   { status: 401, body: { authenticated: false, error: "unauthorized" } },
@@ -328,7 +367,6 @@ const readyPreflight = mockClient([
   { body: { authenticated: true, user: { id: "user_1" } } },
   { body: { items: [{ id: "dev_1", status: "online", device_name: "Mac" }] } },
   { body: { authorization: { device_id: "dev_1", product_id: "panda-chat", status: "active" } } },
-  { body: { counts: { total: 1, active: 0 }, devices: [{ device: { id: "dev_1" }, queue: { active: 0 } }] } },
 ]);
 const readyPreflightResult = await readyPreflight.client.preflight();
 assert.equal(readyPreflightResult.ready, true);

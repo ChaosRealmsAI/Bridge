@@ -79,6 +79,47 @@ assert.equal(calls[5].init.method, "POST");
 assert.equal(new Headers(calls[5].init.headers).get("x-panda-bridge-device-id"), "dev_1");
 assert.equal(JSON.parse(calls[5].init.body).direction, "product_to_device");
 
+const waitCalls = [];
+const waitServer = createBridgeServerClient({
+  apiBase: "https://api.example.test",
+  productId: "otherline",
+  secret,
+  timestamp,
+  nonce,
+  fetch: async (url, init) => {
+    const parsed = new URL(url);
+    waitCalls.push({ path: `${parsed.pathname}${parsed.search}`, init });
+    if (parsed.pathname.endsWith("/ack")) {
+      return jsonResponse({ acked: true });
+    }
+    return jsonResponse({
+      items: [{
+        id: "env_reply_1",
+        device_id: "dev_1",
+        channel_id: "chan_1",
+        direction: "device_to_product",
+        seq: 2,
+        ciphertext: "base64:reply",
+      }],
+    });
+  },
+});
+const waited = await waitServer.waitForResponse({
+  userId: "user_1",
+  deviceId: "dev_1",
+  channelId: "chan_1",
+  afterSeq: 1,
+  intervalMs: 1,
+  timeoutMs: 20,
+});
+assert.equal(waited.envelope.id, "env_reply_1");
+assert.equal(waitCalls[0].path, "/v1/products/otherline/delegated/relay/envelopes?device_id=dev_1&channel_id=chan_1&after_seq=1");
+assert.equal(waitCalls[0].init.method, "GET");
+assert.equal(new Headers(waitCalls[0].init.headers).get("x-panda-bridge-device-id"), "dev_1");
+await waited.ack();
+assert.equal(waitCalls[1].path, "/v1/products/otherline/delegated/relay/envelopes/env_reply_1/ack");
+assert.equal(waitCalls[1].init.method, "POST");
+
 const fallbackCalls = [];
 const fallbackServer = createBridgeServerClient({
   apiBase: "https://api.example.test",

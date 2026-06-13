@@ -3,6 +3,7 @@ import type {
   BridgeAuthorizationPolicy,
   BridgeAuthorizationResponse,
   BridgeConnectIntentResult,
+  BridgeRelayWaitForResponseResult,
   BridgeStateModel,
   JsonObject,
 } from "./index.js";
@@ -67,6 +68,13 @@ export type BridgeServerRelayListInput = BridgeServerUserInput & {
   after_seq?: number;
 };
 
+export type BridgeServerRelayWaitInput = BridgeServerRelayListInput & {
+  timeoutMs?: number;
+  timeout_ms?: number;
+  intervalMs?: number;
+  interval_ms?: number;
+};
+
 export type BridgeServerAuthorizationApi = {
   (input: BridgeServerAuthorizationInput): Promise<BridgeAuthorizationResponse>;
   list(input: BridgeServerAuthorizationInput): Promise<BridgeAuthorizationResponse>;
@@ -90,6 +98,7 @@ export type BridgeServerClient = {
   createRelayEnvelope(input: BridgeServerRelayEnvelopeInput): Promise<JsonObject>;
   listRelayEnvelopes(input: BridgeServerRelayListInput): Promise<JsonObject>;
   ackRelayEnvelope(envelopeId: string, input: BridgeServerUserInput): Promise<JsonObject>;
+  waitForResponse(input: BridgeServerRelayWaitInput): Promise<BridgeRelayWaitForResponseResult>;
 };
 
 export function createBridgeServerClient(options: BridgeServerClientOptions): BridgeServerClient;

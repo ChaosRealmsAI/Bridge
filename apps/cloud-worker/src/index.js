@@ -1,6 +1,7 @@
 import {
   BRIDGE_PROTOCOL_VERSION,
   EVENT_TYPES,
+  RELAY_ENVELOPE_VERSION,
   bridgeEvent,
   publicRelayEnvelope,
   relayEnvelopeRecord,
@@ -43,6 +44,11 @@ const DEVICE_MAX_QUEUED_JOBS = 150;
 const ACCOUNT_MAX_ACTIVE_JOBS = 500;
 const PRODUCT_MAX_ACTIVE_JOBS = 300;
 const JOB_ASSIGNMENT_GRACE_MS = 1000 * 30;
+const RELAY_DEVICE_MAX_UNACKED = 150;
+const RELAY_ACCOUNT_MAX_UNACKED = 500;
+const RELAY_PRODUCT_MAX_UNACKED = 300;
+const RELAY_CHANNEL_MAX_UNACKED = 50;
+const RELAY_QUEUE_RETRY_AFTER_MS = 3000;
 const SUPPORTED_JOB_KIND_REGISTRY = BRIDGE_RUNTIME_CAPABILITY_REGISTRY;
 const SUPPORTED_JOB_KINDS = Object.freeze(Object.keys(SUPPORTED_JOB_KIND_REGISTRY));
 const BRIDGE_DESKTOP_INSTALL = Object.freeze({
@@ -59,6 +65,11 @@ const memory = makeMemoryStore();
 
 export function __bridgeTestMemorySnapshot() {
   return typeof memory.snapshot === "function" ? memory.snapshot() : {};
+}
+
+export function __bridgeTestRelayEnvelopeMatches(row, input, maxTtlMs = RELAY_ENVELOPE_TTL_MS) {
+  const validation = validateRelayEnvelope(input);
+  return validation.ok ? sameRelayEnvelope(row, validation.envelope, row?.idempotency_hash || "", maxTtlMs) : false;
 }
 
 export default {
@@ -84,7 +95,7 @@ export default {
         return json(diagnosticsPayload(env), env);
       }
 
-      if (path === "/v1/queue/summary" && request.method === "GET") return await queueSummary(request, env);
+      if (path === "/v1/queue/summary" && request.method === "GET") return legacyRuntimeApiRemoved(env);
 
       if (path === "/v1/sessions/password" && request.method === "POST") return await createPasswordSession(request, env);
       if (path === "/v1/sessions/guest" && request.method === "POST") return await createGuestSession(request, env);
@@ -570,30 +581,6 @@ async function listDevices(request, env) {
   return json({ items: rows.map((row) => publicDevice(row, env)) }, env);
 }
 
-async function queueSummary(request, env) {
-  const session = await requireSession(request, env);
-  const store = storage(env);
-  const devices = await store.select("bridge_devices", { user_id: session.user.id }, { order: "last_seen_at", desc: true });
-  const jobs = await store.select("bridge_jobs", { user_id: session.user.id }, { order: "created_at" });
-  const limits = jobQueueLimits(env);
-  return json({
-    generated_at: now(),
-    limits: {
-      device_max_running: limits.deviceMaxRunning,
-      device_max_queued: limits.deviceMaxQueued,
-      account_max_active: limits.accountMaxActive,
-      product_max_active: limits.productMaxActive,
-    },
-    counts: jobCounts(jobs),
-    products: productJobCounts(jobs),
-    devices: await Promise.all(devices.map(async (device) => ({
-      device: publicDevice(device, env),
-      queue: await publicDeviceQueue(env, device.id),
-    }))),
-    timing: jobTimingSummary(jobs),
-  }, env);
-}
-
 async function revokeDevice(request, env, deviceId) {
   const session = await requireSession(request, env);
   const device = await ownedDevice(env, session.user.id, deviceId);
@@ -902,11 +889,12 @@ async function connectorJobs(request, env) {
 function legacyRuntimeApiRemoved(env) {
   return json({
     error: "legacy_runtime_api_removed",
-    message: "Panda Bridge V0.2 only relays opaque encrypted envelopes. Use /v1/*/relay/envelopes.",
+    message: "Panda Bridge V0.3 only exposes hosted opaque relay surfaces. Use diagnostics for relay limits and /v1/*/relay/envelopes for encrypted transport.",
     relay: {
       product_create: "/v1/products/{product_id}/relay/envelopes",
       delegated_create: "/v1/products/{product_id}/delegated/relay/envelopes",
       connector_poll: "/v1/connectors/relay/envelopes",
+      diagnostics: "/v1/diagnostics",
     },
   }, env, 410);
 }
@@ -1068,10 +1056,25 @@ async function createAuthorizedRelayEnvelope(env, product, userId, source_origin
   const authorization = await authorizationForProduct(env, userId, device.id, product.id);
   const denial = authorizationJobDenial(authorization);
   if (denial) return json({ error: denial.error }, env, 403);
+  const idempotencyHash = await relayEnvelopeIdempotencyHash(envelope);
   const existing = await existingRequestKeyRelayEnvelope(env, userId, device.id, product.id, envelope.request_key);
   if (existing) {
-    if (!sameRelayEnvelope(existing, envelope)) return json({ error: "idempotency_key_conflict" }, env, 409);
+    if (!sameRelayEnvelope(existing, envelope, idempotencyHash, relayEnvelopeTtlMs(env))) return json({ error: "idempotency_key_conflict" }, env, 409);
     return json({ envelope: publicRelayEnvelope(existing), reused: true }, env);
+  }
+  await cleanupExpiredRelayEnvelopes(env);
+  const relayLimit = await relayQueueLimitDenial(env, {
+    userId,
+    deviceId: device.id,
+    productId: product.id,
+    channelId: envelope.channel_id,
+    direction: envelope.direction,
+  });
+  if (relayLimit) {
+    return json({
+      error: relayLimit.error,
+      queue: relayLimit.queue,
+    }, env, 429);
   }
   const queuedAt = now();
   let row;
@@ -1082,10 +1085,11 @@ async function createAuthorizedRelayEnvelope(env, product, userId, source_origin
     }, {
       userId,
       queuedAt,
+      idempotencyHash,
     }));
   } catch (error) {
     const duplicate = await existingRequestKeyRelayEnvelope(env, userId, device.id, product.id, envelope.request_key);
-    if (duplicate && sameRelayEnvelope(duplicate, envelope)) {
+    if (duplicate && sameRelayEnvelope(duplicate, envelope, idempotencyHash, relayEnvelopeTtlMs(env))) {
       return json({ envelope: publicRelayEnvelope(duplicate), reused: true }, env);
     }
     if (duplicate) return json({ error: "idempotency_key_conflict" }, env, 409);
@@ -1163,16 +1167,57 @@ async function existingRequestKeyRelayEnvelope(env, userId, deviceId, productId,
   return rows[0] || null;
 }
 
-function sameRelayEnvelope(row, envelope) {
-  return row.product_id === envelope.product_id
-    && row.device_id === envelope.device_id
-    && row.channel_id === envelope.channel_id
-    && row.direction === envelope.direction
+function sameRelayEnvelope(row, envelope, idempotencyHash, maxTtlMs = RELAY_ENVELOPE_TTL_MS) {
+  if (row?.idempotency_hash) return String(row.idempotency_hash) === String(idempotencyHash || "");
+  return sameLegacyRelayEnvelope(row, envelope, maxTtlMs);
+}
+
+function sameLegacyRelayEnvelope(row, envelope, maxTtlMs) {
+  const rowTtlMs = relayRowTtlMs(row);
+  const expectedTtlMs = Math.min(Number(envelope.ttl_ms || 0), maxTtlMs);
+  return Boolean(row && envelope)
+    && String(row.product_id || "") === String(envelope.product_id || "")
+    && String(row.device_id || "") === String(envelope.device_id || "")
+    && String(row.channel_id || "") === String(envelope.channel_id || "")
+    && String(row.direction || "") === String(envelope.direction || "")
+    && Number(row.seq || 0) === Number(envelope.seq || 0)
+    && String(row.request_key || "") === String(envelope.request_key || "")
     && String(row.ciphertext || "") === String(envelope.ciphertext || "")
     && String(row.aad || "") === String(envelope.aad || "")
     && String(row.nonce || "") === String(envelope.nonce || "")
+    && String(row.algorithm || "") === String(envelope.algorithm || "")
     && String(row.sender_key_id || "") === String(envelope.sender_key_id || "")
-    && String(row.recipient_key_id || "") === String(envelope.recipient_key_id || "");
+    && String(row.recipient_key_id || "") === String(envelope.recipient_key_id || "")
+    && String(row.envelope_version || RELAY_ENVELOPE_VERSION) === String(envelope.envelope_version || RELAY_ENVELOPE_VERSION)
+    && rowTtlMs !== null
+    && Math.abs(rowTtlMs - expectedTtlMs) <= 1
+    && canonicalJson(row.meta || {}) === canonicalJson(envelope.meta || {});
+}
+
+function relayRowTtlMs(row = {}) {
+  const queuedMs = Date.parse(row.queued_at || row.created_at || "");
+  const expiresMs = Date.parse(row.expires_at || "");
+  return Number.isFinite(queuedMs) && Number.isFinite(expiresMs) ? Math.max(0, expiresMs - queuedMs) : null;
+}
+
+async function relayEnvelopeIdempotencyHash(envelope) {
+  return sha256Hex(canonicalJson({
+    envelope_version: envelope.envelope_version,
+    product_id: envelope.product_id,
+    device_id: envelope.device_id,
+    channel_id: envelope.channel_id,
+    direction: envelope.direction,
+    seq: envelope.seq,
+    request_key: envelope.request_key || null,
+    ciphertext: envelope.ciphertext,
+    aad: envelope.aad,
+    nonce: envelope.nonce,
+    algorithm: envelope.algorithm,
+    sender_key_id: envelope.sender_key_id,
+    recipient_key_id: envelope.recipient_key_id,
+    ttl_ms: envelope.ttl_ms,
+    meta: envelope.meta || {},
+  }));
 }
 
 async function expireRelayEnvelope(env, row, reason = "expired") {
@@ -1187,6 +1232,58 @@ async function cleanupExpiredRelayEnvelopes(env) {
   const store = storage(env);
   if (typeof store.deleteExpired !== "function") return 0;
   return await store.deleteExpired("bridge_relay_envelopes", "expires_at");
+}
+
+async function relayQueueLimitDenial(env, input = {}) {
+  const limits = relayQueueLimits(env);
+  const base = {};
+  const deviceActive = await activeRelayEnvelopes(env, { ...base, device_id: input.deviceId });
+  if (deviceActive.length >= limits.deviceMaxUnacked) {
+    return {
+      error: "relay_device_queue_full",
+      queue: relayLimitPayload(deviceActive.length, limits.deviceMaxUnacked, "device"),
+    };
+  }
+  const accountActive = await activeRelayEnvelopes(env, { ...base, user_id: input.userId });
+  if (accountActive.length >= limits.accountMaxUnacked) {
+    return {
+      error: "relay_account_queue_full",
+      queue: relayLimitPayload(accountActive.length, limits.accountMaxUnacked, "account"),
+    };
+  }
+  const productActive = await activeRelayEnvelopes(env, {
+    ...base,
+    user_id: input.userId,
+    product_id: input.productId,
+  });
+  if (productActive.length >= limits.productMaxUnacked) {
+    return {
+      error: "relay_product_queue_full",
+      queue: relayLimitPayload(productActive.length, limits.productMaxUnacked, "product"),
+    };
+  }
+  const channelActive = await activeRelayEnvelopes(env, {
+    ...base,
+    user_id: input.userId,
+    device_id: input.deviceId,
+    product_id: input.productId,
+    channel_id: input.channelId,
+  });
+  if (channelActive.length >= limits.channelMaxUnacked) {
+    return {
+      error: "relay_channel_queue_full",
+      queue: relayLimitPayload(channelActive.length, limits.channelMaxUnacked, "channel"),
+    };
+  }
+  return null;
+}
+
+async function activeRelayEnvelopes(env, filters = {}) {
+  const rows = await storage(env).select("bridge_relay_envelopes", filters, { order: "created_at" });
+  return rows.filter((item) => (
+    ["queued", "delivered"].includes(item.delivery_status || "queued")
+    && !isExpired(item.expires_at)
+  ));
 }
 
 function isExpired(expiresAt) {
@@ -2830,6 +2927,15 @@ function jobQueueLimits(env) {
   };
 }
 
+function relayQueueLimits(env) {
+  return {
+    deviceMaxUnacked: boundedInteger(env.BRIDGE_RELAY_DEVICE_MAX_UNACKED, RELAY_DEVICE_MAX_UNACKED, 1, 1000),
+    accountMaxUnacked: boundedInteger(env.BRIDGE_RELAY_ACCOUNT_MAX_UNACKED, RELAY_ACCOUNT_MAX_UNACKED, 1, 5000),
+    productMaxUnacked: boundedInteger(env.BRIDGE_RELAY_PRODUCT_MAX_UNACKED, RELAY_PRODUCT_MAX_UNACKED, 1, 3000),
+    channelMaxUnacked: boundedInteger(env.BRIDGE_RELAY_CHANNEL_MAX_UNACKED, RELAY_CHANNEL_MAX_UNACKED, 1, 1000),
+  };
+}
+
 function queueLimitPayload(active, max, maxRunning) {
   return {
     active,
@@ -2839,8 +2945,17 @@ function queueLimitPayload(active, max, maxRunning) {
   };
 }
 
+function relayLimitPayload(active, max, scope) {
+  return {
+    scope,
+    active,
+    max_unacked: max,
+    retry_after_ms: RELAY_QUEUE_RETRY_AFTER_MS,
+  };
+}
+
 function diagnosticsPayload(env) {
-  const limits = jobQueueLimits(env);
+  const relayLimits = relayQueueLimits(env);
   return {
     ok: true,
     protocol: BRIDGE_PROTOCOL_VERSION,
@@ -2866,12 +2981,12 @@ function diagnosticsPayload(env) {
       supported_directions: ["product_to_device", "device_to_product"],
       envelope_route_template: "/v1/*/relay/envelopes",
       queue_limits: {
-        device_max_running: limits.deviceMaxRunning,
-        device_max_queued: limits.deviceMaxQueued,
-        account_max_active: limits.accountMaxActive,
-        product_max_active: limits.productMaxActive,
+        device_max_unacked: relayLimits.deviceMaxUnacked,
+        account_max_unacked: relayLimits.accountMaxUnacked,
+        product_max_unacked: relayLimits.productMaxUnacked,
+        channel_max_unacked: relayLimits.channelMaxUnacked,
+        retry_after_ms: RELAY_QUEUE_RETRY_AFTER_MS,
       },
-      assignment_grace_ms: boundedInteger(env.BRIDGE_JOB_ASSIGNMENT_GRACE_MS, JOB_ASSIGNMENT_GRACE_MS, 1000, 1000 * 60 * 10),
       envelope_ttl_ms: relayEnvelopeTtlMs(env),
       stores_plaintext: false,
     },

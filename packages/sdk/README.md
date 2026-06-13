@@ -43,6 +43,15 @@ if (current?.authorization?.status === "active" && current.connected) {
     requestKey: crypto.randomUUID(),
   });
   console.log(created.envelope.id);
+
+  const { envelope, ack } = await bridge.relay.waitForResponse({
+    deviceId,
+    channelId: "chan_1",
+    afterSeq: 1,
+    timeoutMs: 120000,
+  });
+  const plaintext = await decryptInProduct(envelope);
+  await ack(); // 只在调用方成功解密/处理后 ACK
 }
 ```
 
@@ -121,8 +130,9 @@ await bridge.createConnectIntent({ userId, deviceName, account });
 await bridge.intentStatus(token, { userId });
 await bridge.authorization.pause/resume/remove({ userId, accountId });
 await bridge.createRelayEnvelope({ userId, deviceId, channelId, seq, ciphertext, aad, nonce, algorithm, senderKeyId, recipientKeyId, requestKey });
-await bridge.listRelayEnvelopes({ userId, deviceId, channelId, afterSeq });
-await bridge.ackRelayEnvelope(envelopeId, { userId, deviceId });
+const { envelope, ack } = await bridge.waitForResponse({ userId, deviceId, channelId, afterSeq });
+await decryptInProduct(envelope);
+await ack();
 ```
 
 签名 payload（server client 内部自动生成）：
@@ -178,6 +188,8 @@ if (error.code === BridgeErrorCodes.product_not_authorized) { /* 走授权流程
 | `local_policy_denied` | 桌面端本地拒绝执行 |
 | `legacy_runtime_api_removed` | 旧 job/Codex 接口已迁出，改用 relay envelope |
 | `plaintext_fields_forbidden` | envelope 里包含明文字段，先在产品端加密 |
+| `relay_device_queue_full` / `relay_account_queue_full` / `relay_product_queue_full` / `relay_channel_queue_full` | relay 未 ACK 信封达到上限，读取 `error.payload.queue.retry_after_ms` 后重试 |
+| `relay_response_timeout` | 等待本机 Adapter 回包超时，调用方自行取消或重试 |
 | `request_body_too_large` / `invalid_json` / `invalid_content_type` | 修正请求序列化 |
 
 完整错误码表见 [`docs/product-integration.md` 第 5 节](../../docs/product-integration.md)。
@@ -191,6 +203,7 @@ if (error.code === BridgeErrorCodes.product_not_authorized) { /* 走授权流程
 ```bash
 node --test packages/sdk/test/
 npm run check:relay-boundary
+npm run verify:relay-backpressure
 npm run check:e2ee
 npm run verify:sdk-examples
 node scripts/verify/spec-traceability.mjs

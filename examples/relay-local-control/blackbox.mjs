@@ -171,10 +171,10 @@ async function runCommandThroughBridge(bridge, deviceId, channelId, seq, command
   }
 
   console.error(`[relay-local-control:blackbox] run ${command.op} wait response`);
-  const responseEnvelope = await bridge.relay.wait({ deviceId, channelId, afterSeq: seq, timeoutMs: 10000, intervalMs: 250 });
+  const { envelope: responseEnvelope, ack } = await bridge.relay.waitForResponse({ deviceId, channelId, afterSeq: seq, timeoutMs: 10000, intervalMs: 250 });
   const result = await decryptResponseEnvelope(responseEnvelope, adapter.keyBytes);
   recordNoServerVisiblePlaintext(`${command.op}:response`, responseEnvelope, plaintextTokensFor(command, result));
-  await bridge.relay.ack(responseEnvelope.id, { status: "acked" });
+  await ack({ status: "acked" });
   console.error(`[relay-local-control:blackbox] run ${command.op} done`);
   return result;
 }

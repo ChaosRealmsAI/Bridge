@@ -79,6 +79,7 @@ npm run verify:relay-local-control:blackbox
 npm install
 npm run check
 npm run check:relay-boundary
+npm run verify:relay-backpressure
 npm run check:e2ee
 npm run verify:relay-local-control
 npm run verify:relay-local-control:blackbox
@@ -102,7 +103,7 @@ npm run pandart:local
 - `spec/bdd/*.json` 是产品行为真相。
 - `spec/js/技术文档.js` 记录长期架构和接口契约。
 - `spec/js/工程护栏.js` 记录可执行防回退检查。
-- `spec/js/versions/v0-2/*` 是当前 relay/e2ee/adapter 版本事实。
+- `spec/js/versions/v0-3/*` 是当前 relay 硬化、QoS 和窄 SDK 版本事实。
 
 先读：
 
@@ -111,5 +112,5 @@ spec/bdd/_index.json
 spec/js/技术文档.js
 spec/js/质量标准.js
 spec/js/工程护栏.js
-spec/js/versions/v0-2/版本总览.js
+spec/js/versions/v0-3/版本总览.js
 ```

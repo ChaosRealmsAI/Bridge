@@ -141,7 +141,51 @@ export function createBridgeServerClient(options = {}) {
         input,
       );
     },
+    waitForResponse: (input = {}) => waitForRelayResponse({
+      list: (nextInput = input) => {
+        const params = new URLSearchParams();
+        const deviceId = stringValue(nextInput.deviceId || nextInput.device_id, 200);
+        const channelId = stringValue(nextInput.channelId || nextInput.channel_id, 200);
+        const afterSeq = nextInput.afterSeq ?? nextInput.after_seq;
+        if (deviceId) params.set("device_id", deviceId);
+        if (channelId) params.set("channel_id", channelId);
+        if (afterSeq != null) params.set("after_seq", String(afterSeq));
+        const query = params.toString();
+        return request("GET", `/v1/products/${encodeURIComponent(productId)}/delegated/relay/envelopes${query ? `?${query}` : ""}`, null, nextInput);
+      },
+      ack: (envelopeId, nextInput = input) => request(
+        "POST",
+        `/v1/products/${encodeURIComponent(productId)}/delegated/relay/envelopes/${encodeURIComponent(envelopeId)}/ack`,
+        {},
+        nextInput,
+      ),
+    }, input),
   };
+}
+
+async function waitForRelayResponse(api, input = {}) {
+  const timeoutMs = boundedNumber(input.timeoutMs ?? input.timeout_ms, 120000, 1, 600000);
+  const intervalMs = boundedNumber(input.intervalMs ?? input.interval_ms, 900, 100, 10000);
+  const started = Date.now();
+  for (;;) {
+    const payload = await api.list(input);
+    const items = Array.isArray(payload.items) ? payload.items : [];
+    const envelope = items[0] || null;
+    if (envelope) {
+      return {
+        envelope,
+        ack: (ackInput = {}) => api.ack(envelope.id, { ...input, ...ackInput }),
+      };
+    }
+    if (Date.now() - started >= timeoutMs) {
+      throw new BridgeError("relay_response_timeout", {
+        code: "relay_response_timeout",
+        status: 408,
+        payload: { timeout_ms: timeoutMs },
+      });
+    }
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
 }
 
 function normalizeDelegatedRelayEnvelope(input = {}, productId = "") {
@@ -310,6 +354,12 @@ function firstObject(value) {
 
 function arrayValue(value) {
   return Array.isArray(value) ? value : [];
+}
+
+function boundedNumber(value, fallback, min, max) {
+  const number = Number(value ?? fallback);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.min(max, Math.max(min, Math.floor(number)));
 }
 
 function stringValue(value, max = 1000) {
