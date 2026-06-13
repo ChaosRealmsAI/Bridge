@@ -109,6 +109,13 @@ export const BRIDGE_RUNTIME_CAPABILITY_REGISTRY = Object.freeze({
     boundary_type: "opaque_runtime",
     description: "Read and write Syllo project document links through the local CLI",
   }),
+  "syllo.chat": Object.freeze({
+    domain: "syllo",
+    verb: "chat",
+    danger: "medium",
+    boundary_type: "opaque_runtime",
+    description: "Run or resume local Codex and Claude chat through the Syllo CLI",
+  }),
   "saas.custom.run": Object.freeze({
     domain: "saas",
     verb: "custom.run",
@@ -121,7 +128,7 @@ export const BRIDGE_RUNTIME_CAPABILITY_REGISTRY = Object.freeze({
 export const BRIDGE_RUNTIME_CAPABILITIES = Object.freeze(Object.keys(BRIDGE_RUNTIME_CAPABILITY_REGISTRY));
 export const HIGH_TIER_RUNTIME_CAPABILITIES = Object.freeze(["fs.read", "fs.write"]);
 export const CRITICAL_TIER_RUNTIME_CAPABILITIES = Object.freeze(["shell.run"]);
-export const SYLLO_RUNTIME_CAPABILITIES = Object.freeze(["syllo.sessions", "syllo.issue", "syllo.highlight", "syllo.doc"]);
+export const SYLLO_RUNTIME_CAPABILITIES = Object.freeze(["syllo.sessions", "syllo.issue", "syllo.highlight", "syllo.doc", "syllo.chat"]);
 export const NON_DATA_RUNTIME_CAPABILITIES = Object.freeze(BRIDGE_RUNTIME_CAPABILITIES.filter((kind) => !kind.startsWith("data.") && !kind.startsWith("syllo.") && !HIGH_TIER_RUNTIME_CAPABILITIES.includes(kind) && !CRITICAL_TIER_RUNTIME_CAPABILITIES.includes(kind)));
 export const OTHERLINE_RUNTIME_CAPABILITIES = Object.freeze([
   ...NON_DATA_RUNTIME_CAPABILITIES,
