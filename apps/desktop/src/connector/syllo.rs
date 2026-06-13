@@ -31,6 +31,7 @@ impl BridgeConnector for SylloConnector {
                 kind("issue", ConnectorDanger::Medium),
                 kind("highlight", ConnectorDanger::Medium),
                 kind("doc", ConnectorDanger::Medium),
+                kind("chat", ConnectorDanger::Medium),
             ],
         }
     }
@@ -50,7 +51,7 @@ impl BridgeConnector for SylloConnector {
         if !boundary.capabilities.iter().any(|item| item == &job.kind) {
             return deny("capability", "capability_not_authorized_locally");
         }
-        let action = string_field(&job.input, "action")?;
+        let action = action_for_job(job)?;
         let (args, project) = args_for_job(job, &action)?;
         ctx.emit(
             "started",
@@ -90,6 +91,18 @@ impl BridgeConnector for SylloConnector {
     }
 }
 
+fn action_for_job(job: &BridgeJob) -> Result<String, ConnectorError> {
+    if job.kind == "syllo.chat" {
+        if let Some(action) = string_opt(&job.input, "action") {
+            if action != "send" {
+                return invalid(format!("unsupported syllo.chat action: {action}"));
+            }
+        }
+        return Ok("send".to_string());
+    }
+    string_field(&job.input, "action")
+}
+
 fn kind(verb: &str, danger: ConnectorDanger) -> ConnectorKindDeclaration {
     ConnectorKindDeclaration {
         kind: format!("syllo.{verb}"),
@@ -108,6 +121,7 @@ fn args_for_job(
         "syllo.issue" => project_args("issue", &job.input, action, issue_action_args),
         "syllo.highlight" => project_args("highlight", &job.input, action, highlight_action_args),
         "syllo.doc" => project_args("doc", &job.input, action, doc_action_args),
+        "syllo.chat" => chat_args(&job.input, action),
         _ => Err(ConnectorError::InvalidJob {
             reason: format!("unsupported syllo kind: {}", job.kind),
         }),
@@ -155,6 +169,33 @@ fn project_args(
     args.push(project.to_string_lossy().to_string());
     args.push("--json".to_string());
     build(input, action, &mut args)?;
+    Ok((args, Some(project)))
+}
+
+fn chat_args(
+    input: &Value,
+    action: &str,
+) -> Result<(Vec<String>, Option<PathBuf>), ConnectorError> {
+    if action != "send" {
+        return invalid(format!("unsupported syllo.chat action: {action}"));
+    }
+    let agent = string_field(input, "agent")?;
+    if agent != "codex" && agent != "claude" {
+        return invalid("syllo.chat agent must be codex or claude");
+    }
+    let project = required_project(input)?;
+    let prompt = string_field(input, "prompt")?;
+    let mut args = vec![
+        "chat".to_string(),
+        "--agent".to_string(),
+        agent,
+        "--project".to_string(),
+        project.to_string_lossy().to_string(),
+    ];
+    push_optional(&mut args, "--resume", string_opt(input, "resume_session_id"));
+    push_pair(&mut args, "--prompt", &prompt);
+    push_optional(&mut args, "--model", string_opt(input, "model"));
+    args.push("--json".to_string());
     Ok((args, Some(project)))
 }
 

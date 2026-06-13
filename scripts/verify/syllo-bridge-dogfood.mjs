@@ -15,7 +15,7 @@ import worker from "../../apps/cloud-worker/src/index.js";
 import { createBridgeClient } from "../../packages/sdk/src/index.js";
 
 const PRODUCT_ID = "panda-syllo";
-const SYLLO_CAPABILITIES = ["syllo.sessions", "syllo.issue", "syllo.highlight", "syllo.doc"];
+const SYLLO_CAPABILITIES = ["syllo.sessions", "syllo.issue", "syllo.highlight", "syllo.doc", "syllo.chat"];
 const hostHome = process.env.HOME || "";
 assert.ok(hostHome, "HOME is required so Syllo can read real local sessions");
 
@@ -142,6 +142,25 @@ try {
   assert.ok(Array.isArray(highlights));
   assert.ok(highlights.some((item) => item.id === highlight.id), "created highlight not found in list");
 
+  const chat = await sylloJob(bridge, deviceId, "syllo.chat", {
+    agent: "codex",
+    project,
+    prompt: "Reply with exactly: bridge-chat-ok",
+  }, "chat-send", 180000);
+  assert.equal(typeof chat.reply, "string");
+  assert.ok(chat.reply.includes("bridge-chat-ok"), `chat reply did not contain marker: ${chat.reply}`);
+  assert.ok(chat.session_id, "chat did not return session_id");
+
+  const resumedChat = await sylloJob(bridge, deviceId, "syllo.chat", {
+    agent: "codex",
+    project,
+    resume_session_id: chat.session_id,
+    prompt: "Reply with exactly: bridge-resume-ok",
+  }, "chat-resume", 180000);
+  assert.equal(resumedChat.resumed, true);
+  assert.equal(typeof resumedChat.reply, "string");
+  assert.ok(resumedChat.reply.includes("bridge-resume-ok"), `resume reply did not contain marker: ${resumedChat.reply}`);
+
   const summary = {
     ok: true,
     product_id: PRODUCT_ID,
@@ -168,6 +187,14 @@ try {
       list_count: highlights.length,
       items: highlights,
     },
+    chat: {
+      agent: chat.agent,
+      reply: chat.reply,
+      session_id: chat.session_id,
+      resumed: resumedChat.resumed,
+      resume_reply: resumedChat.reply,
+      resume_session_id: resumedChat.session_id,
+    },
     checked_at: new Date().toISOString(),
     duration_ms: Date.now() - startedAt.getTime(),
   };
@@ -177,7 +204,7 @@ try {
   await new Promise((resolveClose) => server.close(resolveClose));
 }
 
-async function sylloJob(bridge, deviceId, kind, input, label) {
+async function sylloJob(bridge, deviceId, kind, input, label, timeoutMs = 60000) {
   const created = await bridge.jobs.create({
     kind,
     deviceId,
@@ -194,7 +221,7 @@ async function sylloJob(bridge, deviceId, kind, input, label) {
     });
     throw error;
   }
-  const final = await bridge.jobs.wait(created.job.id, { timeoutMs: 60000, intervalMs: 250 });
+  const final = await bridge.jobs.wait(created.job.id, { timeoutMs, intervalMs: 250 });
   if (final.status !== "succeeded") {
     writeEvidence(`${label}-failure.json`, { final, events: await bridge.jobs.events(created.job.id) });
   }
@@ -238,6 +265,10 @@ function runDesktop(args) {
           : {}),
         ...((process.env.CARGO_HOME || hostHome)
           ? { CARGO_HOME: process.env.CARGO_HOME || resolve(hostHome, ".cargo") }
+          : {}),
+        // syllo chat -> pandacode -> codex needs REAL codex auth (HOME is an isolated temp dir).
+        ...((process.env.CODEX_HOME || hostHome)
+          ? { CODEX_HOME: process.env.CODEX_HOME || resolve(hostHome, ".codex") }
           : {}),
         PANDA_BRIDGE_DESKTOP_STATE: statePath,
         PANDA_BRIDGE_ALLOW_HEADLESS_CONNECT: "1",
