@@ -50,6 +50,7 @@ use connector::{
     registry::ConnectorRegistry,
     sandbox::{self, NetPolicy, ResourceLimits, SandboxProfileKind, SandboxSpec},
     shell::ShellConnector,
+    syllo::SylloConnector,
     ConnectorDanger, ConnectorError, ConnectorEvent, ExecCtx, GrantedBoundary,
 };
 
@@ -4287,6 +4288,7 @@ fn execution_registry(codex: CodexConnector) -> Result<ConnectorRegistry, String
     registry.register(Box::new(DataConnector::new(ProductSqliteKv::new())))?;
     registry.register(Box::new(FsConnector::new()))?;
     registry.register(Box::new(ShellConnector::new()))?;
+    registry.register(Box::new(SylloConnector::new()))?;
     Ok(registry)
 }
 
@@ -4304,6 +4306,9 @@ fn declaration_registry() -> ConnectorRegistry {
     registry
         .register(Box::new(ShellConnector::new()))
         .expect("shell connector declaration should be valid");
+    registry
+        .register(Box::new(SylloConnector::new()))
+        .expect("syllo connector declaration should be valid");
     registry
 }
 

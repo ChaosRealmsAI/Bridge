@@ -10,6 +10,7 @@ pub mod fs;
 pub mod registry;
 pub mod sandbox;
 pub mod shell;
+pub mod syllo;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
