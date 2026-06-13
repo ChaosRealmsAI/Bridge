@@ -36,6 +36,7 @@
 *{box-sizing:border-box;margin:0;padding:0}
 button,select{font:inherit;color:inherit}
 button{background:none;border:0;cursor:pointer}
+input{font:inherit;color:inherit}
 html,body{height:100%}
 body{
   font:13px/1.45 -apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","Hiragino Sans GB",sans-serif;
@@ -117,6 +118,11 @@ body{
 .seg button+button{border-left:1px solid var(--line-soft)}
 .seg button[aria-current="true"]{background:var(--sel);color:var(--accent);font-weight:500}
 .select{border:1px solid var(--line);border-radius:7px;background:var(--surface);font-size:11.5px;padding:4px 24px 4px 9px}
+.input{border:1px solid var(--line);border-radius:7px;background:var(--surface);font-size:11.5px;padding:5px 9px;min-width:210px;outline:0}
+.input:focus{border-color:color-mix(in srgb,var(--accent) 55%,var(--line));box-shadow:0 0 0 2px var(--sel)}
+.profile-actions{display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+.profile-actions .btn{white-space:nowrap}
+.server-name{max-width:210px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .mono{font-family:var(--mono);font-size:11.5px;color:var(--ink-3)}
 #modalRoot{display:contents}
 .sheetwrap{position:absolute;inset:0;z-index:8;display:none;background:rgba(12,13,26,.30);backdrop-filter:blur(4px)}
@@ -212,7 +218,12 @@ const TEXT={
   en:{products:"Products",settings:"Settings",notConnected:"Not connected",accounts:"{n} accounts",open:"Open",auth:"Authorization",conn:"Connection",delete:"Delete",cancel:"Cancel",confirmDelete:"Delete {name}?",deleteDesc:"This account will no longer use the AI on this Mac.",useOnMac:"Use {name} on this Mac",emptySub:"After authorization, {name} can use the AI on this Mac",emptyHint:"Sign in, choose Connect this Mac, then return here to confirm",waiting:"Ready — waiting for connection requests…",netbar:"Network interrupted — reconnecting automatically. Tasks resume on recovery.",launch:"Launch at login",appearance:"Appearance",system:"System",light:"Light",dark:"Dark",language:"Language",cloud:"Cloud address",deny:"Deny",allow:"Allow",wants:"{name} wants to connect to this Mac",opened:"Opened web",paused:"Authorization paused",resumed:"Authorization restored",removed:"Deleted",failed:"Action failed",hazHigh:"High risk: access to your local files",hazCrit:"Machine-level: run commands on your computer",permRead:"Read",permWrite:"Write",permCwd:"Working dir",permNet:"Network",permSub:"Subprocess",pickDir:"Choose folder…",netDeny:"Blocked",netAllow:"Outbound",subNo:"No",subYes:"Yes",kernelNote:"Anywhere else, and unauthorized network, is denied by this Mac's kernel.",critNote:"This is a machine-level capability — it can run any command in that folder. Authorize only if you trust {name}.",pickNeeded:"Choose a local folder for each item first",dirDenied:"This folder holds system or key files and can't be authorized — pick another",dirBroad:"That's a broad folder; {name} will access everything inside. Authorize anyway?"},
   ja:{products:"製品",settings:"設定",notConnected:"未接続",accounts:"{n} アカウント",open:"開く",auth:"承認",conn:"接続",delete:"削除",cancel:"キャンセル",confirmDelete:"{name} を削除しますか？",deleteDesc:"このアカウントはこの Mac の AI を使えなくなります。",useOnMac:"この Mac で {name} を使う",emptySub:"承認後、{name} はこの Mac の AI を使えます",emptyHint:"ログインして「この Mac に接続」を選び、ここに戻って確認します",waiting:"準備完了 — 接続リクエスト待機中…",netbar:"ネットワーク切断 — 自動再接続中。復旧後はタスクが自動で再開します",launch:"ログイン時に起動",appearance:"外観",system:"システム",light:"ライト",dark:"ダーク",language:"言語",cloud:"クラウドアドレス",deny:"拒否",allow:"許可",wants:"{name} がこの Mac に接続しようとしています",opened:"ウェブを開きました",paused:"承認を一時停止しました",resumed:"承認を再開しました",removed:"削除しました",failed:"操作に失敗しました",hazHigh:"高リスク：ローカルファイルへのアクセス",hazCrit:"マシンレベル：あなたのPCでコマンドを実行",permRead:"読み取り",permWrite:"書き込み",permCwd:"作業ディレクトリ",permNet:"ネットワーク",permSub:"子プロセス",pickDir:"フォルダを選択…",netDeny:"禁止",netAllow:"送信許可",subNo:"いいえ",subYes:"はい",kernelNote:"それ以外の場所と未許可の通信は、この Mac のカーネルが拒否します。",critNote:"これはマシンレベルの権限です——そのフォルダで任意のコマンドを実行できます。{name} を信頼する場合のみ許可してください。",pickNeeded:"先に各項目のローカルフォルダを選んでください",dirDenied:"このフォルダはシステムや鍵ファイルを含むため許可できません。別を選んでください",dirBroad:"これは広範なフォルダです。{name} は中のすべてにアクセスできます。許可しますか？"}
 };
-const ui={view:"product",selected:"pandart",products:BASE_PRODUCTS.map(clone),settings:{launch_at_login:true,appearance:"auto",language:"auto",api_base:DEFAULT_API},pending:null,status:null};
+Object.assign(TEXT["zh-CN"],{server:"服务器",serverProfile:"服务器 Profile",addServer:"添加服务器",serverUrl:"https://你的 Bridge API",refresh:"刷新",official:"官方",custom:"自托管",serverAdded:"服务器已添加",serverSelected:"服务器已切换",serverRemoved:"服务器已移除",serverRefreshed:"服务器已刷新"});
+Object.assign(TEXT["zh-TW"],{server:"伺服器",serverProfile:"伺服器 Profile",addServer:"新增伺服器",serverUrl:"https://你的 Bridge API",refresh:"重新整理",official:"官方",custom:"自託管",serverAdded:"伺服器已新增",serverSelected:"伺服器已切換",serverRemoved:"伺服器已移除",serverRefreshed:"伺服器已重新整理"});
+Object.assign(TEXT.en,{server:"Server",serverProfile:"Server profile",addServer:"Add server",serverUrl:"https://your Bridge API",refresh:"Refresh",official:"Official",custom:"Self-hosted",serverAdded:"Server added",serverSelected:"Server switched",serverRemoved:"Server removed",serverRefreshed:"Server refreshed"});
+Object.assign(TEXT.ja,{server:"サーバー",serverProfile:"サーバー Profile",addServer:"サーバー追加",serverUrl:"https://your Bridge API",refresh:"更新",official:"公式",custom:"セルフホスト",serverAdded:"サーバーを追加しました",serverSelected:"サーバーを切り替えました",serverRemoved:"サーバーを削除しました",serverRefreshed:"サーバーを更新しました"});
+const OFFICIAL_PROFILE={id:"official",name:"Official Bridge Cloud",api_base:DEFAULT_API,web_origin:"https://bridge.otherline.cc",source:"official",products:BASE_PRODUCTS.map(clone)};
+const ui={view:"product",selected:"pandart",products:BASE_PRODUCTS.map(clone),settings:{launch_at_login:true,appearance:"auto",language:"auto",api_base:DEFAULT_API,cloud_profiles:[clone(OFFICIAL_PROFILE)],selected_cloud_profile_id:"official"},pending:null,status:null};
 const mq=window.matchMedia("(prefers-color-scheme: dark)");
 const ipcState={seq:0,calls:new Map()};
 window.PandaBridge={
@@ -253,8 +264,9 @@ function render(){
 function tabHtml(p){
   const n=(p.accounts||[]).length;
   const dot=p.connected?"ok":(p.connection==="reconnecting"?"retry":((p.accounts||[]).some(a=>a.authorized==="paused")?"warn":"off"));
+  const style=productStyle(p);
   return `<button class="ptab" aria-current="${ui.view==="product"&&ui.selected===p.id}" onclick="pick('${p.id}')">
-    <span class="pico" style="background:${p.color||BASE_PRODUCTS.find(x=>x.id===p.id)?.color}">${esc(p.initials||p.name.slice(0,2).toUpperCase())}</span>
+    <span class="pico" style="background:${style.color}">${esc(p.initials||style.initials)}</span>
     <span class="pt-main"><span class="pn">${esc(p.name)}</span><br><span class="pm">${n?t("accounts",{n}):t("notConnected")}</span></span>
     <i class="dot ${dot}"></i>
   </button>`;
@@ -291,12 +303,17 @@ function accountHtml(p,a,i){
 }
 function settingsHtml(){
   const s=ui.settings;
+  const profiles=Array.isArray(s.cloud_profiles)&&s.cloud_profiles.length?s.cloud_profiles:[clone(OFFICIAL_PROFILE)];
+  const selected=s.selected_cloud_profile_id||profiles[0]?.id||"official";
+  const customProfiles=profiles.filter(p=>p.id!=="official");
   return `<div class="phead"><div><div class="nm">${t("settings")}</div></div></div>
   <div class="rows">
     <div><span class="rico n-blue">↟</span><span class="t">${t("launch")}</span><div class="end"><button class="switch" role="switch" aria-checked="${!!s.launch_at_login}" onclick="setLaunch(${!s.launch_at_login})"></button></div></div>
     <div><span class="rico n-purple">◐</span><span class="t">${t("appearance")}</span><div class="end"><div class="seg">${["auto","light","dark"].map(v=>`<button aria-current="${s.appearance===v}" onclick="setAppearance('${v}')">${t(v==="auto"?"system":v)}</button>`).join("")}</div></div></div>
     <div><span class="rico n-orange">文</span><span class="t">${t("language")}</span><div class="end"><select class="select" onchange="setLanguage(this.value)">${LANG_OPTIONS.map(([code,label])=>`<option value="${code}" ${s.language===code?"selected":""}>${esc(label)}</option>`).join("")}</select></div></div>
-    <div><span class="rico n-gray">☁</span><span class="t">${t("cloud")}</span><div class="end mono">${esc(hostOnly(s.api_base||DEFAULT_API))}</div></div>
+    <div><span class="rico n-gray">☁</span><span><span class="t">${t("serverProfile")}</span><br><span class="d">${esc(hostOnly(s.api_base||DEFAULT_API))}</span></span><div class="end"><select class="select" onchange="selectCloudProfile(this.value)">${profiles.map(p=>`<option value="${esc(p.id)}" ${selected===p.id?"selected":""}>${esc(p.name||hostOnly(p.api_base))}</option>`).join("")}</select></div></div>
+    <div><span class="rico n-blue">＋</span><span><span class="t">${t("addServer")}</span><br><span class="d">${t("custom")}</span></span><div class="end profile-actions"><input id="cloudApiInput" class="input" placeholder="${esc(t("serverUrl"))}" spellcheck="false"><button class="btn mini primary" onclick="addCloudProfile()">${t("addServer")}</button></div></div>
+    ${customProfiles.map(p=>`<div><span class="rico n-gray">↻</span><span class="server-name"><span class="t">${esc(p.name||hostOnly(p.api_base))}</span><br><span class="d">${esc(hostOnly(p.api_base))}</span></span><div class="end profile-actions"><button class="btn mini" onclick="refreshCloudProfile('${esc(p.id)}')">${t("refresh")}</button><button class="btn mini" onclick="removeCloudProfile('${esc(p.id)}')">${t("delete")}</button></div></div>`).join("")}
   </div>`;
 }
 const ICN={
@@ -412,6 +429,19 @@ async function setLaunch(value){ui.settings.launch_at_login=value;render();await
 async function setAppearance(value){ui.settings.appearance=value;render();await saveSettings({appearance:value})}
 async function setLanguage(value){ui.settings.language=value;render();await saveSettings({language:value})}
 async function saveSettings(patch){try{ui.settings=await window.PandaBridge.call("update_settings",patch);render()}catch(e){showError(e)}}
+async function selectCloudProfile(id){
+  try{ui.settings=await window.PandaBridge.call("select_cloud_profile",{profile_id:id});toast(t("serverSelected"));await refresh()}catch(e){showError(e);await refresh().catch(()=>{})}
+}
+async function addCloudProfile(){
+  const input=document.getElementById("cloudApiInput");const api=(input?.value||"").trim();if(!api)return;
+  try{ui.settings=await window.PandaBridge.call("add_cloud_profile",{api});toast(t("serverAdded"));await refresh()}catch(e){showError(e)}
+}
+async function refreshCloudProfile(id){
+  try{ui.settings=await window.PandaBridge.call("refresh_cloud_profile",{profile_id:id});toast(t("serverRefreshed"));await refresh()}catch(e){showError(e)}
+}
+async function removeCloudProfile(id){
+  try{ui.settings=await window.PandaBridge.call("remove_cloud_profile",{profile_id:id});toast(t("serverRemoved"));await refresh()}catch(e){showError(e)}
+}
 async function refresh(){
   const status=await window.PandaBridge.call("status");
   ui.status=status;ui.settings={...ui.settings,...(status.settings||{})};
@@ -420,13 +450,24 @@ async function refresh(){
   render();return status;
 }
 function normalizeProducts(items){
-  return BASE_PRODUCTS.map(base=>{
-    const src=(items||[]).find(p=>p.id===base.id)||{};
+  const source=Array.isArray(items)&&items.length?items:BASE_PRODUCTS;
+  return source.map((src,index)=>{
+    const base=BASE_PRODUCTS.find(p=>p.id===src.id)||{};
+    const style=productStyle(src,index);
     const accounts=Array.isArray(src.accounts)?src.accounts.map(a=>({
       id:a.id||null,email:a.email||"Panda Account",authorized:a.authorized||"active",connected:!!a.connected,connection:a.connection||"reconnecting"
     })):[];
-    return {...clone(base),...src,initials:base.initials,color:base.color,accounts};
+    return {...clone(base),...src,origin:src.origin||base.origin||hostOnly(src.web_url),web_url:src.web_url||base.web_url||src.origin||"",initials:style.initials,color:style.color,accounts,connected:!!src.connected,connection:src.connection||"offline"};
   });
+}
+function productStyle(p,index=0){
+  const base=BASE_PRODUCTS.find(x=>x.id===p?.id);
+  if(base)return {initials:base.initials,color:base.color};
+  const name=String(p?.name||p?.id||"PB").trim();
+  const initials=name.split(/[\s_-]+/).filter(Boolean).slice(0,2).map(x=>x[0]).join("").toUpperCase()||name.slice(0,2).toUpperCase()||"PB";
+  const colors=["linear-gradient(150deg,#2f7bff,#14a6a6)","linear-gradient(150deg,#4d8dff,#7857d9)","linear-gradient(150deg,#1f9d67,#2374d9)","linear-gradient(150deg,#e46b4c,#7b61ff)"];
+  let hash=index;for(const ch of String(p?.id||name))hash=(hash*31+ch.charCodeAt(0))>>>0;
+  return {initials,color:colors[hash%colors.length]};
 }
 async function handleDeepLink(raw){
   const url=new URL(raw);const intent=url.searchParams.get("intent");if(!intent)return;
@@ -437,9 +478,16 @@ async function handleDeepLink(raw){
   render();
 }
 function knownFrom(id,name,origin){
+  const norm=normalizeProductKey(id);
+  const existing=ui.products.find(p=>normalizeProductKey(p.id)===norm||normalizeProductKey(p.name)===norm);
+  if(existing)return existing;
   const hay=[id,name,origin].join(" ").toLowerCase();
-  return hay.includes("pandart")||hay.includes("pandaart")?BASE_PRODUCTS[0]:BASE_PRODUCTS[1];
+  if(hay.includes("pandart")||hay.includes("pandaart"))return BASE_PRODUCTS[0];
+  if(hay.includes("otherline"))return BASE_PRODUCTS[1];
+  const dynamic={id:id||normalizeProductKey(name)||"custom",name:name||id||"Custom Product",origin:origin||hostOnly(DEFAULT_API),web_url:origin||""};
+  return {...dynamic,...productStyle(dynamic)};
 }
+function normalizeProductKey(value){return String(value||"").replace(/[^a-z0-9]/gi,"").toLowerCase()}
 function denyIntent(){ui.pending=null;render()}
 async function allowIntent(){
   const p=ui.pending;if(!p)return;
@@ -464,7 +512,7 @@ function toast(msg){document.getElementById("toastTxt").textContent=msg;const el
 function showError(e){toast(`${t("failed")} · ${String(e?.message||e).slice(0,120)}`)}
 function installFallback(){
   const emptyPandart=new URLSearchParams(location.search).get("empty");
-  const mock={settings:{launch_at_login:true,appearance:new URLSearchParams(location.search).get("theme")||"auto",language:"auto",api_base:DEFAULT_API},products:normalizeProducts([
+  const mock={settings:{launch_at_login:true,appearance:new URLSearchParams(location.search).get("theme")||"auto",language:"auto",api_base:DEFAULT_API,cloud_profiles:[clone(OFFICIAL_PROFILE)],selected_cloud_profile_id:"official"},products:normalizeProducts([
     {id:"pandart",name:"Pandart",origin:"pandart.cc",web_url:"https://pandart.cc",accounts:emptyPandart?[]:[{id:"demo_pt",email:"dreamsmoke57086",authorized:"active",connected:true,connection:"connected"}],connected:!emptyPandart,connection:emptyPandart?"offline":"connected"},
     {id:"otherline",name:"Otherline",origin:"otherline.cc",web_url:"https://otherline.cc",accounts:[{id:"demo_ot",email:"chaos.realms.ai@gmail.com",authorized:"active",connected:true,connection:"connected"},{id:"demo_pause",email:"panda-final@bridge.otherline.cc",authorized:"paused",connected:false,connection:"disabled"}],connected:true,connection:"connected"}
   ])};
@@ -472,6 +520,10 @@ function installFallback(){
     if(req.command==="status")return reply(true,clone(mock));
     if(req.command==="settings")return reply(true,clone(mock.settings));
     if(req.command==="update_settings"){mock.settings={...mock.settings,...req.params};return reply(true,clone(mock.settings))}
+    if(req.command==="select_cloud_profile"){mock.settings.selected_cloud_profile_id=req.params.profile_id||"official";const p=mock.settings.cloud_profiles.find(x=>x.id===mock.settings.selected_cloud_profile_id)||mock.settings.cloud_profiles[0];mock.settings.api_base=p.api_base;mock.products=normalizeProducts(p.products||BASE_PRODUCTS);return reply(true,clone(mock.settings))}
+    if(req.command==="add_cloud_profile"){const api=req.params.api;const id="profile_demo";const profile={id,name:hostOnly(api),api_base:api,web_origin:api,source:"user",products:[{id:"acme-demo",name:"Acme Demo",origin:api,web_url:api+"/app"}]};mock.settings.cloud_profiles=mock.settings.cloud_profiles.filter(p=>p.id!==id).concat([profile]);mock.settings.selected_cloud_profile_id=id;mock.settings.api_base=api;mock.products=normalizeProducts(profile.products);return reply(true,clone(mock.settings))}
+    if(req.command==="refresh_cloud_profile")return reply(true,clone(mock.settings));
+    if(req.command==="remove_cloud_profile"){mock.settings.cloud_profiles=mock.settings.cloud_profiles.filter(p=>p.id!==req.params.profile_id);mock.settings.selected_cloud_profile_id="official";mock.settings.api_base=DEFAULT_API;mock.products=normalizeProducts(BASE_PRODUCTS);return reply(true,clone(mock.settings))}
     if(req.command==="toggle_authorization"){const p=mock.products.find(x=>x.id===req.params.product_id);const a=p?.accounts.find(x=>x.id===req.params.account||x.email===req.params.account);if(a){a.authorized=a.authorized==="paused"?"active":"paused";a.connected=a.authorized==="active";a.connection=a.connected?"connected":"disabled"}return reply(true,{ok:true})}
     if(req.command==="remove_authorization"){const p=mock.products.find(x=>x.id===req.params.product_id);if(p)p.accounts=p.accounts.filter(x=>x.id!==req.params.account_id&&x.email!==req.params.account_id);return reply(true,{ok:true})}
     if(req.command==="preview_intent"){

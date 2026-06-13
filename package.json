@@ -36,6 +36,7 @@
     "verify:adapter-syllo": "node scripts/verify/adapter-syllo.mjs",
     "verify:relay-local-control": "node examples/relay-local-control/run-local.mjs",
     "verify:relay-local-control:blackbox": "node examples/relay-local-control/blackbox.mjs",
+    "verify:selfhost-profile": "node scripts/verify/selfhost-profile.mjs",
     "verify:multi-account-realtime": "node scripts/verify/multi-account-realtime-fanout.mjs",
     "verify:fake-source-matrix": "node scripts/verify/fake-source-matrix.mjs",
     "verify:desktop-lite": "node scripts/verify/desktop-lite-smoke.mjs",

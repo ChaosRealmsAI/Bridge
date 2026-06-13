@@ -163,6 +163,7 @@ for (const marker of [
   "Product Adapter",
   "npm run verify:relay-local-control",
   "npm run verify:relay-local-control:blackbox",
+  "npm run verify:selfhost-profile",
   "npm run verify:relay-backpressure",
 ]) {
   assert.equal(readme.includes(marker), true, `README missing relay positioning: ${marker}`);
@@ -177,5 +178,16 @@ const productDocs = readFileSync(new URL("../../docs/product-integration.md", im
 for (const marker of ["waitForResponse", "relay_channel_queue_full", "queue.retry_after_ms", "Bridge 不执行 Claude、Codex、Syllo、shell、fs、data"]) {
   assert.equal(productDocs.includes(marker), true, `product integration docs missing V0.3 relay marker: ${marker}`);
 }
+
+const selfHostingDocs = readFileSync(new URL("../../docs/self-hosting.md", import.meta.url), "utf8");
+for (const marker of ["BRIDGE_PRODUCT_REGISTRY_JSON", "PANDA_BRIDGE_ADAPTER_ACME_DEMO_URL", "npm run verify:selfhost-profile"]) {
+  assert.equal(selfHostingDocs.includes(marker), true, `self-hosting docs missing marker: ${marker}`);
+}
+const selfhostVerifier = readFileSync(new URL("./selfhost-profile.mjs", import.meta.url), "utf8");
+for (const marker of ["manifest.json", "bb-v04-invalid-profile", "bb-v04-deeplink-deny", "bb-v04-open-web"]) {
+  assert.equal(selfhostVerifier.includes(marker), true, `selfhost verifier missing marker: ${marker}`);
+}
+const packageJson = readFileSync(new URL("../../package.json", import.meta.url), "utf8");
+assert.equal(packageJson.includes('"verify:selfhost-profile"'), true, "package.json missing verify:selfhost-profile script");
 
 console.log("[relay-boundary] pass");

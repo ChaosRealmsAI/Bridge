@@ -55,6 +55,7 @@ use connector::{
 };
 
 const VERSION: &str = "panda-bridge-desktop-lite-v0.1";
+const BRIDGE_PROTOCOL_VERSION: &str = "panda-bridge-protocol-v0.2";
 const KEYCHAIN_SERVICE: &str = "cc.otherline.panda-bridge";
 const KEYCHAIN_USER: &str = "device";
 const DEFAULT_API: &str = "https://api.bridge.otherline.cc";
@@ -247,6 +248,39 @@ struct DesktopSettings {
     language: String,
     #[serde(default = "default_api_base")]
     api_base: String,
+    #[serde(default)]
+    cloud_profiles: Vec<CloudProfile>,
+    #[serde(default)]
+    selected_cloud_profile_id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct CloudProfile {
+    id: String,
+    name: String,
+    api_base: String,
+    #[serde(default)]
+    web_origin: Option<String>,
+    #[serde(default)]
+    products: Vec<DesktopProductCatalogEntry>,
+    #[serde(default)]
+    source: String,
+    #[serde(default)]
+    updated_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct DesktopProductCatalogEntry {
+    id: String,
+    name: String,
+    #[serde(default)]
+    origin: Option<String>,
+    #[serde(default)]
+    web_url: Option<String>,
+    #[serde(default)]
+    official_origin: Option<String>,
+    #[serde(default)]
+    official_origins: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
@@ -395,13 +429,41 @@ struct HeartbeatResponse {
     devices: Option<Vec<CloudDevice>>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 struct ProductInfo {
     id: String,
     name: String,
     origin: Option<String>,
     #[serde(default)]
+    official_origin: Option<String>,
+    #[serde(default)]
+    official_origins: Vec<String>,
+    #[serde(default)]
+    web_url: Option<String>,
+    #[serde(default)]
     capabilities: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct HealthResponse {
+    #[serde(default)]
+    ok: Option<bool>,
+    #[serde(default)]
+    protocol: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DiagnosticsResponse {
+    #[serde(default)]
+    ok: Option<bool>,
+    #[serde(default)]
+    protocol: Option<String>,
+    #[serde(default)]
+    api_base: Option<String>,
+    #[serde(default)]
+    web_origin: Option<String>,
+    #[serde(default)]
+    products: Vec<ProductInfo>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1007,6 +1069,15 @@ fn run_verify_action(
             let _ = start_worker(state, proxy.clone());
             serde_json::to_value(claim).map_err(|error| error.to_string())?
         }
+        "add_cloud_profile" => {
+            serde_json::to_value(add_cloud_profile(params)?).map_err(|error| error.to_string())?
+        }
+        "select_cloud_profile" => serde_json::to_value(select_cloud_profile(params)?)
+            .map_err(|error| error.to_string())?,
+        "remove_cloud_profile" => serde_json::to_value(remove_cloud_profile(params)?)
+            .map_err(|error| error.to_string())?,
+        "refresh_cloud_profile" => serde_json::to_value(refresh_cloud_profile(params)?)
+            .map_err(|error| error.to_string())?,
         "toggle_authorization" | "click_toggle_authorization" => {
             let product_id = product_param(params)?;
             let account = required_param(params, "account")?;
@@ -1561,6 +1632,18 @@ fn run_command(
         "update_settings" => {
             serde_json::to_value(update_settings(params)?).map_err(|error| error.to_string())
         }
+        "add_cloud_profile" => {
+            serde_json::to_value(add_cloud_profile(params)?).map_err(|error| error.to_string())
+        }
+        "select_cloud_profile" => {
+            serde_json::to_value(select_cloud_profile(params)?).map_err(|error| error.to_string())
+        }
+        "remove_cloud_profile" => {
+            serde_json::to_value(remove_cloud_profile(params)?).map_err(|error| error.to_string())
+        }
+        "refresh_cloud_profile" => {
+            serde_json::to_value(refresh_cloud_profile(params)?).map_err(|error| error.to_string())
+        }
         "start_worker" => start_worker(state, proxy),
         "stop_worker" => {
             state.worker_running.store(false, Ordering::SeqCst);
@@ -1582,13 +1665,13 @@ fn run_command(
 
 fn status(state: &AppState) -> DesktopStatus {
     let credentials = load_credentials().ok();
-    let products = desktop_products(credentials.as_ref(), state);
     let settings = load_settings_with_api(
         credentials
             .as_ref()
             .map(|item| item.api_base.as_str())
             .unwrap_or(DEFAULT_API),
     );
+    let products = desktop_products(credentials.as_ref(), state, &settings);
     DesktopStatus {
         api_base: credentials.as_ref().map(|item| item.api_base.clone()),
         device_id: credentials.as_ref().map(|item| item.device_id.clone()),
@@ -1648,18 +1731,55 @@ fn known_products() -> [KnownProduct; 2] {
 fn desktop_products(
     credentials: Option<&Credentials>,
     state: &AppState,
+    settings: &DesktopSettings,
 ) -> Vec<DesktopProductStatus> {
     let worker_running = state.worker_running.load(Ordering::SeqCst);
     let realtime_connected = state.realtime_connected.load(Ordering::SeqCst);
     let connections = credentials.map(credentials_connections).unwrap_or_default();
-    known_products()
+    let profile = selected_cloud_profile(settings)
+        .cloned()
+        .unwrap_or_else(official_cloud_profile);
+    let uses_official_fallback = profile.products.is_empty();
+    let match_profile = if uses_official_fallback {
+        let mut value = profile.clone();
+        value.id = "official".to_string();
+        value
+    } else {
+        profile.clone()
+    };
+    let mut catalog = if uses_official_fallback {
+        official_cloud_profile().products
+    } else {
+        profile.products.clone()
+    };
+    for connection in connections
+        .iter()
+        .filter(|connection| connection.api_base == profile.api_base)
+    {
+        for grant in connection_products(connection) {
+            if catalog
+                .iter()
+                .any(|product| catalog_matches_grant(product, &grant, &match_profile))
+            {
+                continue;
+            }
+            upsert_catalog_product(
+                &mut catalog,
+                product_entry_from_grant(&grant, &profile.api_base),
+            );
+        }
+    }
+    catalog
         .into_iter()
         .map(|product| {
             let mut accounts: Vec<DesktopAccountStatus> = Vec::new();
-            for connection in &connections {
+            for connection in connections
+                .iter()
+                .filter(|connection| connection.api_base == profile.api_base)
+            {
                 for grant in connection_products(connection)
                     .into_iter()
-                    .filter(|grant| product_matches_known(grant, product))
+                    .filter(|grant| catalog_matches_grant(&product, grant, &match_profile))
                 {
                     upsert_desktop_account_status(
                         &mut accounts,
@@ -1676,10 +1796,23 @@ fn desktop_products(
                 account.authorized.is_active() && account.connection == "reconnecting"
             });
             DesktopProductStatus {
-                id: product.id.to_string(),
-                name: product.name.to_string(),
-                origin: product.origin.to_string(),
-                web_url: product.web_url.to_string(),
+                id: product.id,
+                name: product.name,
+                origin: product
+                    .origin
+                    .clone()
+                    .or_else(|| product.official_origin.clone())
+                    .unwrap_or_else(|| profile.api_base.clone()),
+                web_url: product
+                    .web_url
+                    .clone()
+                    .or_else(|| product.origin.clone())
+                    .unwrap_or_else(|| {
+                        profile
+                            .web_origin
+                            .clone()
+                            .unwrap_or_else(|| profile.api_base.clone())
+                    }),
                 accounts,
                 connected,
                 connection: if connected {
@@ -1753,6 +1886,21 @@ fn upsert_desktop_account_status(
     });
 }
 
+fn catalog_matches_grant(
+    product: &DesktopProductCatalogEntry,
+    grant: &ProductGrant,
+    profile: &CloudProfile,
+) -> bool {
+    normalize_product_key(&product.id) == normalize_product_key(&grant.id)
+        || normalize_product_key(&product.name) == normalize_product_key(&grant.name)
+        || (profile.id == "official"
+            && known_products()
+                .into_iter()
+                .find(|known| normalize_product_key(known.id) == normalize_product_key(&product.id))
+                .map(|known| product_matches_known(grant, known))
+                .unwrap_or(false))
+}
+
 fn product_matches_known(product: &ProductGrant, known: KnownProduct) -> bool {
     known_product_id_for_grant(product) == known.id
 }
@@ -1800,6 +1948,7 @@ fn connection_matches_account(connection: &Credentials, account: Option<&str>) -
 
 fn preview_intent(api: &str, intent: &str) -> Result<IntentPreview, String> {
     let api_base = clean_api(api)?;
+    let profile = fetch_cloud_profile(&api_base, None)?;
     let url = format!(
         "{}/v1/connect-intents/{}",
         api_base,
@@ -1807,12 +1956,14 @@ fn preview_intent(api: &str, intent: &str) -> Result<IntentPreview, String> {
     );
     let payload: IntentResponse = get_json(&url, None)?;
     let product_id = payload.connect_intent.product_id.clone();
+    let catalog_product = profile_product(&profile, &product_id)
+        .ok_or_else(|| format!("Bridge Cloud diagnostics does not expose product: {product_id}"))?;
     let product_name = payload
         .connect_intent
         .product
         .as_ref()
         .map(|product| product.name.clone())
-        .unwrap_or_else(|| product_id.clone());
+        .unwrap_or_else(|| catalog_product.name.clone());
     let cloud_origin = payload
         .connect_intent
         .source_origin
@@ -1824,6 +1975,7 @@ fn preview_intent(api: &str, intent: &str) -> Result<IntentPreview, String> {
                 .as_ref()
                 .and_then(|product| product.origin.clone())
         })
+        .or_else(|| catalog_product.origin.clone())
         .unwrap_or_else(|| api_base.clone());
     let product_capabilities = payload
         .connect_intent
@@ -2185,23 +2337,20 @@ fn approval_rank(value: &str) -> i32 {
 fn claim_intent(api: &str, intent: &str, device_name: &str) -> Result<ClaimResult, String> {
     let api_base = clean_api(api)?;
     let existing = load_credentials().ok();
-    let intent_preview = preview_intent(&api_base, intent).ok();
+    let intent_preview = preview_intent(&api_base, intent)?;
     let install_id = credentials_install_id(existing.as_ref());
     let existing_connections = existing
         .as_ref()
         .map(credentials_connections)
         .unwrap_or_default();
-    let bearer_connection = intent_preview
-        .as_ref()
-        .and_then(|preview| preview.user_id.as_deref())
-        .and_then(|user_id| {
-            existing_connections.iter().find(|connection| {
-                connection.api_base == api_base
-                    && connection.account_id.as_deref() == Some(user_id)
-                    && !connection.device_token.trim().is_empty()
-            })
-        });
-    let authorization_policy = local_authorization_policy(intent_preview.as_ref());
+    let bearer_connection = intent_preview.user_id.as_deref().and_then(|user_id| {
+        existing_connections.iter().find(|connection| {
+            connection.api_base == api_base
+                && connection.account_id.as_deref() == Some(user_id)
+                && !connection.device_token.trim().is_empty()
+        })
+    });
+    let authorization_policy = local_authorization_policy(Some(&intent_preview));
     let body = json!({
         "device_name": if device_name.trim().is_empty() { "Panda Bridge Desktop" } else { device_name.trim() },
         "app_version": VERSION,
@@ -2217,6 +2366,14 @@ fn claim_intent(api: &str, intent: &str, device_name: &str) -> Result<ClaimResul
     );
     let bearer = bearer_connection.map(|credentials| credentials.device_token.as_str());
     let payload: ClaimResponse = post_json_with_install(&url, &body, bearer, Some(&install_id))?;
+    if let Some(claimed_product_id) = payload.product.as_ref().map(|product| product.id.as_str()) {
+        if claimed_product_id != intent_preview.product_id {
+            return Err(format!(
+                "Bridge Cloud claim product mismatch: expected {}, got {}",
+                intent_preview.product_id, claimed_product_id
+            ));
+        }
+    }
     let account_display = payload
         .account
         .as_ref()
@@ -2227,9 +2384,17 @@ fn claim_intent(api: &str, intent: &str, device_name: &str) -> Result<ClaimResul
         .as_ref()
         .and_then(|account| account.id.clone())
         .or_else(|| bearer_connection.and_then(|item| item.account_id.clone()))
-        .or_else(|| intent_preview.and_then(|preview| preview.user_id));
-    let product_id = payload.product.as_ref().map(|product| product.id.clone());
-    let product_name = payload.product.as_ref().map(|product| product.name.clone());
+        .or_else(|| intent_preview.user_id.clone());
+    let product_id = payload
+        .product
+        .as_ref()
+        .map(|product| product.id.clone())
+        .or_else(|| Some(intent_preview.product_id.clone()));
+    let product_name = payload
+        .product
+        .as_ref()
+        .map(|product| product.name.clone())
+        .or_else(|| Some(intent_preview.product_name.clone()));
     let cloud_origin = payload
         .authorization
         .as_ref()
@@ -2248,12 +2413,13 @@ fn claim_intent(api: &str, intent: &str, device_name: &str) -> Result<ClaimResul
                 .product
                 .as_ref()
                 .and_then(|product| product.origin.clone())
-        });
+        })
+        .or_else(|| Some(intent_preview.cloud_origin.clone()));
     let product_capabilities = payload
         .product
         .as_ref()
         .map(|product| product.capabilities.clone())
-        .unwrap_or_default();
+        .unwrap_or_else(|| intent_preview.capabilities.clone());
     let authorization_policy = payload
         .authorization
         .as_ref()
@@ -2313,6 +2479,7 @@ fn claim_intent(api: &str, intent: &str, device_name: &str) -> Result<ClaimResul
     );
     let credentials =
         credentials_from_connections(connections, Some(&connection), existing.as_ref());
+    register_cloud_profile_from_claim(&api_base, product_id.as_deref())?;
     save_credentials(&credentials)?;
     write_connector_state(&credentials)?;
     Ok(ClaimResult {
@@ -4213,7 +4380,10 @@ fn poll_all_connections(credentials: &Credentials) -> Result<Value, String> {
     }
     if results.is_empty() && !errors.is_empty() {
         let detail = serde_json::to_string(&errors).unwrap_or_else(|_| "[]".to_string());
-        return Err(format!("all connection polls failed: {}; errors={detail}", errors.len()));
+        return Err(format!(
+            "all connection polls failed: {}; errors={detail}",
+            errors.len()
+        ));
     }
     Ok(json!({
         "ok": true,
@@ -5918,7 +6088,7 @@ fn load_settings_with_api(api_base: &str) -> DesktopSettings {
         .ok()
         .and_then(|text| serde_json::from_str::<DesktopSettings>(&text).ok())
         .unwrap_or_else(default_settings);
-    settings.api_base = api_base.to_string();
+    normalize_settings(&mut settings, api_base);
     settings
 }
 
@@ -5928,12 +6098,15 @@ fn default_settings() -> DesktopSettings {
         appearance: default_appearance(),
         language: default_language(),
         api_base: default_api_base(),
+        cloud_profiles: vec![official_cloud_profile()],
+        selected_cloud_profile_id: "official".to_string(),
     }
 }
 
 fn save_settings(settings: &DesktopSettings) -> Result<(), String> {
     let mut persisted = settings.clone();
-    persisted.api_base = DEFAULT_API.to_string();
+    let active_api = persisted.api_base.clone();
+    normalize_settings(&mut persisted, &active_api);
     write_file(
         &settings_path()?,
         &serde_json::to_string_pretty(&persisted).map_err(|error| error.to_string())?,
@@ -5971,6 +6144,515 @@ fn update_settings(params: &Value) -> Result<DesktopSettings, String> {
         }
     }
     Ok(settings)
+}
+
+fn add_cloud_profile(params: &Value) -> Result<DesktopSettings, String> {
+    let api = string_param(params, "api")
+        .or_else(|| string_param(params, "api_base"))
+        .ok_or_else(|| "missing api".to_string())?;
+    let api_base = clean_api(&api)?;
+    let name = string_param(params, "name");
+    let profile = fetch_cloud_profile(&api_base, name.as_deref())?;
+    let mut settings = load_settings_with_api(&api_base);
+    upsert_cloud_profile(&mut settings, profile, true);
+    save_settings(&settings)?;
+    Ok(settings)
+}
+
+fn select_cloud_profile(params: &Value) -> Result<DesktopSettings, String> {
+    let mut settings = load_settings_with_api(DEFAULT_API);
+    let target_id = if let Some(id) =
+        string_param(params, "profile_id").or_else(|| string_param(params, "id"))
+    {
+        id
+    } else if let Some(api) =
+        string_param(params, "api").or_else(|| string_param(params, "api_base"))
+    {
+        let api_base = clean_api(&api)?;
+        profile_id_for_api(&api_base)
+    } else {
+        return Err("missing profile_id or api".to_string());
+    };
+    if !settings
+        .cloud_profiles
+        .iter()
+        .any(|profile| profile.id == target_id)
+    {
+        return Err(format!("unknown cloud profile: {target_id}"));
+    }
+    settings.selected_cloud_profile_id = target_id;
+    if let Some(profile) = selected_cloud_profile(&settings) {
+        settings.api_base = profile.api_base.clone();
+    }
+    save_settings(&settings)?;
+    Ok(settings)
+}
+
+fn remove_cloud_profile(params: &Value) -> Result<DesktopSettings, String> {
+    let target_id = string_param(params, "profile_id")
+        .or_else(|| string_param(params, "id"))
+        .ok_or_else(|| "missing profile_id".to_string())?;
+    if target_id == "official" {
+        return Err("official Bridge Cloud profile cannot be removed".to_string());
+    }
+    let mut settings = load_settings_with_api(DEFAULT_API);
+    let before = settings.cloud_profiles.len();
+    settings
+        .cloud_profiles
+        .retain(|profile| profile.id != target_id);
+    if settings.cloud_profiles.len() == before {
+        return Err(format!("unknown cloud profile: {target_id}"));
+    }
+    if settings.selected_cloud_profile_id == target_id {
+        settings.selected_cloud_profile_id = "official".to_string();
+    }
+    if let Some(profile) = selected_cloud_profile(&settings) {
+        settings.api_base = profile.api_base.clone();
+    }
+    save_settings(&settings)?;
+    Ok(settings)
+}
+
+fn refresh_cloud_profile(params: &Value) -> Result<DesktopSettings, String> {
+    let mut settings = load_settings_with_api(DEFAULT_API);
+    let target = string_param(params, "profile_id")
+        .or_else(|| string_param(params, "id"))
+        .or_else(|| {
+            string_param(params, "api")
+                .or_else(|| string_param(params, "api_base"))
+                .and_then(|api| clean_api(&api).ok())
+                .map(|api| profile_id_for_api(&api))
+        })
+        .ok_or_else(|| "missing profile_id or api".to_string())?;
+    let existing = settings
+        .cloud_profiles
+        .iter()
+        .find(|profile| profile.id == target)
+        .cloned()
+        .ok_or_else(|| format!("unknown cloud profile: {target}"))?;
+    let mut profile = fetch_cloud_profile(&existing.api_base, Some(&existing.name))?;
+    profile.id = existing.id;
+    profile.source = existing.source;
+    let keep_selected = settings.selected_cloud_profile_id == target;
+    upsert_cloud_profile(&mut settings, profile, keep_selected);
+    save_settings(&settings)?;
+    Ok(settings)
+}
+
+fn normalize_settings(settings: &mut DesktopSettings, active_api: &str) {
+    if settings
+        .cloud_profiles
+        .iter()
+        .all(|profile| profile.id != "official")
+    {
+        settings.cloud_profiles.insert(0, official_cloud_profile());
+    }
+    for profile in &mut settings.cloud_profiles {
+        if profile.id == "official" {
+            *profile = merge_official_profile(profile.clone());
+            continue;
+        }
+        if profile.id.trim().is_empty() {
+            profile.id = profile_id_for_api(&profile.api_base);
+        }
+        if profile.source.trim().is_empty() {
+            profile.source = "user".to_string();
+        }
+        if profile.name.trim().is_empty() {
+            profile.name = name_for_api(&profile.api_base);
+        }
+    }
+
+    let active_clean = clean_api(active_api)
+        .or_else(|_| clean_api(&settings.api_base))
+        .unwrap_or_else(|_| DEFAULT_API.to_string());
+    if active_clean != DEFAULT_API
+        && settings
+            .cloud_profiles
+            .iter()
+            .all(|profile| profile.api_base != active_clean)
+    {
+        settings
+            .cloud_profiles
+            .push(minimal_cloud_profile(&active_clean, None));
+    }
+    if settings.selected_cloud_profile_id.trim().is_empty()
+        || settings
+            .cloud_profiles
+            .iter()
+            .all(|profile| profile.id != settings.selected_cloud_profile_id)
+    {
+        settings.selected_cloud_profile_id = settings
+            .cloud_profiles
+            .iter()
+            .find(|profile| profile.api_base == active_clean)
+            .map(|profile| profile.id.clone())
+            .unwrap_or_else(|| "official".to_string());
+    }
+    if let Some(profile) = selected_cloud_profile(settings) {
+        settings.api_base = profile.api_base.clone();
+    } else {
+        settings.selected_cloud_profile_id = "official".to_string();
+        settings.api_base = DEFAULT_API.to_string();
+    }
+}
+
+fn selected_cloud_profile(settings: &DesktopSettings) -> Option<&CloudProfile> {
+    settings
+        .cloud_profiles
+        .iter()
+        .find(|profile| profile.id == settings.selected_cloud_profile_id)
+        .or_else(|| {
+            settings
+                .cloud_profiles
+                .iter()
+                .find(|profile| profile.id == "official")
+        })
+}
+
+fn official_cloud_profile() -> CloudProfile {
+    CloudProfile {
+        id: "official".to_string(),
+        name: "Official Bridge Cloud".to_string(),
+        api_base: DEFAULT_API.to_string(),
+        web_origin: Some(DEFAULT_WEB.to_string()),
+        products: known_products()
+            .into_iter()
+            .map(product_entry_from_known)
+            .collect(),
+        source: "official".to_string(),
+        updated_at: "builtin".to_string(),
+    }
+}
+
+fn merge_official_profile(existing: CloudProfile) -> CloudProfile {
+    let mut official = official_cloud_profile();
+    official.name = if existing.name.trim().is_empty() {
+        official.name
+    } else {
+        existing.name
+    };
+    official
+}
+
+fn minimal_cloud_profile(api_base: &str, name: Option<&str>) -> CloudProfile {
+    CloudProfile {
+        id: profile_id_for_api(api_base),
+        name: name
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| name_for_api(api_base)),
+        api_base: api_base.to_string(),
+        web_origin: None,
+        products: Vec::new(),
+        source: "user".to_string(),
+        updated_at: now_string(),
+    }
+}
+
+fn fetch_cloud_profile(api_base: &str, name: Option<&str>) -> Result<CloudProfile, String> {
+    let api_base = clean_api(api_base)?;
+    let health_url = format!("{api_base}/v1/health");
+    let health: HealthResponse = get_json(&health_url, None)?;
+    validate_bridge_health(&health)?;
+    let diagnostics_url = format!("{api_base}/v1/diagnostics");
+    let diagnostics: DiagnosticsResponse = get_json(&diagnostics_url, None)?;
+    validate_bridge_diagnostics(&api_base, &diagnostics)?;
+    let products = diagnostics
+        .products
+        .iter()
+        .map(|product| {
+            validate_bridge_product(product)?;
+            Ok(product_entry_from_info(product, &api_base))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    if products.is_empty() {
+        return Err("Bridge Cloud diagnostics returned no products".to_string());
+    }
+    Ok(CloudProfile {
+        id: profile_id_for_api(&api_base),
+        name: name
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| name_for_api(&api_base)),
+        api_base,
+        web_origin: diagnostics.web_origin,
+        products,
+        source: "user".to_string(),
+        updated_at: now_string(),
+    })
+}
+
+fn validate_bridge_health(health: &HealthResponse) -> Result<(), String> {
+    if health.ok != Some(true) {
+        return Err("Bridge Cloud health did not return ok=true".to_string());
+    }
+    if health.protocol.as_deref() != Some(BRIDGE_PROTOCOL_VERSION) {
+        return Err("Bridge Cloud health returned an unsupported protocol".to_string());
+    }
+    Ok(())
+}
+
+fn validate_bridge_diagnostics(
+    api_base: &str,
+    diagnostics: &DiagnosticsResponse,
+) -> Result<(), String> {
+    if diagnostics.ok != Some(true) {
+        return Err("Bridge Cloud diagnostics did not return ok=true".to_string());
+    }
+    if diagnostics.protocol.as_deref() != Some(BRIDGE_PROTOCOL_VERSION) {
+        return Err("Bridge Cloud diagnostics returned an unsupported protocol".to_string());
+    }
+    let public_api_base = diagnostics
+        .api_base
+        .as_deref()
+        .ok_or_else(|| "Bridge Cloud diagnostics missing api_base".to_string())
+        .and_then(clean_api)?;
+    if public_api_base != api_base {
+        return Err(
+            "Bridge Cloud diagnostics api_base does not match the selected server".to_string(),
+        );
+    }
+    let web_origin = diagnostics
+        .web_origin
+        .as_deref()
+        .ok_or_else(|| "Bridge Cloud diagnostics missing web_origin".to_string())?;
+    clean_product_origin(web_origin)
+        .ok_or_else(|| "Bridge Cloud diagnostics returned an invalid web_origin".to_string())?;
+    Ok(())
+}
+
+fn validate_bridge_product(product: &ProductInfo) -> Result<(), String> {
+    if !valid_product_id(&product.id) {
+        return Err(format!(
+            "Bridge Cloud diagnostics returned invalid product id: {}",
+            product.id
+        ));
+    }
+    if product.name.trim().is_empty() {
+        return Err(format!(
+            "Bridge Cloud diagnostics returned unnamed product: {}",
+            product.id
+        ));
+    }
+    let origin = product
+        .official_origin
+        .as_deref()
+        .or(product.origin.as_deref())
+        .or_else(|| product.official_origins.first().map(String::as_str))
+        .ok_or_else(|| {
+            format!(
+                "Bridge Cloud diagnostics missing product origin: {}",
+                product.id
+            )
+        })?;
+    clean_product_origin(origin).ok_or_else(|| {
+        format!(
+            "Bridge Cloud diagnostics returned invalid product origin: {}",
+            product.id
+        )
+    })?;
+    for candidate in &product.official_origins {
+        clean_product_origin(candidate).ok_or_else(|| {
+            format!(
+                "Bridge Cloud diagnostics returned invalid product origin: {}",
+                product.id
+            )
+        })?;
+    }
+    if let Some(web_url) = product.web_url.as_deref() {
+        clean_product_web_url(web_url).ok_or_else(|| {
+            format!(
+                "Bridge Cloud diagnostics returned invalid product web_url: {}",
+                product.id
+            )
+        })?;
+    }
+    let allowed_capabilities = ["relay.envelope", "relay.ack"];
+    if product.capabilities.is_empty()
+        || product
+            .capabilities
+            .iter()
+            .any(|capability| !allowed_capabilities.contains(&capability.as_str()))
+    {
+        return Err(format!(
+            "Bridge Cloud diagnostics returned unsupported product capabilities: {}",
+            product.id
+        ));
+    }
+    Ok(())
+}
+
+fn valid_product_id(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if bytes.len() < 3 || bytes.len() > 80 {
+        return false;
+    }
+    bytes[0].is_ascii_alphanumeric()
+        && bytes[bytes.len() - 1].is_ascii_alphanumeric()
+        && bytes
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+}
+
+fn clean_product_origin(value: &str) -> Option<String> {
+    let trimmed = value.trim().trim_end_matches('/');
+    let parsed = url::Url::parse(trimmed).ok()?;
+    if !matches!(parsed.scheme(), "https" | "http")
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+        || parsed.path() != "/"
+    {
+        return None;
+    }
+    Some(format!("{}://{}", parsed.scheme(), parsed.host_str()?))
+}
+
+fn clean_product_web_url(value: &str) -> Option<String> {
+    let trimmed = value.trim().trim_end_matches('/');
+    let parsed = url::Url::parse(trimmed).ok()?;
+    if !matches!(parsed.scheme(), "https" | "http")
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        return None;
+    }
+    Some(trimmed.to_string())
+}
+
+fn profile_product<'a>(
+    profile: &'a CloudProfile,
+    product_id: &str,
+) -> Option<&'a DesktopProductCatalogEntry> {
+    let normalized = normalize_product_key(product_id);
+    profile.products.iter().find(|product| {
+        normalize_product_key(&product.id) == normalized
+            || normalize_product_key(&product.name) == normalized
+    })
+}
+
+fn fetch_cloud_profile_product(
+    api_base: &str,
+    product_id: Option<&str>,
+) -> Result<CloudProfile, String> {
+    let profile = fetch_cloud_profile(api_base, None)?;
+    if let Some(product_id) = product_id {
+        if profile_product(&profile, product_id).is_none() {
+            return Err(format!(
+                "Bridge Cloud diagnostics does not expose product: {product_id}"
+            ));
+        }
+    }
+    Ok(profile)
+}
+
+fn register_cloud_profile_from_claim(
+    api_base: &str,
+    product_id: Option<&str>,
+) -> Result<(), String> {
+    let api_base = clean_api(api_base)?;
+    let mut settings = load_settings_with_api(&api_base);
+    let profile = fetch_cloud_profile_product(&api_base, product_id)?;
+    upsert_cloud_profile(&mut settings, profile, true);
+    save_settings(&settings)
+}
+
+fn upsert_cloud_profile(settings: &mut DesktopSettings, profile: CloudProfile, select: bool) {
+    if let Some(existing) = settings
+        .cloud_profiles
+        .iter_mut()
+        .find(|item| item.id == profile.id || item.api_base == profile.api_base)
+    {
+        *existing = profile.clone();
+    } else {
+        settings.cloud_profiles.push(profile.clone());
+    }
+    if select {
+        settings.selected_cloud_profile_id = profile.id;
+        settings.api_base = profile.api_base;
+    }
+}
+
+fn product_entry_from_known(product: KnownProduct) -> DesktopProductCatalogEntry {
+    DesktopProductCatalogEntry {
+        id: product.id.to_string(),
+        name: product.name.to_string(),
+        origin: Some(product.origin.to_string()),
+        web_url: Some(product.web_url.to_string()),
+        official_origin: Some(product.web_url.to_string()),
+        official_origins: vec![product.web_url.to_string()],
+    }
+}
+
+fn product_entry_from_info(product: &ProductInfo, api_base: &str) -> DesktopProductCatalogEntry {
+    let origin = product
+        .official_origin
+        .clone()
+        .or_else(|| product.origin.clone())
+        .or_else(|| product.official_origins.first().cloned())
+        .unwrap_or_else(|| api_base.to_string());
+    DesktopProductCatalogEntry {
+        id: product.id.clone(),
+        name: if product.name.trim().is_empty() {
+            product.id.clone()
+        } else {
+            product.name.clone()
+        },
+        origin: Some(origin.clone()),
+        web_url: product.web_url.clone().or(Some(origin.clone())),
+        official_origin: Some(origin),
+        official_origins: product.official_origins.clone(),
+    }
+}
+
+fn product_entry_from_grant(grant: &ProductGrant, api_base: &str) -> DesktopProductCatalogEntry {
+    let origin = grant.origin.clone().unwrap_or_else(|| api_base.to_string());
+    DesktopProductCatalogEntry {
+        id: grant.id.clone(),
+        name: grant.name.clone(),
+        origin: Some(origin.clone()),
+        web_url: Some(origin.clone()),
+        official_origin: Some(origin.clone()),
+        official_origins: vec![origin],
+    }
+}
+
+fn upsert_catalog_product(
+    products: &mut Vec<DesktopProductCatalogEntry>,
+    product: DesktopProductCatalogEntry,
+) {
+    if let Some(existing) = products.iter_mut().find(|item| {
+        item.id == product.id
+            || normalize_product_key(&item.name) == normalize_product_key(&product.name)
+    }) {
+        *existing = product;
+    } else {
+        products.push(product);
+    }
+}
+
+fn profile_id_for_api(api_base: &str) -> String {
+    let mut hash = Sha256::new();
+    hash.update(api_base.as_bytes());
+    let digest = hash.finalize();
+    format!(
+        "profile_{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        digest[0], digest[1], digest[2], digest[3], digest[4], digest[5], digest[6], digest[7]
+    )
+}
+
+fn name_for_api(api_base: &str) -> String {
+    url::Url::parse(api_base)
+        .ok()
+        .and_then(|url| url.host_str().map(ToOwned::to_owned))
+        .filter(|host| !host.trim().is_empty())
+        .unwrap_or_else(|| "Custom Bridge Cloud".to_string())
 }
 
 fn launch_agent_plist(executable: &str) -> String {
@@ -6703,18 +7385,32 @@ fn open_web_url(params: &Value) -> String {
     if let Some(url) = string_param(params, "url").filter(|value| !value.trim().is_empty()) {
         return url;
     }
+    let settings = load_settings_with_api(DEFAULT_API);
     if let Some(product_id) =
         string_param(params, "product_id").or_else(|| string_param(params, "product"))
     {
         let normalized = normalize_product_key(&product_id);
-        if let Some(product) = known_products().into_iter().find(|product| {
-            normalize_product_key(product.id) == normalized
-                || normalize_product_key(product.name) == normalized
-        }) {
-            return product.web_url.to_string();
+        if let Some(profile) = selected_cloud_profile(&settings) {
+            if let Some(product) = profile.products.iter().find(|product| {
+                normalize_product_key(&product.id) == normalized
+                    || normalize_product_key(&product.name) == normalized
+            }) {
+                return product
+                    .web_url
+                    .clone()
+                    .or_else(|| product.origin.clone())
+                    .unwrap_or_else(|| {
+                        profile
+                            .web_origin
+                            .clone()
+                            .unwrap_or_else(|| profile.api_base.clone())
+                    });
+            }
         }
     }
-    DEFAULT_WEB.to_string()
+    selected_cloud_profile(&settings)
+        .and_then(|profile| profile.web_origin.clone())
+        .unwrap_or_else(|| DEFAULT_WEB.to_string())
 }
 
 fn open_url(url: &str) -> Result<(), String> {
@@ -6738,20 +7434,25 @@ fn clean_api(api: &str) -> Result<String, String> {
     let parsed =
         url::Url::parse(trimmed).map_err(|error| format!("invalid Bridge API URL: {error}"))?;
     let host = parsed.host_str().unwrap_or("");
-    let allowed = matches!(
-        host,
-        "api.bridge.otherline.cc"
-            | "bridge.otherline.cc"
-            | "api.bridge.test.example"
-            | "bridge.test.example"
-            | "127.0.0.1"
-            | "localhost"
-            | "::1"
-    );
-    if !allowed {
-        return Err(format!("Bridge API host is not allowed: {host}"));
+    if parsed.username() != ""
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        return Err("Bridge API URL cannot include credentials, query, or fragment".to_string());
     }
-    if parsed.scheme() != "https" && host != "127.0.0.1" && host != "localhost" && host != "::1" {
+    let local_http = {
+        let loopback = matches!(host, "127.0.0.1" | "localhost" | "::1");
+        #[cfg(test)]
+        {
+            loopback || host == "local.test" || host.ends_with(".local.test")
+        }
+        #[cfg(not(test))]
+        {
+            loopback
+        }
+    };
+    if parsed.scheme() != "https" && !(parsed.scheme() == "http" && local_http) {
         return Err("Bridge API must use https".to_string());
     }
     Ok(trimmed.to_string())
@@ -6864,6 +7565,60 @@ fn run_headless_if_requested() -> Option<i32> {
             let device_name = map.get("device-name").cloned().unwrap_or_else(device_name);
             claim_intent(&api, &intent, &device_name)
                 .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string()))
+        }
+        "headless-add-cloud-profile" => {
+            let map = arg_map(args.collect());
+            let api = match map.get("api").or_else(|| map.get("api-base")) {
+                Some(value) => value.clone(),
+                None => return Some(print_error("missing --api")),
+            };
+            let mut params = json!({ "api": api });
+            if let Some(name) = map.get("name") {
+                params["name"] = json!(name);
+            }
+            add_cloud_profile(&params)
+                .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string()))
+        }
+        "headless-select-cloud-profile" => {
+            let map = arg_map(args.collect());
+            let mut params = Map::new();
+            if let Some(value) = map.get("profile-id").or_else(|| map.get("id")) {
+                params.insert("profile_id".to_string(), json!(value));
+            }
+            if let Some(value) = map.get("api").or_else(|| map.get("api-base")) {
+                params.insert("api".to_string(), json!(value));
+            }
+            select_cloud_profile(&Value::Object(params))
+                .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string()))
+        }
+        "headless-refresh-cloud-profile" => {
+            let map = arg_map(args.collect());
+            let mut params = Map::new();
+            if let Some(value) = map.get("profile-id").or_else(|| map.get("id")) {
+                params.insert("profile_id".to_string(), json!(value));
+            }
+            if let Some(value) = map.get("api").or_else(|| map.get("api-base")) {
+                params.insert("api".to_string(), json!(value));
+            }
+            refresh_cloud_profile(&Value::Object(params))
+                .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string()))
+        }
+        "headless-remove-cloud-profile" => {
+            let map = arg_map(args.collect());
+            let profile_id = match map.get("profile-id").or_else(|| map.get("id")) {
+                Some(value) => value.clone(),
+                None => return Some(print_error("missing --profile-id")),
+            };
+            remove_cloud_profile(&json!({ "profile_id": profile_id }))
+                .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string()))
+        }
+        "headless-open-web-url" => {
+            let map = arg_map(args.collect());
+            let mut params = Map::new();
+            if let Some(value) = map.get("product-id").or_else(|| map.get("product")) {
+                params.insert("product_id".to_string(), json!(value));
+            }
+            Ok(json!({ "url": open_web_url(&Value::Object(params)) }))
         }
         "headless-bind-local-root" => {
             let map = arg_map(args.collect());
@@ -7275,6 +8030,181 @@ mod tests {
         state_path
     }
 
+    fn with_settings_home(name: &str) -> PathBuf {
+        let home = env::temp_dir().join(format!("{name}-{}", next_event_seq()));
+        let _ = fs::remove_dir_all(&home);
+        fs::create_dir_all(home.join(".panda-bridge")).unwrap();
+        env::set_var("HOME", &home);
+        env::remove_var("USERPROFILE");
+        home
+    }
+
+    fn start_profile_server(diagnostics: Value) -> (String, std::thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let api = format!("http://{addr}");
+        let handle = thread::spawn(move || {
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut request_line = String::new();
+                let _ = reader.read_line(&mut request_line);
+                loop {
+                    let mut line = String::new();
+                    let bytes = reader.read_line(&mut line).unwrap_or(0);
+                    if bytes == 0 || line == "\r\n" || line == "\n" {
+                        break;
+                    }
+                }
+                let path = request_line.split_whitespace().nth(1).unwrap_or("/");
+                let payload = if path == "/v1/health" {
+                    json!({
+                        "ok": true,
+                        "protocol": BRIDGE_PROTOCOL_VERSION,
+                        "env": "test",
+                        "storage": "memory"
+                    })
+                } else {
+                    diagnostics.clone()
+                };
+                write_http_json(&mut stream, 200, payload).unwrap();
+            }
+        });
+        (api, handle)
+    }
+
+    #[test]
+    fn cloud_profile_migrates_old_api_base_and_keeps_official_profile() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        reset_credentials_env();
+        let old_home = env::var_os("HOME");
+        let old_userprofile = env::var_os("USERPROFILE");
+        let home = with_settings_home("panda-bridge-settings-migration");
+        let api = "http://local.test:8787";
+        fs::write(
+            home.join(".panda-bridge/desktop-settings.json"),
+            serde_json::to_string_pretty(&json!({
+                "launch_at_login": true,
+                "appearance": "auto",
+                "language": "auto",
+                "api_base": api
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let settings = load_settings_with_api(api);
+
+        assert_eq!(settings.api_base, api);
+        assert_eq!(settings.selected_cloud_profile_id, profile_id_for_api(api));
+        assert!(settings
+            .cloud_profiles
+            .iter()
+            .any(|profile| profile.id == "official" && profile.api_base == DEFAULT_API));
+        assert!(settings
+            .cloud_profiles
+            .iter()
+            .any(|profile| profile.api_base == api && profile.source == "user"));
+
+        restore_env_var("HOME", old_home);
+        restore_env_var("USERPROFILE", old_userprofile);
+        reset_credentials_env();
+        let _ = fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn add_cloud_profile_rejects_invalid_diagnostics_without_saving() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        reset_credentials_env();
+        let old_home = env::var_os("HOME");
+        let old_userprofile = env::var_os("USERPROFILE");
+        let home = with_settings_home("panda-bridge-invalid-profile");
+        let (api, server) = start_profile_server(json!({
+            "ok": true,
+            "protocol": "not-bridge",
+            "api_base": "http://127.0.0.1:1",
+            "web_origin": "http://127.0.0.1:1",
+            "products": []
+        }));
+
+        let error = add_cloud_profile(&json!({ "api": api })).unwrap_err();
+        assert!(error.contains("unsupported protocol"));
+        server.join().unwrap();
+        let settings = load_settings_with_api(DEFAULT_API);
+        assert_eq!(settings.selected_cloud_profile_id, "official");
+        assert_eq!(settings.cloud_profiles.len(), 1);
+
+        restore_env_var("HOME", old_home);
+        restore_env_var("USERPROFILE", old_userprofile);
+        reset_credentials_env();
+        let _ = fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn diagnostics_product_without_web_url_uses_origin_fallback() {
+        let product = ProductInfo {
+            id: "panda-syllo".to_string(),
+            name: "Panda Syllo".to_string(),
+            origin: Some("http://local.test".to_string()),
+            official_origin: None,
+            official_origins: Vec::new(),
+            web_url: None,
+            capabilities: vec!["relay.envelope".to_string(), "relay.ack".to_string()],
+        };
+
+        validate_bridge_product(&product).unwrap();
+        let entry = product_entry_from_info(&product, "http://api.test");
+
+        assert_eq!(entry.web_url.as_deref(), Some("http://local.test"));
+    }
+
+    #[test]
+    fn official_cloud_profile_cannot_be_removed() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        reset_credentials_env();
+        let error = remove_cloud_profile(&json!({ "profile_id": "official" })).unwrap_err();
+        assert!(error.contains("cannot be removed"));
+        reset_credentials_env();
+    }
+
+    #[test]
+    fn open_web_uses_selected_profile_product_url() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        reset_credentials_env();
+        let old_home = env::var_os("HOME");
+        let old_userprofile = env::var_os("USERPROFILE");
+        let home = with_settings_home("panda-bridge-open-web-profile");
+        let api = "http://local.test:8787";
+        let mut settings = default_settings();
+        let profile = CloudProfile {
+            id: profile_id_for_api(api),
+            name: "Local Acme".to_string(),
+            api_base: api.to_string(),
+            web_origin: Some(api.to_string()),
+            products: vec![DesktopProductCatalogEntry {
+                id: "acme-demo".to_string(),
+                name: "Acme Demo".to_string(),
+                origin: Some(api.to_string()),
+                web_url: Some(format!("{api}/acme")),
+                official_origin: Some(api.to_string()),
+                official_origins: vec![api.to_string()],
+            }],
+            source: "user".to_string(),
+            updated_at: now_string(),
+        };
+        upsert_cloud_profile(&mut settings, profile, true);
+        save_settings(&settings).unwrap();
+
+        let url = open_web_url(&json!({ "product_id": "acme-demo" }));
+
+        assert_eq!(url, format!("{api}/acme"));
+        restore_env_var("HOME", old_home);
+        restore_env_var("USERPROFILE", old_userprofile);
+        reset_credentials_env();
+        let _ = fs::remove_dir_all(home);
+    }
+
     fn connect_intent_payload(policy: Value) -> Value {
         json!({
             "connect_intent": {
@@ -7300,20 +8230,53 @@ mod tests {
     fn start_one_shot_json_server(payload: Value) -> (String, std::thread::JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
+        let api = format!("http://{addr}");
+        let api_for_thread = api.clone();
         let handle = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
-            let mut reader = BufReader::new(stream.try_clone().unwrap());
-            loop {
-                let mut line = String::new();
-                let bytes = reader.read_line(&mut line).unwrap_or(0);
-                if bytes == 0 || line == "\r\n" || line == "\n" {
-                    break;
+            for _ in 0..3 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut request_line = String::new();
+                let _ = reader.read_line(&mut request_line);
+                loop {
+                    let mut line = String::new();
+                    let bytes = reader.read_line(&mut line).unwrap_or(0);
+                    if bytes == 0 || line == "\r\n" || line == "\n" {
+                        break;
+                    }
                 }
+                let path = request_line.split_whitespace().nth(1).unwrap_or("/");
+                let response = if path == "/v1/health" {
+                    json!({
+                        "ok": true,
+                        "protocol": BRIDGE_PROTOCOL_VERSION,
+                        "env": "test",
+                        "storage": "memory"
+                    })
+                } else if path == "/v1/diagnostics" {
+                    json!({
+                        "ok": true,
+                        "protocol": BRIDGE_PROTOCOL_VERSION,
+                        "api_base": api_for_thread.clone(),
+                        "web_origin": api_for_thread.clone(),
+                        "products": [{
+                            "id": "panda-chat",
+                            "name": "Panda Chat",
+                            "origin": api_for_thread.clone(),
+                            "official_origin": api_for_thread.clone(),
+                            "official_origins": [api_for_thread.clone()],
+                            "web_url": api_for_thread.clone(),
+                            "capabilities": ["relay.envelope", "relay.ack"]
+                        }]
+                    })
+                } else {
+                    payload.clone()
+                };
+                write_http_json(&mut stream, 200, response).unwrap();
             }
-            write_http_json(&mut stream, 200, payload).unwrap();
         });
-        (format!("http://{addr}"), handle)
+        (api, handle)
     }
 
     fn run_preview_intent_for_policy(policy: Value) -> IntentPreview {
@@ -8116,7 +9079,10 @@ mod tests {
         state.worker_running.store(true, Ordering::SeqCst);
         state.realtime_connected.store(true, Ordering::SeqCst);
 
-        let products = desktop_products(Some(&credentials), &state);
+        let mut settings = default_settings();
+        normalize_settings(&mut settings, &credentials.api_base);
+        settings.selected_cloud_profile_id = profile_id_for_api(&credentials.api_base);
+        let products = desktop_products(Some(&credentials), &state, &settings);
         let otherline = products
             .iter()
             .find(|product| product.id == "otherline")
@@ -8131,7 +9097,7 @@ mod tests {
         assert_eq!(serialized["accounts"][0]["connected"], false);
 
         credentials.authorized_products[0].authorization = AuthorizationState::Active;
-        let products = desktop_products(Some(&credentials), &state);
+        let products = desktop_products(Some(&credentials), &state, &settings);
         let account = &products
             .iter()
             .find(|product| product.id == "otherline")

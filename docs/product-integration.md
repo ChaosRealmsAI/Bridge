@@ -14,6 +14,8 @@ Assets: https://assets-bridge.test.example
 
 生产域 `api.bridge.otherline.cc`、`bridge.otherline.cc`、`assets.bridge.otherline.cc` 只在明确生产发布时使用。
 
+如果产品方或用户要自己维护 Bridge Cloud，按 [`docs/self-hosting.md`](./self-hosting.md) 部署 Worker 并配置 `BRIDGE_PRODUCT_REGISTRY_JSON`。桌面端会通过 `/v1/diagnostics` 读取自托管服务器声明的产品列表；Product Adapter 仍按 `PANDA_BRIDGE_ADAPTER_<PRODUCT_ID>_URL` 本机路由。
+
 ## 0. SDK
 
 `@panda-bridge/sdk` 当前未发布到 npm。推荐在同一 monorepo 或本地 checkout 里用 `file:`：

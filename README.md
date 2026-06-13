@@ -39,6 +39,8 @@ supabase/migrations    Bridge Cloud 表结构
 
 默认给用户使用我们提供的 Bridge Cloud，用户不需要自建服务器。
 
+桌面端也支持用户自己维护 Bridge Cloud。用户可以在设置里添加自托管 API，Desktop 会通过 `/v1/health` 和 `/v1/diagnostics` 验证服务器，并把 diagnostics 返回的产品列表显示为左侧产品 tab。自托管部署、产品 registry 和本机 Adapter 配置见 [`docs/self-hosting.md`](docs/self-hosting.md)。
+
 当前收尾和接入验证优先使用公司 test 资源：
 
 ```text
@@ -83,6 +85,7 @@ npm run verify:relay-backpressure
 npm run check:e2ee
 npm run verify:relay-local-control
 npm run verify:relay-local-control:blackbox
+npm run verify:selfhost-profile
 bash spec/check-template.sh --no-smoke
 ```
 
@@ -103,7 +106,8 @@ npm run pandart:local
 - `spec/bdd/*.json` 是产品行为真相。
 - `spec/js/技术文档.js` 记录长期架构和接口契约。
 - `spec/js/工程护栏.js` 记录可执行防回退检查。
-- `spec/js/versions/v0-3/*` 是当前 relay 硬化、QoS 和窄 SDK 版本事实。
+- `spec/js/versions/v0-3/*` 是 relay 硬化、QoS 和窄 SDK 版本事实。
+- `spec/js/versions/v0-4/*` 是自托管 Bridge Cloud Profile 版本事实。
 
 先读：
 
@@ -113,4 +117,5 @@ spec/js/技术文档.js
 spec/js/质量标准.js
 spec/js/工程护栏.js
 spec/js/versions/v0-3/版本总览.js
+spec/js/versions/v0-4/版本总览.js
 ```

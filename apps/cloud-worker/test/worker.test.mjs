@@ -192,6 +192,80 @@ assert.ok(products.items.some((item) => item.id === "panda-chat"));
 assert.ok(products.items.every((item) => item.capabilities.includes("relay.envelope")));
 assert.doesNotMatch(JSON.stringify(products), /codex\.|claude\.|syllo\.|shell\.run|fs\.|data\./);
 
+const customRegistryEnv = {
+  ...env,
+  BRIDGE_PRODUCT_REGISTRY_MODE: "replace",
+  BRIDGE_PRODUCT_REGISTRY_JSON: JSON.stringify({
+    products: [{
+      id: "acme-demo",
+      name: "Acme Demo",
+      official_origin: "http://acme.local.test",
+      web_url: "http://acme.local.test/app",
+    }],
+  }),
+};
+const customDiagnosticsResponse = await worker.fetch(new Request("http://local.test/v1/diagnostics", {
+  headers: { origin: "http://acme.local.test" },
+}), customRegistryEnv);
+assert.equal(customDiagnosticsResponse.status, 200);
+const customDiagnostics = await customDiagnosticsResponse.json();
+assert.deepEqual(customDiagnostics.products.map((item) => item.id), ["acme-demo"]);
+assert.equal(customDiagnostics.products[0].web_url, "http://acme.local.test/app");
+assert.deepEqual(customDiagnostics.products[0].capabilities, ["relay.envelope", "relay.ack"]);
+const customProductsResponse = await worker.fetch(new Request("http://local.test/v1/products", {
+  headers: { origin: "http://acme.local.test" },
+}), customRegistryEnv);
+assert.equal(customProductsResponse.status, 200);
+const customProducts = await customProductsResponse.json();
+assert.deepEqual(customProducts.items.map((item) => item.id), ["acme-demo"]);
+assert.equal(customProducts.items[0].origin, "http://acme.local.test");
+const invalidRegistryResponse = await worker.fetch(new Request("http://local.test/v1/diagnostics"), {
+  ...env,
+  BRIDGE_PRODUCT_REGISTRY_MODE: "replace",
+  BRIDGE_PRODUCT_REGISTRY_JSON: JSON.stringify({ products: [{ id: "../bad", official_origin: "http://bad.local.test" }] }),
+});
+assert.equal(invalidRegistryResponse.status, 500);
+assert.equal((await invalidRegistryResponse.json()).error, "invalid_product_registry_config");
+const invalidOriginRegistryResponse = await worker.fetch(new Request("http://local.test/v1/diagnostics"), {
+  ...env,
+  BRIDGE_PRODUCT_REGISTRY_MODE: "replace",
+  BRIDGE_PRODUCT_REGISTRY_JSON: JSON.stringify({
+    products: [{
+      id: "acme-demo",
+      official_origin: "http://acme.local.test",
+      official_origins: ["not-a-url", "http://acme.local.test"],
+    }],
+  }),
+});
+assert.equal(invalidOriginRegistryResponse.status, 500);
+assert.equal((await invalidOriginRegistryResponse.json()).error, "invalid_product_registry_config");
+const invalidWebUrlRegistryResponse = await worker.fetch(new Request("http://local.test/v1/diagnostics"), {
+  ...env,
+  BRIDGE_PRODUCT_REGISTRY_MODE: "replace",
+  BRIDGE_PRODUCT_REGISTRY_JSON: JSON.stringify({
+    products: [{
+      id: "acme-demo",
+      official_origin: "http://acme.local.test",
+      web_url: "notaurl",
+    }],
+  }),
+});
+assert.equal(invalidWebUrlRegistryResponse.status, 500);
+assert.equal((await invalidWebUrlRegistryResponse.json()).error, "invalid_product_registry_config");
+const extendOverrideRegistryResponse = await worker.fetch(new Request("http://local.test/v1/diagnostics"), {
+  ...env,
+  BRIDGE_PRODUCT_REGISTRY_MODE: "extend",
+  BRIDGE_PRODUCT_REGISTRY_JSON: JSON.stringify({
+    products: [{
+      id: "panda-chat",
+      name: "Fake Panda",
+      official_origin: "https://evil.example",
+    }],
+  }),
+});
+assert.equal(extendOverrideRegistryResponse.status, 500);
+assert.equal((await extendOverrideRegistryResponse.json()).error, "invalid_product_registry_config");
+
 const intent = await api("POST", "/v1/connect-intents", {
   product_id: "panda-chat",
   device_name: "Relay Test Device",

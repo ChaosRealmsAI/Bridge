@@ -106,7 +106,7 @@ export default {
       if (path === "/v1/devices" && request.method === "GET") return await listDevices(request, env);
       const deviceMatch = path.match(/^\/v1\/devices\/([^/]+)$/);
       if (deviceMatch && request.method === "DELETE") return await revokeDevice(request, env, decodeURIComponent(deviceMatch[1]));
-      if (path === "/v1/products" && request.method === "GET") return json({ items: allProducts(sourceOrigin(env)) }, env);
+      if (path === "/v1/products" && request.method === "GET") return json({ items: allProducts(sourceOrigin(env), env) }, env);
       if (path === "/v1/devices/pairing-codes" && request.method === "POST") return await createPairingCode(request, env);
       if (path === "/v1/connectors/claim" && request.method === "POST") return await claimConnector(request, env);
       if (path === "/v1/connectors/heartbeat" && request.method === "POST") return await connectorHeartbeat(request, env);
@@ -2967,12 +2967,13 @@ function diagnosticsPayload(env) {
       enabled: realtimeEnabled(env),
       route_template: "/v1/realtime/devices/{device_id}",
     },
-    products: allProducts(sourceOrigin(env)).map((product) => ({
+    products: allProducts(sourceOrigin(env), env).map((product) => ({
       id: product.id,
       name: product.name,
       origin: product.origin,
       official_origin: product.official_origin,
       official_origins: product.official_origins,
+      web_url: product.web_url || product.official_origin,
       capabilities: product.capabilities,
       adapter_boundary: product.adapter_boundary || {},
       requires_desktop_authorization: product.requires_desktop_authorization,
@@ -3166,6 +3167,7 @@ function publicStateProduct(product) {
     origin: product.origin || product.official_origin || null,
     official_origin: product.official_origin || null,
     official_origins: [...(product.official_origins || [])],
+    web_url: product.web_url || product.official_origin || null,
     requires_desktop_authorization: product.requires_desktop_authorization !== false,
   } : null;
 }
@@ -4561,9 +4563,15 @@ function requestScopedEnv(request, env) {
 }
 
 function allowedWebOrigins(env) {
+  let productOrigins = [];
+  try {
+    productOrigins = officialProductOrigins(env);
+  } catch {
+    productOrigins = [];
+  }
   return [...new Set([
     webOrigin(env),
-    ...officialProductOrigins(),
+    ...productOrigins,
     ...splitOrigins(env.BRIDGE_ALLOWED_ORIGINS),
   ].filter(Boolean))];
 }
@@ -4632,7 +4640,7 @@ function retryAfterMsForAttempt(attempt) {
 }
 
 function productInfo(productId, env) {
-  return productById(productId, sourceOrigin(env));
+  return productById(productId, sourceOrigin(env), env);
 }
 
 function canonicalProductOrigin(product, env) {
