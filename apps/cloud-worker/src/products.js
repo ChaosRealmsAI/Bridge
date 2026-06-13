@@ -83,7 +83,12 @@ export const PRODUCT_REGISTRY = {
     id: "panda-syllo",
     name: "Panda Syllo",
     official_origin: "http://localhost:8790",
-    official_origins: ["http://localhost:8790", "https://bridge.otherline.cc"],
+    official_origins: [
+      "http://localhost:8790",
+      "https://bridge.otherline.cc",
+      "https://bridge.test.example",
+      "https://app.test.example",
+    ],
     capabilities: [...RELAY_CAPABILITIES],
     adapter_boundary: { adapter_id: "panda-syllo", adapter_owner: "product" },
     default_policy: {},

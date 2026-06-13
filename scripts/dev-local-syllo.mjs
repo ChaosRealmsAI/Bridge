@@ -1,19 +1,21 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 import { mkdtempSync } from "node:fs";
 import { networkInterfaces, tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { Readable } from "node:stream";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import worker from "../apps/cloud-worker/src/index.js";
 import { createBridgeClient } from "../packages/sdk/src/index.js";
 
 const PRODUCT_ID = "panda-syllo";
-const SYLLO_CAPABILITIES = ["syllo.sessions", "syllo.issue", "syllo.highlight", "syllo.doc", "syllo.chat"];
+const SYLLO_CAPABILITIES = ["relay.envelope", "relay.ack"];
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, "..");
 const args = parseArgs(process.argv.slice(2));
+const sylloRoot = resolve(args.sylloRoot || process.env.SYLLO_REPO_ROOT || resolve(repoRoot, "../syllo"));
 const host = args.host || process.env.HOST || "0.0.0.0";
 const port = Number(args.port || process.env.PORT || 8799);
 const pollIntervalMs = Number(args.pollIntervalMs || process.env.PANDA_BRIDGE_DEV_POLL_INTERVAL_MS || 1500);
@@ -33,6 +35,9 @@ let devSession = null;
 let shuttingDown = false;
 let desktopQueue = Promise.resolve();
 let apiBase = "";
+let sylloAdapter = null;
+const relayKeyBytes = randomBytes(32);
+const relayKeyB64 = relayKeyBytes.toString("base64");
 
 const server = createServer(async (request, response) => {
   try {
@@ -55,6 +60,9 @@ try {
   for (const url of phoneUrls(port)) console.log(`[syllo:local] phone: ${url}`);
   if (!phoneUrls(port).length) console.log("[syllo:local] phone: no LAN IPv4 detected");
   console.log(`[syllo:local] desktop state: ${statePath}`);
+
+  sylloAdapter = await startLocalSylloAdapter();
+  console.log(`[syllo:local] syllo adapter: ${sylloAdapter.url}`);
 
   devSession = await bindLocalDesktop({
     apiBase,
@@ -86,6 +94,10 @@ async function handle(request, response) {
       cookie: devSession.cookie,
       deviceId: devSession.deviceId,
       productId: PRODUCT_ID,
+      relayKeyB64,
+      senderKeyId: "syllo-android",
+      recipientKeyId: "syllo-adapter",
+      channelPrefix: "syllo-android",
     });
     return;
   }
@@ -109,6 +121,10 @@ async function handle(request, response) {
       cookie: devSession.cookie,
       deviceId: devSession.deviceId,
       productId: PRODUCT_ID,
+      relayKeyB64,
+      senderKeyId: "syllo-android",
+      recipientKeyId: "syllo-adapter",
+      channelPrefix: "syllo-android",
     }, 201);
     return;
   }
@@ -245,6 +261,10 @@ function runDesktop(args, options = {}) {
           : {}),
         PANDA_BRIDGE_DESKTOP_STATE: statePath,
         PANDA_BRIDGE_ALLOW_HEADLESS_CONNECT: "1",
+        ...(sylloAdapter?.url ? {
+          PANDA_BRIDGE_ADAPTER_PANDA_SYLLO_URL: sylloAdapter.url,
+          PANDA_BRIDGE_ADAPTER_URL: sylloAdapter.url,
+        } : {}),
       },
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -272,6 +292,12 @@ function runDesktop(args, options = {}) {
       resolveChild({ status, signal, stdout, stderr, error, label: options.label || args[0] || "desktop" });
     });
   });
+}
+
+async function startLocalSylloAdapter() {
+  const modulePath = resolve(sylloRoot, "scripts/bridge/syllo-relay-adapter.mjs");
+  const { startSylloRelayAdapter } = await import(pathToFileURL(modulePath).href);
+  return startSylloRelayAdapter({ keyBytes: relayKeyBytes, root: sylloRoot });
 }
 
 function localWorkerEnv(origin) {
@@ -580,6 +606,7 @@ async function shutdown(code = 0) {
   if (shuttingDown) return;
   shuttingDown = true;
   for (const child of activeChildren) killChild(child);
+  if (sylloAdapter) await sylloAdapter.close();
   await new Promise((resolveClose) => server.close(() => resolveClose()));
   process.exit(code);
 }

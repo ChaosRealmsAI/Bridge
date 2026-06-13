@@ -4212,7 +4212,8 @@ fn poll_all_connections(credentials: &Credentials) -> Result<Value, String> {
         }
     }
     if results.is_empty() && !errors.is_empty() {
-        return Err(format!("all connection polls failed: {}", errors.len()));
+        let detail = serde_json::to_string(&errors).unwrap_or_else(|_| "[]".to_string());
+        return Err(format!("all connection polls failed: {}; errors={detail}", errors.len()));
     }
     Ok(json!({
         "ok": true,
