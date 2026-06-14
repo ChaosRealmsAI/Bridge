@@ -1,13 +1,87 @@
 import { createBridgeClient } from "/sdk/index.js";
 
 const params = new URLSearchParams(location.search);
-const API_BASE = params.get("api") || location.origin;
-const BRAND_DOMAIN = params.get("domain") || "pandart.cc";
-const PRODUCT_ID = "panda-chat";
-const DEMO_ACCOUNT = Object.freeze({
-  email: "chaos@pandart.cc",
-  password: "Pandart-Local-2026!",
+const PRODUCT_PROFILES = Object.freeze({
+  "panda-chat": {
+    id: "panda-chat",
+    name: "Pandart",
+    mark: "PT",
+    domain: "pandart.cc",
+    accountLabel: "Pandart 账号",
+    desktopLabel: "Codex 电脑",
+    tagline: "本机 Codex 对话台",
+    chatTitle: "Local Chat",
+    chatSubtitle: "打开本地地址，连接这台电脑，把消息交给本机 Codex。",
+    intro: "登录 Pandart 账号并连接本机后，就可以开始和本地 Codex 对话。",
+    loginPlaceholder: "chaos@pandart.cc",
+    promptPlaceholder: "问本机 Codex 一件事...",
+    deviceName: () => `Pandart Connector ${navigator.platform || "Desktop"}`,
+    defaultCapabilityLabels: {
+      "relay.envelope": "加密信封",
+      "relay.ack": "信封确认",
+    },
+    requestSource: "pandart_web_authorization",
+    policyPreset: "workspace-default",
+    workspaceDisplay: "[local]/default",
+    risk: "低风险：只允许加密 relay 信封和 ACK，具体任务仍受桌面端授权策略限制。",
+    capabilities: ["relay.envelope", "relay.ack"],
+    demoAccount: Object.freeze({
+      email: "chaos@pandart.cc",
+      password: "Pandart-Local-2026!",
+    }),
+  },
+  "panda-syllo": {
+    id: "panda-syllo",
+    name: "Syllo",
+    mark: "SY",
+    domain: "syllo.cc",
+    accountLabel: "Syllo 账号",
+    desktopLabel: "Syllo 电脑",
+    tagline: "本机项目 AI 工作台",
+    chatTitle: "Web Authorization",
+    chatSubtitle: "登录账号，授权当前电脑，之后 App 登录同一账号即可连接这台电脑。",
+    intro: "登录 Syllo 账号并授权这台电脑；授权前请核对来源、能力和风险边界。",
+    loginPlaceholder: "name@company.example",
+    promptPlaceholder: "发送到本机 Syllo 连接器...",
+    deviceName: () => `Syllo Desktop ${navigator.platform || "Desktop"}`,
+    defaultCapabilityLabels: {
+      "relay.envelope": "加密信封",
+      "relay.ack": "信封确认",
+    },
+    requestSource: "syllo_web_authorization",
+    policyPreset: "syllo-web-auth",
+    workspaceDisplay: "[local]/default",
+    risk: "中风险：允许 Syllo 通过已授权电脑读写 .syllo 工作台并发起本机 AI 聊天；云端只保存加密信封和元数据，不保存 prompt/result/body。",
+    capabilities: ["relay.envelope", "relay.ack"],
+    demoAccount: null,
+    authorizationOnly: true,
+  },
 });
+
+const PRODUCT = productProfile(params.get("product") || params.get("product_id") || productIdFromPath(location.pathname) || "panda-chat");
+const API_BASE = params.get("api") || defaultApiBase(PRODUCT);
+const BRAND_DOMAIN = params.get("domain") || PRODUCT.domain;
+const PRODUCT_ID = PRODUCT.id;
+const DEMO_ACCOUNT = PRODUCT.demoAccount;
+
+function productProfile(productId) {
+  const key = String(productId || "").trim() || "panda-chat";
+  return PRODUCT_PROFILES[key] || { ...PRODUCT_PROFILES["panda-chat"], id: key };
+}
+
+function productIdFromPath(pathname) {
+  const path = String(pathname || "").toLowerCase();
+  if (path.endsWith("/syllo") || path.endsWith("/syllo/") || path.endsWith("/syllo.html")) return "panda-syllo";
+  return "";
+}
+
+function defaultApiBase(product) {
+  const host = location.hostname.toLowerCase();
+  if (product.id === "panda-syllo" && (host === "bridge.test.example" || host === "app.test.example")) {
+    return "https://api.bridge.test.example";
+  }
+  return location.origin;
+}
 
 // Fallback is used only until W1 SDK v2 provides install() in the public SDK copy.
 const FALLBACK_INSTALL = Object.freeze({
@@ -56,6 +130,12 @@ const nodes = {
   bridgeDevices: document.querySelector("[data-bridge-devices]"),
   bridgeMenu: document.querySelector("[data-bridge-menu]"),
   bridgeMenuActions: document.querySelector("[data-bridge-menu-actions]"),
+  authScopePanel: document.querySelector("[data-auth-scope-panel]"),
+  authTitle: document.querySelector("[data-auth-title]"),
+  authOrigin: document.querySelector("[data-auth-origin]"),
+  authRoot: document.querySelector("[data-auth-root]"),
+  authRisk: document.querySelector("[data-auth-risk]"),
+  authCapabilities: document.querySelector("[data-auth-capabilities]"),
   messages: document.querySelector("[data-messages]"),
   composer: document.querySelector("[data-composer]"),
   input: document.querySelector("[data-input]"),
@@ -69,7 +149,7 @@ document.addEventListener("click", async (event) => {
   if (!action) return;
   if (action === "login") showLogin();
   if (action === "logout") await logout();
-  if (action === "refresh") await refresh({ reason: "manual" });
+  if (action === "refresh") await refresh();
   if (action === "mobile") await createMobileLink();
   if (action === "primary-bridge") await runPrimaryBridgeAction(target);
   if (action === "cancel-intent") await cancelPendingIntent();
@@ -83,7 +163,7 @@ document.addEventListener("visibilitychange", () => {
     return;
   }
   startStateWatch();
-  refresh({ reason: "visible" }).catch(() => {});
+    refresh().catch(() => {});
 });
 
 nodes.composer.addEventListener("submit", onSubmit);
@@ -95,6 +175,7 @@ nodes.input.addEventListener("input", () => {
 });
 
 renderRuntime();
+render();
 prefillDemoAccount();
 await bootstrap();
 
@@ -104,12 +185,12 @@ async function bootstrap() {
     try {
       state.session = await bridge.auth.join(join);
       history.replaceState(null, "", location.pathname);
-      addMessage("assistant", "手机已同步到同一个 Pandart 账号，可以使用已连接的本机 Codex。");
+      addMessage("assistant", `手机已同步到同一个 ${PRODUCT.name} 账号，可以使用已授权的本机能力。`);
     } catch (error) {
       addMessage("assistant", formatError(error), "error");
     }
   }
-  await refresh({ reason: "bootstrap" }).catch(() => {});
+  await refresh().catch(() => {});
   startStateWatch();
 }
 
@@ -124,7 +205,7 @@ async function onLogin(event) {
   const email = nodes.loginEmail.value.trim();
   const password = nodes.loginPassword.value;
   if (!email || !password) {
-    addMessage("assistant", "请输入 Pandart 账号邮箱和密码。", "error");
+    addMessage("assistant", `请输入 ${PRODUCT.name} 账号邮箱和密码。`, "error");
     return;
   }
   try {
@@ -132,7 +213,7 @@ async function onLogin(event) {
     nodes.loginPanel.hidden = true;
     nodes.loginPassword.value = "";
     addMessage("assistant", `已登录 ${email}。`);
-    await refresh({ reason: "login" });
+    await refresh();
   } catch (error) {
     addMessage("assistant", formatError(error), "error");
   }
@@ -153,7 +234,7 @@ async function logout() {
   state.cancelRequested = false;
   nodes.loginPanel.hidden = false;
   prefillDemoAccount();
-  addMessage("assistant", "已退出 Pandart 账号。");
+  addMessage("assistant", `已退出 ${PRODUCT.name} 账号。`);
   render();
 }
 
@@ -207,13 +288,13 @@ async function runPrimaryBridgeAction(target) {
     return;
   }
   if (action === "download") {
-    addMessage("assistant", "下载完成后打开 Panda Bridge，它会自动连接这个账号。");
+    addMessage("assistant", `下载完成后打开 Bridge，它会连接当前 ${PRODUCT.name} 账号。`);
     return;
   }
   if (action === "open_desktop" || action === "confirm_on_desktop") {
     const url = state.bridge.intent?.deep_link || actionUrl(state.bridge, action) || installInfo(state.bridge).open_url;
     if (url) openDesktop(url);
-    addMessage("assistant", action === "confirm_on_desktop" ? "已重新唤起桌面端，请在桌面端确认。" : "已尝试打开 Panda Bridge。");
+    addMessage("assistant", action === "confirm_on_desktop" ? "已重新唤起桌面端，请在桌面端确认授权范围。" : "已尝试打开 Bridge。");
     return;
   }
   if (action === "authorize") {
@@ -224,17 +305,19 @@ async function runPrimaryBridgeAction(target) {
 async function authorizeBridge() {
   if (!state.session?.authenticated) {
     showLogin();
-    addMessage("assistant", "先登录 Pandart 账号，再授权这台电脑。", "error");
+    addMessage("assistant", `先登录 ${PRODUCT.name} 账号，再授权这台电脑。`, "error");
     return;
   }
   try {
-    const result = typeof bridge.ensureReady === "function"
-      ? await bridge.ensureReady({ openDeepLink: openDesktop })
-      : await bridgeStateSource.createIntent();
+    const result = await bridgeStateSource.createIntent({
+      productId: PRODUCT_ID,
+      deviceName: PRODUCT.deviceName(),
+      policy: authorizationPolicy(),
+    });
     const deepLink = result?.intent?.deep_link || result?.deep_link || result?.action?.deep_link || result?.url;
     if (deepLink) openDesktop(deepLink);
-    addMessage("assistant", "请在桌面端确认 Pandart 使用这台电脑上的 Codex。");
-    await refresh({ reason: "authorize" });
+    addMessage("assistant", `请在桌面端确认 ${PRODUCT.name} 的来源、能力和风险边界。`);
+    await refresh();
   } catch (error) {
     addMessage("assistant", formatError(error), "error");
   }
@@ -243,7 +326,7 @@ async function authorizeBridge() {
 async function cancelPendingIntent() {
   bridgeStateSource.cancelPendingIntent?.();
   addMessage("assistant", "已取消这次桌面端确认。");
-  await refresh({ reason: "cancel-intent" });
+  await refresh();
 }
 
 function focusDeviceList() {
@@ -253,7 +336,7 @@ function focusDeviceList() {
 async function createMobileLink() {
   if (!state.session?.authenticated) {
     showLogin();
-    addMessage("assistant", "先登录 Pandart 账号。", "error");
+    addMessage("assistant", `先登录 ${PRODUCT.name} 账号。`, "error");
     return;
   }
   const payload = await bridge.auth.share();
@@ -270,12 +353,12 @@ async function revokeCurrentAuthorization() {
     addMessage("assistant", "当前没有可撤销的授权。", "error");
     return;
   }
-  const confirmed = confirm(`撤销 ${device.name} 的 Pandart 授权？\n\n设备仍会保留，之后可重新授权。`);
+  const confirmed = confirm(`撤销 ${device.name} 的 ${PRODUCT.name} 授权？\n\n设备仍会保留，之后可重新授权。`);
   if (!confirmed) return;
   try {
     await bridge.products.revokeAuthorization(device.id);
-    addMessage("assistant", `已撤销 ${device.name} 的 Pandart 授权。`);
-    await refresh({ reason: "revoke" });
+    addMessage("assistant", `已撤销 ${device.name} 的 ${PRODUCT.name} 授权。`);
+    await refresh();
   } catch (error) {
     addMessage("assistant", formatError(error), "error");
   }
@@ -287,7 +370,7 @@ async function onSubmit(event) {
   const prompt = nodes.input.value.trim();
   if (!prompt) return;
   if (!state.session?.authenticated) {
-    addMessage("assistant", "先登录 Pandart 账号。", "error");
+    addMessage("assistant", `先登录 ${PRODUCT.name} 账号。`, "error");
     return;
   }
   const device = readyDevice();
@@ -301,11 +384,11 @@ async function onSubmit(event) {
   state.cancelRequested = false;
   nodes.input.value = "";
   addMessage("user", prompt);
-  const pending = addMessage("assistant", "正在发送到本机 Codex...", "pending");
+  const pending = addMessage("assistant", `正在发送到本机 ${PRODUCT.name} 连接器...`, "pending");
   state.activeBubble = pending;
   const traceStartedAt = Date.now();
   pending.dataset.traceStartedAt = String(traceStartedAt);
-  addTrace(pending, "已发送到 Panda Bridge", traceStartedAt);
+  addTrace(pending, "已发送到 Bridge", traceStartedAt);
   pending.dataset.jobStatus = "queued";
   setEnabled(false);
   try {
@@ -323,14 +406,14 @@ async function onSubmit(event) {
     state.activeJobId = created.job.id;
     updateCancelState();
     addTrace(pending, "Cloud 已创建任务", traceStartedAt);
-    setBubbleText(pending, "本机 Codex 正在实时接收...");
+    setBubbleText(pending, `本机 ${PRODUCT.name} 连接器正在实时接收...`);
     let text = "";
     let sawFirstDelta = false;
     for await (const eventItem of bridge.jobs.stream(created.job.id, { deviceId: device.id, timeoutMs: 300000 })) {
       if (eventItem.type === "text_delta") {
         if (!sawFirstDelta) {
           sawFirstDelta = true;
-          addTrace(pending, "收到 Codex 首段回复", traceStartedAt);
+        addTrace(pending, `收到 ${PRODUCT.name} 首段回复`, traceStartedAt);
         }
         text += eventItem.payload?.delta || "";
         pending.dataset.jobStatus = "streaming";
@@ -381,7 +464,7 @@ async function onSubmit(event) {
     state.activeBubble = null;
     state.cancelRequested = false;
     setEnabled(true);
-    await refresh({ reason: "chat-complete" });
+    await refresh();
   }
 }
 
@@ -401,13 +484,14 @@ async function cancelActiveJob() {
 }
 
 function render() {
-  const account = state.session?.user?.email || state.session?.user?.display_name || "Pandart Account";
+  const account = state.session?.user?.email || state.session?.user?.display_name || `${PRODUCT.name} Account`;
   nodes.session.textContent = state.session?.authenticated ? account : "未登录";
   if (state.session?.authenticated) nodes.loginPanel.hidden = true;
   nodes.deviceStatus.textContent = currentDevice() ? deviceOptionLabel(currentDevice()) : "未连接";
   nodes.readiness.textContent = readinessText();
   nodes.runtimePill.textContent = state.bridge.bridge_state === "ready" ? "local ready" : "bridge setup";
   renderBridgePanel();
+  renderAuthorizationScope();
 }
 
 function renderBridgePanel() {
@@ -460,7 +544,7 @@ function renderDownloadCard() {
       <span data-install-version>${escapeHtml(install.version)}</span>
       <span>${escapeHtml(formatBytes(install.size_bytes))}</span>
     </div>
-    <p>下载后打开 Panda Bridge，它会自动连接这个 Pandart 账号。</p>
+    <p>下载后打开 Bridge，它会连接当前 ${escapeHtml(PRODUCT.name)} 账号。</p>
     <details>
       <summary>sha256</summary>
       <code>${escapeHtml(install.sha256)}</code>
@@ -479,6 +563,7 @@ function renderDeviceList() {
   list.className = "device-list";
   for (const device of devices) {
     const row = document.createElement("button");
+    const authorization = device.authorization || (device.id === state.selectedDeviceId ? state.bridge.authorization : null);
     row.type = "button";
     row.className = "device-row";
     row.dataset.deviceId = device.id;
@@ -491,7 +576,8 @@ function renderDeviceList() {
       <span class="device-presence" data-online="${device.online ? "true" : "false"}"></span>
       <span class="device-main">
         <strong>${escapeHtml(device.name)}</strong>
-        <small>${device.online ? "在线" : "离线"}${relativeTime(device.last_seen_at) ? ` · ${escapeHtml(relativeTime(device.last_seen_at))}` : ""}</small>
+        <small>${device.online ? "在线" : "离线"}${relativeTime(device.last_seen_at) ? ` · ${escapeHtml(relativeTime(device.last_seen_at))}` : ""}${authorization ? ` · ${escapeHtml(authorizationOrigin(authorization))}` : ""}</small>
+        ${authorization ? `<small>${escapeHtml(policyRootSummary(authorization.policy || authorizationPolicy()))}</small>` : ""}
       </span>
     `;
     list.append(row);
@@ -505,37 +591,37 @@ function bridgeUiModel(next) {
   const models = {
     no_session: {
       title: "需要登录",
-      copy: "先登录 Pandart 账号，再连接这台电脑上的 Codex。",
+      copy: `先登录 ${PRODUCT.name} 账号，再连接这台电脑。`,
       primary: { kind: "login", label: "登录" },
       menuActions: [],
     },
     no_device: {
-      title: "下载 Panda Bridge",
-      copy: "这台账号还没有可用电脑。下载后打开即自动连接。",
+      title: "下载 Bridge",
+      copy: "这个账号还没有可用电脑。下载后打开 Bridge，再确认授权范围。",
       primary: { kind: "download", label: "下载 Bridge", href: downloadHref(installInfo(next)) },
       menuActions: [],
     },
     authorization_pending: {
       title: "等待桌面端确认",
-      copy: "已发起连接请求，请在桌面端确认 Pandart 使用本机 Codex。",
+      copy: `已发起连接请求，请在桌面端确认 ${PRODUCT.name} 的来源、能力和风险边界。`,
       primary: { kind: "confirm_on_desktop", label: "去桌面端确认" },
       menuActions: [{ action: "cancel-intent", label: "取消" }],
     },
     authorized_offline: {
       title: "已授权，桌面端离线",
-      copy: "这个账号已授权，打开 Panda Bridge 即可使用。",
+      copy: "这个账号已授权，打开 Bridge 即可使用。",
       primary: { kind: "open_desktop", label: "打开 Bridge" },
       menuActions: [{ action: "refresh", label: "刷新" }],
     },
     not_authorized: {
       title: "需要授权",
-      copy: "电脑已连接，请授权 Pandart 使用这台电脑上的 Codex。",
+      copy: `电脑已连接，请授权 ${PRODUCT.name} 使用这台电脑。`,
       primary: { kind: "authorize", label: "授权" },
       menuActions: [{ action: "refresh", label: "刷新" }],
     },
     ready: {
       title: "已就绪",
-      copy: `${device?.name || "这台电脑"} 已在线，可以直接发送消息到本机 Codex。`,
+      copy: `${device?.name || "这台电脑"} 已在线，可以使用 ${PRODUCT.name} 本机能力。`,
       primary: null,
       menuActions: [
         { action: "change-device", label: "换一台电脑" },
@@ -553,20 +639,128 @@ function bridgeUiModel(next) {
 }
 
 function renderRuntime() {
-  document.title = "Pandart Local Chat";
+  document.title = `${PRODUCT.name} Local Bridge`;
+  document.body.dataset.productId = PRODUCT.id;
+  document.body.dataset.surface = PRODUCT.authorizationOnly ? "authorization" : "chat";
+  const brandMark = document.querySelector(".brand-mark");
+  const brandTitle = document.querySelector(".brand-copy h1");
+  const brandText = document.querySelector(".brand-copy p");
+  const accountLabel = document.querySelector(".status-panel .row:first-child span");
+  const bridgeLabel = document.querySelector(".bridge-head .label");
+  const routeLabel = document.querySelector(".route-label");
+  const chatTitle = document.querySelector(".chat-head h2");
+  const chatSubtitle = document.querySelector(".chat-head p");
+  const firstAssistant = document.querySelector(".message.assistant .bubble-text");
+  const firstAvatar = document.querySelector(".message.assistant .avatar");
+  const mobileText = document.querySelector("[data-mobile] p");
+  const actions = document.querySelector(".account-actions");
+  if (brandMark) brandMark.textContent = PRODUCT.mark;
+  if (brandTitle) brandTitle.textContent = PRODUCT.name;
+  if (brandText) brandText.textContent = PRODUCT.tagline;
+  if (accountLabel) accountLabel.textContent = PRODUCT.accountLabel;
+  if (bridgeLabel) bridgeLabel.textContent = PRODUCT.desktopLabel;
+  if (routeLabel) routeLabel.textContent = `local / mobile / ${BRAND_DOMAIN}`;
+  if (chatTitle) chatTitle.textContent = PRODUCT.chatTitle;
+  if (chatSubtitle) chatSubtitle.textContent = PRODUCT.chatSubtitle;
+  if (firstAssistant) firstAssistant.textContent = PRODUCT.intro;
+  if (firstAvatar) firstAvatar.textContent = PRODUCT.mark;
+  if (mobileText) mobileText.textContent = `手机打开后，会进入同一个 ${PRODUCT.name} 账号。`;
+  if (actions) actions.setAttribute("aria-label", `${PRODUCT.name} account actions`);
+  if (nodes.loginEmail) nodes.loginEmail.placeholder = PRODUCT.loginPlaceholder;
+  if (nodes.input) nodes.input.placeholder = PRODUCT.promptPlaceholder;
   if (nodes.domainBadge) nodes.domainBadge.textContent = BRAND_DOMAIN;
   if (nodes.publicOrigin) nodes.publicOrigin.textContent = compactUrl(location.origin);
   if (nodes.apiBase) nodes.apiBase.textContent = compactUrl(API_BASE);
   if (nodes.runtimePill) nodes.runtimePill.textContent = "local bridge";
+  if (PRODUCT.authorizationOnly && nodes.composer) nodes.composer.hidden = true;
+}
+
+function renderAuthorizationScope() {
+  if (!nodes.authScopePanel) return;
+  const device = currentDevice();
+  const authorization = device?.authorization || state.bridge.authorization || null;
+  const policy = authorization?.policy || state.bridge.intent?.policy || authorizationPolicy();
+  const capabilities = policyCapabilities(policy);
+  nodes.authTitle.textContent = authorization?.status === "active"
+    ? "当前已授权"
+    : state.bridge.bridge_state === "authorization_pending"
+      ? "等待桌面端确认"
+      : "将请求的授权";
+  nodes.authOrigin.textContent = authorizationOrigin(authorization, policy);
+  nodes.authRoot.textContent = policyRootSummary(policy);
+  nodes.authRisk.textContent = policyRiskSummary(policy);
+  nodes.authCapabilities.innerHTML = "";
+  for (const capability of capabilities) {
+    const pill = document.createElement("span");
+    pill.className = "capability-pill";
+    pill.textContent = capabilityLabel(capability);
+    pill.title = capability;
+    nodes.authCapabilities.append(pill);
+  }
+}
+
+function authorizationPolicy() {
+  return {
+    version: "AUTH-SCOPE-v2",
+    preset: PRODUCT.policyPreset,
+    request_source: PRODUCT.requestSource,
+    product_id: PRODUCT_ID,
+    source_origin: location.origin,
+    capabilities: [...PRODUCT.capabilities],
+    workspace_roots: [{ id: "default", path_display: PRODUCT.workspaceDisplay }],
+    sandbox_floor: "workspace-write",
+    approval_policy_floor: "on-request",
+    allow_approval_never: false,
+    allow_developer_instructions: false,
+    display: {
+      workspace: PRODUCT.workspaceDisplay,
+      sandbox: "workspace-write",
+      approval: "on-request",
+      developer_instructions: "denied",
+    },
+    risk_boundary: PRODUCT.risk,
+    danger_level: PRODUCT.id === "panda-syllo" ? "medium" : "low",
+    domain_boundaries: {
+      relay: { boundary_type: "relay_channel", cloud_stores_plaintext: false },
+      local: { authorized_root: PRODUCT.workspaceDisplay },
+    },
+  };
+}
+
+function authorizationOrigin(authorization = null, policy = null) {
+  return authorization?.origin || authorization?.source_origin || policy?.source_origin || location.origin;
+}
+
+function policyCapabilities(policy = {}) {
+  const items = Array.isArray(policy.capabilities) ? policy.capabilities : PRODUCT.capabilities;
+  return items.map((item) => String(item || "").trim()).filter(Boolean);
+}
+
+function policyRootSummary(policy = {}) {
+  const roots = Array.isArray(policy.workspace_roots) ? policy.workspace_roots : [];
+  const labels = roots
+    .map((root) => root?.path_display || root?.path || root?.id)
+    .filter(Boolean);
+  return labels.length ? labels.join(", ") : PRODUCT.workspaceDisplay;
+}
+
+function policyRiskSummary(policy = {}) {
+  return policy.risk_boundary || policy.riskBoundary || PRODUCT.risk;
+}
+
+function capabilityLabel(capability) {
+  return PRODUCT.defaultCapabilityLabels[capability] || capability;
 }
 
 function prefillDemoAccount() {
+  if (!DEMO_ACCOUNT) return;
   if (!shouldPrefillDemoAccount()) return;
   if (nodes.loginEmail && !nodes.loginEmail.value) nodes.loginEmail.value = DEMO_ACCOUNT.email;
   if (nodes.loginPassword && !nodes.loginPassword.value) nodes.loginPassword.value = DEMO_ACCOUNT.password;
 }
 
 function shouldPrefillDemoAccount() {
+  if (!DEMO_ACCOUNT) return false;
   if (params.get("demo_account") === "0") return false;
   if (params.get("demo_account") === "1") return true;
   const host = location.hostname.toLowerCase();
@@ -577,20 +771,30 @@ function shouldPrefillDemoAccount() {
 }
 
 function createBridgeStateSource(client) {
+  let pendingIntent = null;
   if (typeof client.state === "function") {
     return {
       emptyState: () => normalizeBridgeState({ bridge_state: "no_session", install: installInfo({}) }),
-      state: () => client.state(),
-      watchState: (options = {}) => {
-        if (typeof client.watchState === "function") return client.watchState(options);
-        return sdkStatePoller(client, options);
+      state: async () => stateWithPendingIntent(await client.state()),
+      watchState: async function* watchState(options = {}) {
+        const stream = typeof client.watchState === "function"
+          ? client.watchState(options)
+          : sdkStatePoller(client, options);
+        for await (const next of stream) {
+          yield await stateWithPendingIntent(next);
+        }
       },
-      createIntent: () => client.ensureReady?.({ openDeepLink: openDesktop }),
-      cancelPendingIntent: () => {},
+      createIntent: async (input = {}) => {
+        const payload = await client.connect.createIntent(input);
+        pendingIntent = normalizeIntent(payload);
+        return { ...payload, intent: pendingIntent };
+      },
+      cancelPendingIntent: () => {
+        pendingIntent = null;
+      },
     };
   }
 
-  let pendingIntent = null;
   let cachedInstall = null;
   return {
     emptyState: () => normalizeBridgeState({ bridge_state: "no_session", install: installInfo({}) }),
@@ -630,11 +834,16 @@ function createBridgeStateSource(client) {
       const authorizedOnline = active.find((item) => item.device.online);
       const selected = authorizedOnline?.device || active[0]?.device || devices.find((item) => item.online) || devices[0];
       const selectedAuth = active.find((item) => item.device.id === selected?.id)?.authorization || null;
+      const authorizationByDeviceId = new Map(active.map((item) => [item.device.id, item.authorization]));
       return normalizeBridgeState({
         bridge_state: active.length ? (authorizedOnline ? "ready" : "authorized_offline") : "not_authorized",
         session,
         install: cachedInstall,
-        devices: devices.map((device) => ({ ...device, current: device.id === selected?.id })),
+        devices: devices.map((device) => ({
+          ...device,
+          current: device.id === selected?.id,
+          authorization: authorizationByDeviceId.get(device.id) || null,
+        })),
         authorization: selectedAuth,
         actions: active.length
           ? [{ kind: authorizedOnline ? "ready" : "open_desktop", url: cachedInstall.open_url }]
@@ -647,9 +856,11 @@ function createBridgeStateSource(client) {
         await sleep(options.intervalMs || 3000, options.signal);
       }
     },
-    createIntent: async () => {
+    createIntent: async (input = {}) => {
       const payload = await client.connect.createIntent({
-        deviceName: `Pandart Connector ${navigator.platform || "Desktop"}`,
+        deviceName: input.deviceName || input.device_name || PRODUCT.deviceName(),
+        productId: input.productId || input.product_id || PRODUCT_ID,
+        policy: input.policy || authorizationPolicy(),
       });
       pendingIntent = normalizeIntent(payload);
       return { ...payload, intent: pendingIntent };
@@ -658,6 +869,18 @@ function createBridgeStateSource(client) {
       pendingIntent = null;
     },
   };
+
+  async function stateWithPendingIntent(rawState) {
+    const base = normalizeBridgeState(rawState);
+    pendingIntent = await livePendingIntent(client, pendingIntent);
+    if (!pendingIntent || base.bridge_state === "ready") return base;
+    return normalizeBridgeState({
+      ...base,
+      bridge_state: "authorization_pending",
+      intent: pendingIntent,
+      actions: [{ kind: "confirm_on_desktop", deep_link: pendingIntent.deep_link }],
+    });
+  }
 }
 
 async function* sdkStatePoller(client, options = {}) {
@@ -712,6 +935,10 @@ function normalizeIntent(input = {}) {
   const raw = input.intent || input.connect_intent || input;
   return {
     token: input.token || raw.token || "",
+    product: raw.product || input.product || null,
+    policy: raw.policy || input.policy || null,
+    source_origin: raw.source_origin || input.source_origin || "",
+    device_name: raw.device_name || input.device_name || input.deviceName || "",
     expires_at: raw.expires_at || input.expires_at || "",
     deep_link: input.deep_link || raw.deep_link || (input.token ? `panda-bridge://connect?intent=${encodeURIComponent(input.token)}&api=${encodeURIComponent(API_BASE)}` : ""),
   };
@@ -723,7 +950,7 @@ function normalizeDevices(items) {
     if (!item || item.status === "revoked") continue;
     const id = String(item.id || "");
     if (!id) continue;
-    const name = item.name || item.device_name || "Panda Bridge";
+    const name = item.name || item.device_name || "Bridge Desktop";
     const key = String(item.account_id || item.install_id || item.install_id_hash || name).toLowerCase();
     const device = {
       id,
@@ -731,6 +958,7 @@ function normalizeDevices(items) {
       online: item.online === true || item.status === "online",
       last_seen_at: item.last_seen_at || item.updated_at || "",
       current: item.current === true,
+      authorization: item.authorization || null,
     };
     const existing = deduped.get(key);
     if (!existing || scoreDevice(device) > scoreDevice(existing)) deduped.set(key, device);
@@ -802,7 +1030,7 @@ function submitBlockedText(next) {
   if (next.bridge_state === "authorized_offline") return "已授权，打开桌面端即可使用。";
   if (next.bridge_state === "not_authorized") return "请先授权这台电脑。";
   if (next.bridge_state === "authorization_pending") return "请先在桌面端确认授权。";
-  if (next.bridge_state === "no_device") return "请先下载并打开 Panda Bridge。";
+  if (next.bridge_state === "no_device") return "请先下载并打开 Bridge。";
   return "Bridge 还没有就绪。";
 }
 
@@ -876,7 +1104,7 @@ function addMessage(role, text, tone = "") {
   article.dataset.messageRole = role;
   const avatar = document.createElement("div");
   avatar.className = "avatar";
-  avatar.textContent = role === "user" ? "你" : "PT";
+  avatar.textContent = role === "user" ? "你" : PRODUCT.mark;
   const bubble = document.createElement("div");
   bubble.className = `bubble ${tone}`.trim();
   bubble.dataset.messageRole = role;
@@ -899,14 +1127,14 @@ function setBubbleText(bubble, text) {
 
 function statusText(eventItem) {
   if (eventItem.type === "claimed") return "本机已接收消息...";
-  if (eventItem.type === "started") return "本机 Codex 正在回复...";
+  if (eventItem.type === "started") return `本机 ${PRODUCT.name} 正在回复...`;
   return eventItem.payload?.message || "处理中...";
 }
 
 function addTraceForEvent(bubble, eventItem, startedAt) {
   if (eventItem.type === "queued") addTrace(bubble, "Cloud 已排队", startedAt);
   if (eventItem.type === "claimed") addTrace(bubble, "本机 Connector 已接收", startedAt);
-  if (eventItem.type === "started") addTrace(bubble, "本机 Codex 已开始", startedAt);
+  if (eventItem.type === "started") addTrace(bubble, `本机 ${PRODUCT.name} 已开始`, startedAt);
   if (eventItem.type === "app_server_event") {
     const count = Number(bubble.dataset.appServerEventCount || 0);
     if (count >= 8) return;
@@ -919,7 +1147,7 @@ function addTimingTrace(bubble, timing, startedAt) {
   if (!timing) return;
   const parts = [
     ["Bridge 接收", timing.queued_to_claimed_ms],
-    ["Codex 首段", timing.started_to_first_delta_ms],
+    [`${PRODUCT.name} 首段`, timing.started_to_first_delta_ms],
     ["总耗时", timing.total_job_ms],
   ]
     .filter(([, value]) => Number.isFinite(Number(value)))
@@ -988,12 +1216,12 @@ function updateCancelState() {
 
 function formatError(error) {
   const code = error?.payload?.error || error?.message || String(error);
-  if (code === "device_offline") return "本机 Panda Bridge 暂时离线，请打开桌面端后刷新。";
-  if (code === "device_not_found") return "这个 Pandart 账号还没有连接本机。";
+  if (code === "device_offline") return "本机 Bridge 暂时离线，请打开桌面端后刷新。";
+  if (code === "device_not_found") return `这个 ${PRODUCT.name} 账号还没有连接本机。`;
   if (code === "product_not_authorized" || code === "desktop_authorization_required") return "请先在桌面端确认授权。";
   if (code === "device_queue_full") return "这台电脑的任务队列已满，请稍后再发送。";
   if (code === "account_queue_full") return "这个账号当前任务太多，请稍后再试。";
-  if (code === "product_queue_full") return "Pandart 当前任务太多，请稍后再试。";
+  if (code === "product_queue_full") return `${PRODUCT.name} 当前任务太多，请稍后再试。`;
   if (code === "invalid_credentials") return "账号或密码不正确。";
   if (code === "too_many_login_attempts") return "登录失败次数过多，请稍后再试。";
   if (code === "password_login_not_enabled") return "这个账号还没有启用密码登录，请换一个测试账号。";

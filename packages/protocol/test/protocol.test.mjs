@@ -29,11 +29,12 @@ const validRelay = validateRelayEnvelope({
   senderKeyId: "product-key-1",
   recipientKeyId: "device-key-1",
   ttlMs: 30_000,
-  meta: { trace_id: "trace_1", adapter_id: "panda-syllo" },
+  meta: { trace_id: "trace_1", adapter_id: "panda-syllo", schema_id: "syllo-relay-v1" },
 });
 assert.equal(validRelay.ok, true);
 assert.equal(validRelay.envelope.product_id, "panda-chat");
 assert.equal(validRelay.envelope.envelope_version, RELAY_ENVELOPE_VERSION);
+assert.equal(validRelay.envelope.meta.schema_id, "syllo-relay-v1");
 
 const record = relayEnvelopeRecord(validRelay.envelope, { userId: "user_1", queuedAt: "2026-06-13T00:00:00.000Z" });
 assert.equal(record.user_id, "user_1");
@@ -53,7 +54,7 @@ assert.deepEqual(publicRelayEnvelope({ id: "env_1", ...record }), {
   algorithm: "Noise_XX_25519_ChaChaPoly_BLAKE2s",
   sender_key_id: "product-key-1",
   recipient_key_id: "device-key-1",
-  meta: { trace_id: "trace_1", adapter_id: "panda-syllo" },
+  meta: { trace_id: "trace_1", adapter_id: "panda-syllo", schema_id: "syllo-relay-v1" },
   delivery_status: "queued",
   queued_at: "2026-06-13T00:00:00.000Z",
   delivered_at: null,

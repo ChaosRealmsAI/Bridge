@@ -114,6 +114,8 @@ export default {
       const connectorAuthMatch = path.match(/^\/v1\/connectors\/products\/([^/]+)\/authorization$/);
       if (connectorAuthMatch && request.method === "PATCH") return await updateConnectorAuthorization(request, env, decodeURIComponent(connectorAuthMatch[1]));
       if (connectorAuthMatch && request.method === "DELETE") return await revokeConnectorAuthorization(request, env, decodeURIComponent(connectorAuthMatch[1]));
+      const connectorRelayKeyBootstrapMatch = path.match(/^\/v1\/connectors\/products\/([^/]+)\/relay-key-bootstrap$/);
+      if (connectorRelayKeyBootstrapMatch && request.method === "GET") return await connectorRelayKeyBootstrap(request, env, decodeURIComponent(connectorRelayKeyBootstrapMatch[1]));
       if (path === "/v1/connectors/jobs" && request.method === "GET") return legacyRuntimeApiRemoved(env);
       if (path === "/v1/connectors/relay/envelopes" && request.method === "GET") return await connectorRelayEnvelopes(request, env);
       if (path === "/v1/connectors/relay/envelopes" && request.method === "POST") return await createConnectorRelayEnvelope(request, env, ctx);
@@ -128,6 +130,8 @@ export default {
       if (intentMatch && request.method === "GET") return await getConnectIntent(request, env, decodeURIComponent(intentMatch[1]));
       const intentClaimMatch = path.match(/^\/v1\/connect-intents\/([^/]+)\/claim$/);
       if (intentClaimMatch && request.method === "POST") return await claimConnectIntent(request, env, decodeURIComponent(intentClaimMatch[1]));
+      const intentConfirmMatch = path.match(/^\/v1\/connect-intents\/([^/]+)\/confirm$/);
+      if (intentConfirmMatch && request.method === "POST") return await confirmConnectIntent(request, env, decodeURIComponent(intentConfirmMatch[1]));
 
       const authMatch = path.match(/^\/v1\/products\/([^/]+)\/authorization$/);
       if (authMatch && request.method === "GET") return await productAuthorization(request, env, decodeURIComponent(authMatch[1]));
@@ -137,6 +141,8 @@ export default {
       if (authImportProofMatch && request.method === "POST") return await createAuthorizationImportProof(request, env, decodeURIComponent(authImportProofMatch[1]));
       if (authMatch && request.method === "PATCH") return await updateAuthorization(request, env, decodeURIComponent(authMatch[1]));
       if (authMatch && request.method === "DELETE") return await revokeAuthorization(request, env, decodeURIComponent(authMatch[1]));
+      const productRelayKeyBootstrapMatch = path.match(/^\/v1\/products\/([^/]+)\/relay-key-bootstrap$/);
+      if (productRelayKeyBootstrapMatch && request.method === "POST") return await createProductRelayKeyBootstrap(request, env, decodeURIComponent(productRelayKeyBootstrapMatch[1]));
       const productRelayMatch = path.match(/^\/v1\/products\/([^/]+)\/relay\/envelopes$/);
       if (productRelayMatch && request.method === "POST") return await createProductRelayEnvelope(request, env, decodeURIComponent(productRelayMatch[1]), ctx);
       if (productRelayMatch && request.method === "GET") return await listProductRelayEnvelopes(request, env, decodeURIComponent(productRelayMatch[1]));
@@ -152,6 +158,8 @@ export default {
       if (delegatedStatusMatch && request.method === "GET") return await delegatedProductStatus(request, env, decodeURIComponent(delegatedStatusMatch[1]));
       const delegatedStateMatch = path.match(/^\/v1\/products\/([^/]+)\/delegated\/state$/);
       if (delegatedStateMatch && request.method === "GET") return await delegatedBridgeState(request, env, decodeURIComponent(delegatedStateMatch[1]));
+      const delegatedRelayKeyBootstrapMatch = path.match(/^\/v1\/products\/([^/]+)\/delegated\/relay-key-bootstrap$/);
+      if (delegatedRelayKeyBootstrapMatch && request.method === "POST") return await createDelegatedProductRelayKeyBootstrap(request, env, decodeURIComponent(delegatedRelayKeyBootstrapMatch[1]));
       const delegatedAuthorizationClaimMatch = path.match(/^\/v1\/products\/([^/]+)\/delegated\/authorization\/claim$/);
       if (delegatedAuthorizationClaimMatch && request.method === "POST") return await claimDelegatedProductAuthorization(request, env, decodeURIComponent(delegatedAuthorizationClaimMatch[1]));
       const delegatedConnectIntentMatch = path.match(/^\/v1\/products\/([^/]+)\/delegated\/connect-intents$/);
@@ -430,6 +438,7 @@ async function createPasswordSession(request, env) {
   const password = String(body.password || "");
   if (!email || password.length < 8) return json({ error: "invalid_credentials" }, env, 400);
   const displayName = clean(body.display_name, 100) || email;
+  const createAllowed = body.create !== false && String(body.mode || "").toLowerCase() !== "login";
   const limited = await passwordAttemptLimitResponse(env, email);
   if (limited) return limited;
   const store = storage(env);
@@ -448,6 +457,11 @@ async function createPasswordSession(request, env) {
     }
     await resetPasswordFailures(env, email);
   } else {
+    if (!createAllowed) {
+      const failure = await recordPasswordFailure(env, email);
+      if (failure.locked) return passwordLockedResponse(env, failure.retryAfterMs);
+      return json({ error: "invalid_credentials" }, env, 401);
+    }
     const credential = await hashPassword(password);
     user = await store.insert("bridge_users", {
       display_name: displayName,
@@ -706,9 +720,8 @@ async function createConnectIntent(request, env) {
 
 async function getConnectIntent(request, env, token) {
   const intent = await connectIntentByToken(env, token);
-  if (!intent || intent.consumed_at || Date.parse(intent.expires_at) < Date.now()) {
-    return json({ error: "invalid_connect_intent" }, env, 400);
-  }
+  const tokenError = connectIntentTokenError(intent);
+  if (tokenError) return json({ error: tokenError }, env, 400);
   const product = requireOfficialProduct(intent.product_id, env);
   const user = (await storage(env).select("bridge_users", { id: intent.user_id }))[0] || null;
   return json({
@@ -717,6 +730,20 @@ async function getConnectIntent(request, env, token) {
     account: publicAccount(user),
     product: publicStateProduct(product),
   }, env);
+}
+
+function connectIntentTokenError(intent) {
+  if (!intent) return "token_invalid";
+  if (intent.consumed_at) return "token_already_claimed";
+  if (Date.parse(intent.expires_at) < Date.now()) return "token_expired";
+  return "";
+}
+
+function connectIntentConfirmError(intent) {
+  if (!intent) return "token_invalid";
+  if (Date.parse(intent.expires_at) < Date.now()) return "token_expired";
+  if (!intent.consumed_at || !intent.device_id) return "claim_required";
+  return "";
 }
 
 async function bridgeState(request, env) {
@@ -739,9 +766,8 @@ async function claimConnectIntent(request, env, token) {
   }
   const store = storage(env);
   const intent = await connectIntentByToken(env, token);
-  if (!intent || intent.consumed_at || Date.parse(intent.expires_at) < Date.now()) {
-    return json({ error: "invalid_connect_intent" }, env, 400);
-  }
+  const tokenError = connectIntentTokenError(intent);
+  if (tokenError) return json({ error: tokenError }, env, 400);
   const product = requireOfficialProduct(intent.product_id, env);
   const user = (await store.select("bridge_users", { id: intent.user_id }))[0] || null;
   const existingConnector = await optionalConnector(request, env);
@@ -766,7 +792,7 @@ async function claimConnectIntent(request, env, token) {
     product,
     source_origin,
   );
-  const authorization = await upsertAuthorization(env, intent.user_id, device.id, product.id, policy, source_origin);
+  const authorization = await upsertAuthorization(env, intent.user_id, device.id, product.id, policy, source_origin, { status: "pending" });
   await store.update("bridge_connect_intents", intent.id, { consumed_at: now(), device_id: device.id });
   await audit(env, intent.user_id, device.id, product.id, "connect_intent.claim", intent.id, { app_version: body.app_version || null, source_origin });
   return json({
@@ -780,6 +806,33 @@ async function claimConnectIntent(request, env, token) {
     install_identity_bound: Boolean(device.install_id_hash),
     devices: await publicAccountDevices(env, intent.user_id, device.id),
   }, env, 201);
+}
+
+async function confirmConnectIntent(request, env, token) {
+  if (!isNativeConnectIntentClaim(request)) {
+    return json({ error: "desktop_claim_required" }, env, 403);
+  }
+  const connector = await requireConnector(request, env);
+  const store = storage(env);
+  const intent = await connectIntentByToken(env, token);
+  const tokenError = connectIntentConfirmError(intent);
+  if (tokenError) return json({ error: tokenError }, env, 400);
+  if (intent.device_id !== connector.device.id) return json({ error: "connect_intent_device_mismatch" }, env, 403);
+  if (connector.device.user_id !== intent.user_id) return json({ error: "connect_intent_account_mismatch" }, env, 403);
+  const product = requireOfficialProduct(intent.product_id, env);
+  const user = (await store.select("bridge_users", { id: intent.user_id }))[0] || null;
+  const source_origin = clean(intent.source_origin, 300) || product.origin || sourceOrigin(env);
+  const policy = normalizeAuthorizationPolicy(object(intent.policy), product, source_origin);
+  const authorization = await upsertAuthorization(env, intent.user_id, connector.device.id, product.id, policy, source_origin, { status: "active" });
+  await audit(env, intent.user_id, connector.device.id, product.id, "connect_intent.confirm", intent.id, { source_origin });
+  return json({
+    device: publicDevice(connector.device, env),
+    authorization: publicAuthorization(authorization, { includePolicy: true }),
+    account: publicAccount(user),
+    product,
+    install_identity_bound: Boolean(connector.device.install_id_hash),
+    devices: await publicAccountDevices(env, intent.user_id, connector.device.id),
+  }, env, 200);
 }
 
 async function connectorHeartbeat(request, env) {
@@ -1051,7 +1104,8 @@ async function createAuthorizedRelayEnvelope(env, product, userId, source_origin
   }
   const envelope = validation.envelope;
   const device = await ownedDevice(env, userId, envelope.device_id);
-  if (!device || device.status === "revoked") return json({ error: "device_not_found" }, env, 404);
+  if (!device) return json({ error: "device_not_found" }, env, 404);
+  if (device.status === "revoked") return json({ error: "device_revoked" }, env, 403);
   if (!isDeviceOnline(device, env)) return json({ error: "device_offline" }, env, 409);
   const authorization = await authorizationForProduct(env, userId, device.id, product.id);
   const denial = authorizationJobDenial(authorization);
@@ -1138,6 +1192,9 @@ async function ackRelayEnvelope(env, options = {}) {
   if (options.direction) filters.direction = options.direction;
   const row = (await storage(env).select("bridge_relay_envelopes", filters))[0] || null;
   if (!row) return json({ error: "relay_envelope_not_found" }, env, 404);
+  if (row.delivery_status === "cancelled") {
+    return json({ envelope: publicRelayEnvelope(row), acked: false, error: "relay_envelope_cancelled" }, env, 409);
+  }
   if (isExpired(row.expires_at)) {
     const expired = await expireRelayEnvelope(env, row, "ttl_expired");
     return json({ envelope: publicRelayEnvelope(expired), acked: false, error: "relay_envelope_expired" }, env, 410);
@@ -1319,7 +1376,7 @@ async function productAuthorization(request, env, productId) {
   const url = new URL(request.url);
   const deviceId = url.searchParams.get("device_id") || "";
   const authorization = await authorizationForProduct(env, session.user.id, deviceId, product.id);
-  return json({ authorization: publicAuthorization(authorization), product: publicStateProduct(product) }, env);
+  return json({ authorization: publicAuthorization(authorization, { includePolicy: true }), product: publicStateProduct(product) }, env);
 }
 
 async function requestAuthorization(request, env, productId) {
@@ -1393,6 +1450,7 @@ async function updateAuthorization(request, env, productId) {
     authorization: publicAuthorization(result.authorization),
     product: publicStateProduct(product),
     cancelled_jobs: result.cancelledJobs,
+    cancelled_relay_envelopes: result.cancelledRelayEnvelopes || 0,
   }, env);
 }
 
@@ -1415,12 +1473,111 @@ async function revokeAuthorization(request, env, productId) {
     updated_at: now(),
   }, {
     cause: "revoke",
-    cancelDenial: { error: "product_not_authorized", reason: "authorization_revoked" },
+    cancelDenial: { error: "authorization_revoked", reason: "authorization_revoked" },
   });
   const revoked = revokedResult.authorization;
   const cancelled_jobs = revokedResult.cancelledJobs;
+  const cancelled_relay_envelopes = revokedResult.cancelledRelayEnvelopes || 0;
   await audit(env, session.user.id, device.id, product.id, "authorization.revoke", authorization.id, { source_origin: sourceOrigin(env) });
-  return json({ authorization: publicAuthorization(revoked), product: publicStateProduct(product), cancelled_jobs }, env);
+  return json({ authorization: publicAuthorization(revoked), product: publicStateProduct(product), cancelled_jobs, cancelled_relay_envelopes }, env);
+}
+
+async function createProductRelayKeyBootstrap(request, env, productId) {
+  const product = requireOfficialProduct(productId, env);
+  const source_origin = sourceOrigin(env);
+  const originError = rejectProductOrigin(product, source_origin, env);
+  if (originError) return originError;
+  const session = await requireSession(request, env);
+  const body = await readJson(request, env);
+  const deviceId = clean(body.device_id || body.deviceId, 120);
+  if (!deviceId) return json({ error: "device_id_required" }, env, 400);
+  const device = await ownedDevice(env, session.user.id, deviceId);
+  if (!device) return json({ error: "device_not_found" }, env, 404);
+  const authorization = await activeAuthorization(env, session.user.id, device.id, product.id);
+  if (!authorization) return json({ error: "product_not_authorized" }, env, 403);
+  const exchange = deviceRelayKeyExchange(device, product.id);
+  if (!exchange) return json({ error: "relay_key_exchange_missing" }, env, 409);
+  const plaintextFields = plaintextRelayKeyFields(body);
+  if (plaintextFields.length) {
+    const error = httpError("plaintext_relay_key_forbidden", 400);
+    error.public = { plaintext_fields: plaintextFields };
+    throw error;
+  }
+  const bootstrap = normalizeRelayKeyBootstrap(body.relay_key_bootstrap || body.bootstrap || body, {
+    productId: product.id,
+    deviceId: device.id,
+    authorization,
+    exchange,
+  });
+  const updated = await updateAuthorizationRelayKeyBootstrap(env, authorization, bootstrap);
+  await audit(env, session.user.id, device.id, product.id, "relay_key.bootstrap", updated.id || authorization.id, {
+    algorithm: bootstrap.algorithm,
+    key_id: bootstrap.key_id,
+    authorization_epoch: bootstrap.authorization_epoch,
+  });
+  await notifyDeviceRoom(env, device.id, {
+    type: "relay_key.bootstrap",
+    product_id: product.id,
+    device_id: device.id,
+    authorization_epoch: bootstrap.authorization_epoch,
+    sent_at: now(),
+  });
+  return json({
+    ok: true,
+    product: publicStateProduct(product),
+    device: publicStateDevice(device, env, product.id),
+    authorization: publicAuthorization(updated),
+    relay_key_bootstrap: publicRelayKeyBootstrap(updated),
+  }, env, 201);
+}
+
+async function createDelegatedProductRelayKeyBootstrap(request, env, productId) {
+  const product = requireOfficialProduct(productId, env);
+  const rawBody = await readJsonText(request, env);
+  const delegation = await requireProductDelegation(request, env, product, rawBody);
+  const body = rawBody ? parseJsonText(rawBody) : {};
+  const deviceId = clean(body.device_id || body.deviceId || delegation.deviceId, 120);
+  if (!deviceId) return json({ error: "device_id_required" }, env, 400);
+  if (deviceId !== delegation.deviceId) return json({ error: "delegated_device_mismatch" }, env, 403);
+  const device = await ownedDevice(env, delegation.bridgeUserId, deviceId);
+  if (!device || device.status === "revoked") return json({ error: "device_not_found" }, env, 404);
+  const authorization = await activeAuthorization(env, delegation.bridgeUserId, device.id, product.id);
+  if (!authorization) return json({ error: "product_not_authorized" }, env, 403);
+  const exchange = deviceRelayKeyExchange(device, product.id);
+  if (!exchange) return json({ error: "relay_key_exchange_missing" }, env, 409);
+  const plaintextFields = plaintextRelayKeyFields(body);
+  if (plaintextFields.length) {
+    const error = httpError("plaintext_relay_key_forbidden", 400);
+    error.public = { plaintext_fields: plaintextFields };
+    throw error;
+  }
+  const bootstrap = normalizeRelayKeyBootstrap(body.relay_key_bootstrap || body.bootstrap || body, {
+    productId: product.id,
+    deviceId: device.id,
+    authorization,
+    exchange,
+  });
+  const updated = await updateAuthorizationRelayKeyBootstrap(env, authorization, bootstrap);
+  await audit(env, delegation.bridgeUserId, device.id, product.id, "relay_key.bootstrap.delegated", updated.id || authorization.id, {
+    algorithm: bootstrap.algorithm,
+    key_id: bootstrap.key_id,
+    authorization_epoch: bootstrap.authorization_epoch,
+    source_origin: delegation.sourceOrigin,
+  });
+  await notifyDeviceRoom(env, device.id, {
+    type: "relay_key.bootstrap",
+    product_id: product.id,
+    device_id: device.id,
+    authorization_epoch: bootstrap.authorization_epoch,
+    sent_at: now(),
+  });
+  return json({
+    ok: true,
+    product: publicStateProduct(product),
+    device: publicStateDevice(device, env, product.id),
+    authorization: publicAuthorization(updated),
+    relay_key_bootstrap: publicRelayKeyBootstrap(updated),
+  }, env, 201);
 }
 
 async function updateConnectorAuthorization(request, env, productId) {
@@ -1440,6 +1597,7 @@ async function updateConnectorAuthorization(request, env, productId) {
     authorization: publicAuthorization(result.authorization),
     product: publicStateProduct(product),
     cancelled_jobs: result.cancelledJobs,
+    cancelled_relay_envelopes: result.cancelledRelayEnvelopes || 0,
   }, env);
 }
 
@@ -1457,14 +1615,36 @@ async function revokeConnectorAuthorization(request, env, productId) {
     updated_at: now(),
   }, {
     cause: "revoke.connector",
-    cancelDenial: { error: "product_not_authorized", reason: "authorization_revoked" },
+    cancelDenial: { error: "authorization_revoked", reason: "authorization_revoked" },
   });
   const revoked = revokedResult.authorization;
   const cancelled_jobs = revokedResult.cancelledJobs;
+  const cancelled_relay_envelopes = revokedResult.cancelledRelayEnvelopes || 0;
   await audit(env, connector.device.user_id, connector.device.id, product.id, "authorization.revoke.connector", authorization.id, {
     source_origin: sourceOrigin(env),
   });
-  return json({ authorization: publicAuthorization(revoked), product: publicStateProduct(product), cancelled_jobs }, env);
+  return json({ authorization: publicAuthorization(revoked), product: publicStateProduct(product), cancelled_jobs, cancelled_relay_envelopes }, env);
+}
+
+async function connectorRelayKeyBootstrap(request, env, productId) {
+  const product = requireOfficialProduct(productId, env);
+  const connector = await requireConnector(request, env);
+  const authorization = await activeAuthorization(env, connector.device.user_id, connector.device.id, product.id);
+  if (!authorization) {
+    return json({
+      ok: true,
+      product: publicStateProduct(product),
+      authorization: null,
+      relay_key_bootstrap: { status: "missing", reason: "product_not_authorized" },
+    }, env);
+  }
+  const bootstrap = publicRelayKeyBootstrap(authorization, { includeWrapped: true });
+  return json({
+    ok: true,
+    product: publicStateProduct(product),
+    authorization: publicAuthorization(authorization),
+    relay_key_bootstrap: bootstrap || { status: "missing" },
+  }, env);
 }
 
 async function createProductJob(request, env, productId, ctx = {}) {
@@ -1522,7 +1702,7 @@ async function delegatedProductStatus(request, env, productId) {
     authorized_devices: authorizedDevices.map((device) => publicDevice(device, env)),
     authorizations: authorizations.map((authorization) => publicAuthorization(authorization)),
     selected_device: publicDevice(selectedDevice, env),
-    authorization: publicAuthorization(selectedAuthorization),
+    authorization: publicAuthorization(selectedAuthorization, { includePolicy: true }),
     ready: Boolean(selectedDevice && selectedAuthorization && isDeviceOnline(selectedDevice, env)),
   }, env);
 }
@@ -1664,6 +1844,7 @@ async function updateDelegatedProductAuthorization(request, env, productId) {
     device: publicDevice(device, env),
     product: publicStateProduct(product),
     cancelled_jobs: result.cancelledJobs,
+    cancelled_relay_envelopes: result.cancelledRelayEnvelopes || 0,
   }, env);
 }
 
@@ -1685,14 +1866,15 @@ async function revokeDelegatedProductAuthorization(request, env, productId) {
     updated_at: now(),
   }, {
     cause: "revoke.delegated",
-    cancelDenial: { error: "product_not_authorized", reason: "authorization_revoked" },
+    cancelDenial: { error: "authorization_revoked", reason: "authorization_revoked" },
   });
   const revoked = revokedResult.authorization;
   const cancelled_jobs = revokedResult.cancelledJobs;
+  const cancelled_relay_envelopes = revokedResult.cancelledRelayEnvelopes || 0;
   await audit(env, delegation.bridgeUserId, device.id, product.id, "authorization.revoke.delegated", authorization.id, {
     source_origin: delegation.sourceOrigin,
   });
-  return json({ authorization: publicAuthorization(revoked), device: publicDevice(device, env), product: publicStateProduct(product), cancelled_jobs }, env);
+  return json({ authorization: publicAuthorization(revoked), device: publicDevice(device, env), product: publicStateProduct(product), cancelled_jobs, cancelled_relay_envelopes }, env);
 }
 
 async function createAuthorizedProductJob(env, product, userId, source_origin, body, ctx = {}, options = {}) {
@@ -2515,14 +2697,27 @@ function authorizationJobDenial(authorization) {
   if (authorization?.status === "paused") {
     return { error: "authorization_paused", reason: "authorization_paused" };
   }
-  return { error: "product_not_authorized", reason: "authorization_revoked" };
+  return { error: "authorization_revoked", reason: "authorization_revoked" };
+}
+
+function decodeBase64Text(value) {
+  try {
+    const bytes = Uint8Array.from(atob(String(value || "")), (char) => char.charCodeAt(0));
+    return new TextDecoder().decode(bytes);
+  } catch {
+    return "";
+  }
 }
 
 async function updateAuthorizationWithEpoch(env, authorization, patch, options = {}) {
   const from = authorizationEpoch(authorization);
   const to = from + 1;
+  const nextPatch = { ...patch };
+  if (authorizationRelayKeyBootstrap(authorization).status || Object.hasOwn(patch, "policy")) {
+    nextPatch.policy = publicAuthorizationPolicy(Object.hasOwn(patch, "policy") ? patch.policy : authorization.policy);
+  }
   const updated = await storage(env).update("bridge_authorizations", authorization.id, {
-    ...patch,
+    ...nextPatch,
     epoch: to,
   });
   const cancelDenial = options.cancelDenial || null;
@@ -2535,11 +2730,21 @@ async function updateAuthorizationWithEpoch(env, authorization, patch, options =
         cancelDenial,
       )
     : 0;
+  const cancelledRelayEnvelopes = cancelDenial
+    ? await cancelQueuedRelayEnvelopesForAuthorization(
+        env,
+        authorization.user_id,
+        authorization.device_id,
+        authorization.product_id,
+        cancelDenial,
+      )
+    : 0;
   await audit(env, authorization.user_id, authorization.device_id, authorization.product_id, "authorization.epoch_bump", authorization.id, {
     from,
     to,
     cause: clean(options.cause, 120) || "authorization_update",
     cancelled_jobs: cancelledJobs,
+    cancelled_relay_envelopes: cancelledRelayEnvelopes,
   });
   await notifyDeviceRoom(env, authorization.device_id, {
     type: "authorization.epoch_bump",
@@ -2551,7 +2756,7 @@ async function updateAuthorizationWithEpoch(env, authorization, patch, options =
     },
     sent_at: now(),
   });
-  return { authorization: updated, cancelledJobs, from, to };
+  return { authorization: updated, cancelledJobs, cancelledRelayEnvelopes, from, to };
 }
 
 async function updateAuthorizationStatus(env, { userId, deviceId, product, status, sourceOrigin = "", auditActionPrefix = "authorization" }) {
@@ -2565,7 +2770,7 @@ async function updateAuthorizationStatus(env, { userId, deviceId, product, statu
 
   const denial = status === "paused"
     ? { error: "authorization_paused", reason: "authorization_paused" }
-    : { error: "product_not_authorized", reason: "authorization_revoked" };
+    : { error: "authorization_revoked", reason: "authorization_revoked" };
   const updatedResult = await updateAuthorizationWithEpoch(env, authorization, {
     status,
     updated_at: now(),
@@ -2765,7 +2970,7 @@ async function dispatchQueuedJobs(env, deviceId) {
   return dispatched;
 }
 
-async function cancelQueuedJobsForAuthorization(env, userId, deviceId, productId, denial = { error: "product_not_authorized", reason: "authorization_revoked" }) {
+async function cancelQueuedJobsForAuthorization(env, userId, deviceId, productId, denial = { error: "authorization_revoked", reason: "authorization_revoked" }) {
   const rows = await storage(env).select("bridge_jobs", {
     user_id: userId,
     device_id: deviceId,
@@ -2779,11 +2984,33 @@ async function cancelQueuedJobsForAuthorization(env, userId, deviceId, productId
   return count;
 }
 
-async function cancelAuthorizationRevokedJob(env, job) {
-  return cancelAuthorizationInactiveJob(env, job, { error: "product_not_authorized", reason: "authorization_revoked" });
+async function cancelQueuedRelayEnvelopesForAuthorization(env, userId, deviceId, productId, denial = { error: "authorization_revoked", reason: "authorization_revoked" }) {
+  const rows = await storage(env).select("bridge_relay_envelopes", {
+    user_id: userId,
+    device_id: deviceId,
+    product_id: productId,
+  });
+  let count = 0;
+  for (const row of rows.filter((item) => ["queued", "delivered"].includes(item.delivery_status || "queued"))) {
+    await cancelRelayEnvelope(env, row, denial.reason || denial.error || "authorization_revoked");
+    count += 1;
+  }
+  return count;
 }
 
-async function cancelAuthorizationInactiveJob(env, job, denial = { error: "product_not_authorized", reason: "authorization_revoked" }) {
+async function cancelRelayEnvelope(env, row, reason = "authorization_revoked") {
+  return await storage(env).update("bridge_relay_envelopes", row.id, {
+    delivery_status: "cancelled",
+    updated_at: now(),
+    meta: { ...object(row.meta), cancelled_reason: reason },
+  }) || row;
+}
+
+async function cancelAuthorizationRevokedJob(env, job) {
+  return cancelAuthorizationInactiveJob(env, job, { error: "authorization_revoked", reason: "authorization_revoked" });
+}
+
+async function cancelAuthorizationInactiveJob(env, job, denial = { error: "authorization_revoked", reason: "authorization_revoked" }) {
   if (!["queued", "running"].includes(job.status)) return job;
   const cancelledAt = now();
   const next = await storage(env).update("bridge_jobs", job.id, {
@@ -3079,13 +3306,13 @@ async function bridgeStatePayload(env, user, product, options = {}) {
       install,
       accounts: [],
       account: null,
-      devices: publicBridgeStateDevices(dedupeDevicesByInstall(devices), null, env),
+      devices: publicBridgeStateDevices(dedupeDevicesByInstall(devices), null, env, [], product.id),
       authorization: null,
       connected: false,
       current_device: null,
     };
   }
-  const accountState = accountBridgeState(user, devices, authorizations, env);
+  const accountState = accountBridgeState(user, devices, authorizations, env, product.id);
 
   return {
     authenticated: true,
@@ -3093,7 +3320,13 @@ async function bridgeStatePayload(env, user, product, options = {}) {
     install,
     accounts: [accountState],
     account: accountState.account,
-    devices: publicBridgeStateDevices(dedupeDevicesByInstall(devices), accountState.current_device, env),
+    devices: publicBridgeStateDevices(
+      dedupeDevicesByInstall(devices),
+      accountState.current_device,
+      env,
+      authorizations,
+      product.id,
+    ),
     authorization: accountState.authorization,
     connected: accountState.connected,
     connection: accountState.connection,
@@ -3109,7 +3342,7 @@ function bridgeInstallPayload(env) {
   };
 }
 
-function accountBridgeState(user, devices, authorizations, env) {
+function accountBridgeState(user, devices, authorizations, env, productId = "") {
   const deviceById = new Map(devices.map((device) => [device.id, device]));
   const selectedAuthorization = selectAccountAuthorization(authorizations, deviceById, env);
   const selectedAuthorizedDevice = selectedAuthorization ? deviceById.get(selectedAuthorization.device_id) || null : null;
@@ -3124,12 +3357,12 @@ function accountBridgeState(user, devices, authorizations, env) {
   );
   return {
     account: publicAccount(user),
-    authorization: publicAuthorization(selectedAuthorization),
+    authorization: publicAuthorization(selectedAuthorization, { includePolicy: true }),
     connected,
     connection: {
       status: connected ? "connected" : "reconnecting",
     },
-    current_device: publicStateDevice(selectedDevice, env),
+    current_device: publicStateDevice(selectedDevice, env, productId),
   };
 }
 
@@ -3156,7 +3389,15 @@ function publicAuthorization(authorization, options = {}) {
     created_at: authorization.created_at || null,
     updated_at: authorization.updated_at || null,
   };
-  if (options.includePolicy) payload.policy = object(authorization.policy);
+  const bootstrap = publicRelayKeyBootstrap(authorization);
+  if (bootstrap) payload.relay_key_bootstrap = bootstrap;
+  if (options.includePolicy) payload.policy = publicAuthorizationPolicy(authorization.policy);
+  return payload;
+}
+
+function publicAuthorizationPolicy(policy) {
+  const payload = structuredClone(object(policy));
+  delete payload._relay_key_bootstrap;
   return payload;
 }
 
@@ -3168,6 +3409,8 @@ function publicStateProduct(product) {
     official_origin: product.official_origin || null,
     official_origins: [...(product.official_origins || [])],
     web_url: product.web_url || product.official_origin || null,
+    capabilities: [...(product.capabilities || [])],
+    default_policy: object(product.default_policy),
     requires_desktop_authorization: product.requires_desktop_authorization !== false,
   } : null;
 }
@@ -3184,21 +3427,34 @@ function dedupeDevicesByInstall(devices) {
   return result;
 }
 
-function publicBridgeStateDevices(devices, currentDevice, env) {
-  return devices.map((device) => ({
-    ...publicStateDevice(device, env),
-    current: Boolean(currentDevice && currentDevice.id === device.id),
-  }));
+function publicBridgeStateDevices(devices, currentDevice, env, authorizations = [], productId = "") {
+  const authorizationByDeviceId = new Map(
+    authorizations
+      .filter((authorization) => authorization?.status !== "revoked")
+      .map((authorization) => [authorization.device_id, authorization]),
+  );
+  return devices.map((device) => {
+    const authorization = authorizationByDeviceId.get(device.id) || null;
+    return {
+      ...publicStateDevice(device, env, productId || authorization?.product_id || ""),
+      current: Boolean(currentDevice && currentDevice.id === device.id),
+      ...(authorization ? { authorization: publicAuthorization(authorization, { includePolicy: true }) } : {}),
+    };
+  });
 }
 
-function publicStateDevice(device, env) {
-  return device ? {
+function publicStateDevice(device, env, productId = "") {
+  if (!device) return null;
+  const payload = {
     id: device.id,
     name: device.device_name,
     status: publicDeviceStatus(device, env),
     online: isDeviceOnline(device, env),
     last_seen_at: device.last_seen_at || null,
-  } : null;
+  };
+  const exchange = deviceRelayKeyExchange(device, productId);
+  if (exchange) payload.relay_key_exchange = exchange;
+  return payload;
 }
 
 async function accountDevices(env, userId) {
@@ -3234,7 +3490,7 @@ async function alreadyAuthorizedConnectPayload(env, user, product, requestedPoli
       connected: true,
       connection: { status: "connected" },
       authorization: publicAuthorization(authorization),
-      current_device: publicStateDevice(device, env),
+      current_device: publicStateDevice(device, env, product.id),
       device: publicDevice(device, env),
       product: publicStateProduct(product),
       account: publicAccount(user),
@@ -3260,7 +3516,7 @@ async function authorizedOfflineConnectPayload(env, user, product, requestedPoli
       connected: false,
       connection: { status: "reconnecting" },
       authorization: publicAuthorization(authorization),
-      current_device: publicStateDevice(device, env),
+      current_device: publicStateDevice(device, env, product.id),
       device: publicDevice(device, env),
       product: publicStateProduct(product),
       account: publicAccount(user),
@@ -3474,6 +3730,7 @@ function normalizeAuthorizationPolicy(input, product, source_origin) {
       })
     : [{ id: "default", path_display: "[local]/default" }];
   const capabilities = normalizedPolicyCapabilities(requested, product, policy, !hasExplicitInput);
+  const productAuthorization = normalizeProductAuthorization(requested.product_authorization ?? requested.productAuthorization);
   const sandboxFloor = clean(requested.sandbox_floor || requested.sandboxFloor, 80);
   const approvalFloor = clean(requested.approval_policy_floor || requested.approvalPolicyFloor, 80);
   const normalizedSandboxFloor = ["danger-full-access", "workspace-write", "read-only"].includes(sandboxFloor) ? sandboxFloor : "workspace-write";
@@ -3496,8 +3753,36 @@ function normalizeAuthorizationPolicy(input, product, source_origin) {
     display: authorizationPolicyDisplay(workspaceRoots, normalizedSandboxFloor, normalizedApprovalFloor, allowDeveloperInstructions, boundaries),
     ...tierMetadata,
   };
+  if (Object.keys(productAuthorization).length) normalized.product_authorization = productAuthorization;
   if (Object.keys(boundaries).length) normalized.boundaries = boundaries;
   return normalized;
+}
+
+function normalizeProductAuthorization(input) {
+  const value = object(input);
+  const out = {};
+  const owner = clean(value.owner, 120);
+  const enforcement = clean(value.enforcement, 160);
+  const capabilities = normalizeStringList(value.capabilities || value.permissions, 120);
+  const roots = normalizeProductAuthorizationRoots(value.roots || value.workspace_roots || value.workspaceRoots);
+  if (owner) out.owner = owner;
+  if (enforcement) out.enforcement = enforcement;
+  if (capabilities.length) out.capabilities = capabilities;
+  if (roots.length) out.roots = roots;
+  return out;
+}
+
+function normalizeProductAuthorizationRoots(input) {
+  if (!Array.isArray(input)) return [];
+  return input.map((item, index) => {
+    const root = object(item);
+    const id = clean(root.id, 80) || `root-${index + 1}`;
+    const pathDisplay = clean(root.path_display || root.pathDisplay || root.label || root.path, 300);
+    const out = { id };
+    if (pathDisplay) out.path_display = pathDisplay;
+    if (root.allow_all === true || root.allowAll === true) out.allow_all = true;
+    return out;
+  });
 }
 
 function normalizeConnectorBoundaries(input, product, capabilities) {
@@ -3599,16 +3884,10 @@ function normalizedPolicyCapabilities(requested, product, originalPolicy = {}, d
     throw error;
   }
   const unsupportedByProduct = capabilities.filter((kind) => !product.capabilities.includes(kind));
-  const restrictedUnsupportedByProduct = unsupportedByProduct.filter((kind) => ["high", "critical"].includes(capabilityDanger(kind)));
-  if (restrictedUnsupportedByProduct.length) {
-    const explicitRequested = Array.isArray(originalPolicy.capabilities)
-      && originalPolicy.capabilities.some((kind) => restrictedUnsupportedByProduct.includes(kind));
-    if (explicitRequested) {
-      const error = httpError("invalid_authorization_policy", 400);
-      error.public = { field: "capabilities", unsupported: restrictedUnsupportedByProduct };
-      throw error;
-    }
-    capabilities = capabilities.filter((kind) => !restrictedUnsupportedByProduct.includes(kind));
+  if (unsupportedByProduct.length) {
+    const error = httpError("invalid_authorization_policy", 400);
+    error.public = { field: "capabilities", unsupported: unsupportedByProduct };
+    throw error;
   }
   return capabilities;
 }
@@ -3811,7 +4090,8 @@ function lowTierCapabilities() {
   return SUPPORTED_JOB_KINDS.filter((kind) => capabilityDanger(kind) === "low");
 }
 
-async function upsertAuthorization(env, userId, deviceId, productId, policy, sourceOrigin = "") {
+async function upsertAuthorization(env, userId, deviceId, productId, policy, sourceOrigin = "", options = {}) {
+  const status = clean(options.status, 40) || "active";
   const store = storage(env);
   const existing = (await store.select("bridge_authorizations", {
     user_id: userId,
@@ -3820,9 +4100,9 @@ async function upsertAuthorization(env, userId, deviceId, productId, policy, sou
   }))[0];
   if (existing) {
     const policyChanged = canonicalJson(existing.policy || {}) !== canonicalJson(policy || {});
-    const statusChanged = existing.status !== "active";
+    const statusChanged = existing.status !== status;
     const patch = {
-      status: "active",
+      status,
       policy,
       source_origin: sourceOrigin || existing.source_origin || null,
       updated_at: now(),
@@ -3840,7 +4120,7 @@ async function upsertAuthorization(env, userId, deviceId, productId, policy, sou
     device_id: deviceId,
     product_id: productId,
     source_origin: sourceOrigin || null,
-    status: "active",
+    status,
     policy,
     epoch: 1,
     created_at: now(),
@@ -4209,6 +4489,8 @@ function safeLocalState(input = {}) {
   const value = object(input);
   const relay = object(value.relay);
   const adapter = object(value.adapter_router || value.adapterRouter);
+  const relayKeyExchange = normalizeRelayKeyExchange(value.relay_key_exchange || value.relayKeyExchange);
+  const products = safeAdapterProducts(adapter.products);
   const out = {
     relay: {
       envelopes: relay.envelopes !== false,
@@ -4219,9 +4501,168 @@ function safeLocalState(input = {}) {
       configured: adapter.configured === true,
     },
   };
+  if (Object.keys(products).length) out.adapter_router.products = products;
   const platform = clean(value.platform, 80);
   if (platform) out.platform = platform;
+  if (relayKeyExchange) out.relay_key_exchange = relayKeyExchange;
   return out;
+}
+
+function safeAdapterProducts(input = {}) {
+  const value = object(input);
+  const out = {};
+  for (const [rawProductId, rawProduct] of Object.entries(value)) {
+    const productId = clean(rawProductId, 120);
+    if (!productId) continue;
+    const product = object(rawProduct);
+    const relayKeyExchange = normalizeRelayKeyExchange(product.relay_key_exchange || product.relayKeyExchange);
+    out[productId] = {
+      configured: product.configured === true,
+    };
+    const mode = clean(product.mode, 80);
+    if (mode) out[productId].mode = mode;
+    if (relayKeyExchange) out[productId].relay_key_exchange = relayKeyExchange;
+  }
+  return out;
+}
+
+function normalizeRelayKeyExchange(input) {
+  const value = object(input);
+  const algorithm = clean(value.algorithm || value.alg, 80) || "ECDH-P256+A256GCM";
+  if (algorithm !== "ECDH-P256+A256GCM") return null;
+  const publicJwk = publicEcJwk(value.public_jwk || value.publicJwk);
+  if (!publicJwk) return null;
+  return {
+    status: "available",
+    algorithm,
+    key_id: clean(value.key_id || value.keyId, 160) || relayKeyExchangeId(publicJwk),
+    public_jwk: publicJwk,
+    created_at: clean(value.created_at || value.createdAt, 80) || null,
+  };
+}
+
+function publicEcJwk(input) {
+  const jwk = object(input);
+  const kty = clean(jwk.kty, 10);
+  const crv = clean(jwk.crv, 20);
+  const x = clean(jwk.x, 200);
+  const y = clean(jwk.y, 200);
+  if (kty !== "EC" || crv !== "P-256" || !x || !y) return null;
+  return { kty, crv, x, y, ext: true, key_ops: ["deriveBits"] };
+}
+
+function relayKeyExchangeId(publicJwk) {
+  return `rkx_${String(publicJwk.x || "").slice(0, 16)}_${String(publicJwk.y || "").slice(0, 16)}`;
+}
+
+function deviceRelayKeyExchange(device, productId = "") {
+  const localState = object(device?.local_state);
+  const productExchange = productId
+    ? object(object(object(localState.adapter_router).products)[productId]).relay_key_exchange
+    : null;
+  return normalizeRelayKeyExchange(productExchange) || normalizeRelayKeyExchange(localState.relay_key_exchange);
+}
+
+function normalizeRelayKeyBootstrap(input, { productId, deviceId, authorization, exchange }) {
+  const plaintextFields = plaintextRelayKeyFields(input);
+  if (plaintextFields.length) {
+    const error = httpError("plaintext_relay_key_forbidden", 400);
+    error.public = { plaintext_fields: plaintextFields };
+    throw error;
+  }
+  const value = object(input);
+  const wrapped = object(value.wrapped_key || value.wrappedKey || value);
+  const algorithm = clean(value.algorithm || wrapped.algorithm || wrapped.alg, 80) || "ECDH-P256+A256GCM";
+  if (algorithm !== "ECDH-P256+A256GCM") throw httpError("unsupported_relay_key_bootstrap_algorithm", 400);
+  const keyId = clean(value.key_id || value.keyId || wrapped.key_id || wrapped.keyId, 160);
+  if (!keyId || keyId !== exchange.key_id) throw httpError("relay_key_exchange_mismatch", 409);
+  const appPublicJwk = publicEcJwk(wrapped.app_public_jwk || wrapped.appPublicJwk || wrapped.sender_public_jwk || wrapped.senderPublicJwk);
+  const nonceB64 = clean(wrapped.nonce_b64 || wrapped.nonceB64, 400);
+  const ciphertextB64 = clean(wrapped.ciphertext_b64 || wrapped.ciphertextB64, 4096);
+  const aadB64 = clean(wrapped.aad_b64 || wrapped.aadB64, 2048);
+  if (!appPublicJwk || !nonceB64 || !ciphertextB64 || !aadB64) {
+    throw httpError("invalid_relay_key_bootstrap", 400);
+  }
+  const authorization_epoch = authorizationEpoch(authorization);
+  const aadText = decodeBase64Text(aadB64);
+  const expectedAads = relayKeyBootstrapAadTexts(productId, deviceId, authorization.id, authorization_epoch, keyId);
+  if (!expectedAads.includes(aadText)) throw httpError("relay_key_bootstrap_aad_mismatch", 409);
+  const issuedAt = now();
+  return {
+    status: "ready",
+    algorithm,
+    product_id: productId,
+    device_id: deviceId,
+    authorization_id: authorization.id,
+    authorization_epoch,
+    key_id: keyId,
+    exchange_key_id: exchange.key_id,
+    wrapped_key: {
+      algorithm,
+      key_id: keyId,
+      app_public_jwk: appPublicJwk,
+      nonce_b64: nonceB64,
+      ciphertext_b64: ciphertextB64,
+      aad_b64: aadB64,
+    },
+    created_at: issuedAt,
+    updated_at: issuedAt,
+  };
+}
+
+function relayKeyBootstrapAadTexts(productId, deviceId, authorizationId, authorizationEpochValue, keyId) {
+  return ["bridge-relay-key-bootstrap-v1", "syllo-relay-key-bootstrap-v1"].map((wireVersion) => [
+    wireVersion,
+    productId,
+    deviceId,
+    authorizationId,
+    String(authorizationEpochValue),
+    keyId,
+  ].join("|"));
+}
+
+function plaintextRelayKeyFields(input, path = "") {
+  if (!input || typeof input !== "object") return [];
+  const forbidden = new Set(["relay_key_b64", "relayKeyB64", "key_b64", "keyB64", "plaintext_key", "plaintextKey"]);
+  const out = [];
+  for (const [key, value] of Object.entries(input)) {
+    const nextPath = path ? `${path}.${key}` : key;
+    if (forbidden.has(key) && clean(value, 10000)) out.push(nextPath);
+    if (value && typeof value === "object") out.push(...plaintextRelayKeyFields(value, nextPath));
+  }
+  return out;
+}
+
+function authorizationRelayKeyBootstrap(authorization) {
+  return object(object(authorization?.policy)._relay_key_bootstrap);
+}
+
+function publicRelayKeyBootstrap(authorization, options = {}) {
+  const value = authorizationRelayKeyBootstrap(authorization);
+  if (!clean(value.status, 40)) return null;
+  const payload = {
+    status: clean(value.status, 40) || "missing",
+    algorithm: clean(value.algorithm, 80) || "ECDH-P256+A256GCM",
+    product_id: clean(value.product_id, 80) || authorization.product_id,
+    device_id: clean(value.device_id, 120) || authorization.device_id,
+    authorization_id: clean(value.authorization_id, 120) || authorization.id,
+    authorization_epoch: Number(value.authorization_epoch || authorizationEpoch(authorization)),
+    key_id: clean(value.key_id, 160) || null,
+    exchange_key_id: clean(value.exchange_key_id, 160) || null,
+    created_at: clean(value.created_at, 80) || null,
+    updated_at: clean(value.updated_at, 80) || null,
+  };
+  if (options.includeWrapped) payload.wrapped_key = object(value.wrapped_key);
+  return payload;
+}
+
+async function updateAuthorizationRelayKeyBootstrap(env, authorization, bootstrap) {
+  const policy = publicAuthorizationPolicy(authorization.policy);
+  const nextPolicy = { ...policy, _relay_key_bootstrap: bootstrap };
+  return await storage(env).update("bridge_authorizations", authorization.id, {
+    policy: nextPolicy,
+    updated_at: now(),
+  });
 }
 
 function publicDeviceStatus(device, env = {}) {
@@ -4262,6 +4703,7 @@ function publicConnectIntent(intent, user = null, env = {}) {
     product_id: intent.product_id,
     product: publicStateProduct(productInfo(intent.product_id, env)),
     source_origin: intent.source_origin || null,
+    policy: object(intent.policy),
     device_id: intent.device_id || null,
     device_name: intent.device_name,
     expires_at: intent.expires_at,
@@ -4334,6 +4776,9 @@ function apiOriginForCsp(origin) {
   try {
     const url = new URL(origin);
     if (url.hostname === "bridge.otherline.cc") return "https://api.bridge.otherline.cc";
+    if (url.hostname === "bridge.test.example" || url.hostname === "app.test.example") {
+      return "https://api.bridge.test.example";
+    }
     return `${url.protocol}//${url.host}`;
   } catch {
     return "https://api.bridge.otherline.cc";
@@ -4401,7 +4846,7 @@ function allowsMissingOrigin(request, path) {
   if (/^\/v1\/products\/[^/]+\/delegated(?:\/|$)/.test(path)) {
     return Boolean(request.headers.get("x-panda-bridge-signature"));
   }
-  if (/^\/v1\/connect-intents\/[^/]+\/claim$/.test(path)) {
+  if (/^\/v1\/connect-intents\/[^/]+\/(?:claim|confirm)$/.test(path)) {
     return isLocalBridgeClient(request);
   }
   return false;
@@ -4505,6 +4950,11 @@ function object(value) {
 
 function clean(value, max = 1000) {
   return typeof value === "string" ? value.trim().slice(0, max) : "";
+}
+
+function normalizeStringList(input, max = 120) {
+  const values = Array.isArray(input) ? input : typeof input === "string" ? input.split(/[\s,]+/) : [];
+  return [...new Set(values.map((item) => clean(item, max)).filter(Boolean))];
 }
 
 function cleanKeepSlash(value, max = 1000) {

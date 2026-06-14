@@ -1,16 +1,18 @@
 import assert from "node:assert/strict";
 import { createHash, createHmac, randomUUID } from "node:crypto";
 import worker, { BridgeDeviceRoom, __bridgeTestMemorySnapshot, __bridgeTestRelayEnvelopeMatches } from "../src/index.js";
-import { assertRegistryWellFormed, scopeDangerMetadataFromCapabilities } from "../src/products.js";
+import { RELAY_CAPABILITIES, assertRegistryWellFormed, scopeDangerMetadataFromCapabilities } from "../src/products.js";
 
 const assetRequests = [];
 const tokenInstallIds = new Map();
 const env = {
   BRIDGE_LOCAL_MEMORY: "1",
   BRIDGE_WEB_ORIGIN: "http://local.test",
+  BRIDGE_ALLOWED_ORIGINS: "http://local.test https://bridge.test.example https://syllo.test.example",
   BRIDGE_RELAY_ENVELOPE_TTL_MS: "300000",
   BRIDGE_PRODUCT_ALLOWED_ORIGINS: JSON.stringify({
     "panda-chat": ["http://local.test", "http://chat.local.test"],
+    "panda-syllo": ["http://local.test", "http://localhost:8790", "https://syllo.test.example"],
     otherline: ["https://otherline.cc", "http://local.test"],
   }),
   BRIDGE_OTHERLINE_DELEGATION_SECRET: "otherline-delegation-test-secret",
@@ -81,6 +83,17 @@ async function nativeClaimIntent(token, body, bearer = "", extraHeaders = {}) {
   return payload;
 }
 
+async function nativeConfirmIntent(token, bearer, extraHeaders = {}) {
+  const { response, payload } = await apiMissingOrigin("POST", `/v1/connect-intents/${encodeURIComponent(token)}/confirm`, {
+    confirmed: true,
+  }, bearer, {
+    "x-panda-bridge-local-client": "desktop",
+    ...extraHeaders,
+  });
+  assert.ok(response.ok, `confirm intent: ${JSON.stringify(payload)}`);
+  return payload;
+}
+
 async function delegatedApiRaw(method, path, body, userId, deviceId, nonce = randomUUID()) {
   const bodyText = body == null ? "" : JSON.stringify(body);
   const bodyHash = createHash("sha256").update(bodyText).digest("hex");
@@ -131,9 +144,44 @@ function relayEnvelope(overrides = {}) {
   };
 }
 
+function authorizationPolicy(capabilities, root = "[local]/default") {
+  return {
+    version: "AUTH-SCOPE-v2",
+    capabilities,
+    workspace_roots: [{ id: "default", path_display: root }],
+    source_origin: env.BRIDGE_WEB_ORIGIN,
+  };
+}
+
+function b64Text(value) {
+  return Buffer.from(value, "utf8").toString("base64");
+}
+
+function relayKeyBootstrapAadText(productId, deviceId, authorizationId, authorizationEpoch, keyId, wireVersion = "bridge-relay-key-bootstrap-v1") {
+  return `${wireVersion}|${productId}|${deviceId}|${authorizationId}|${authorizationEpoch}|${keyId}`;
+}
+
+function relayEnvelopeAadText({ productId, deviceId, channelId, direction = "product_to_device", seq = 1, authorizationId, authorizationEpoch, keyId }) {
+  return [
+    `product:${productId}`,
+    `device:${deviceId}`,
+    `channel:${channelId}`,
+    `direction:${direction}`,
+    `seq:${seq}`,
+    `authorization:${authorizationId}`,
+    `epoch:${authorizationEpoch}`,
+    `relay_key:${keyId}`,
+  ].join("|");
+}
+
 const health = await api("GET", "/v1/health");
 assert.equal(health.protocol, "panda-bridge-protocol-v0.2");
 assert.equal(health.storage, "memory");
+const bridgeTestCspResponse = await worker.fetch(new Request("http://local.test/v1/health", {
+  headers: { origin: "https://bridge.test.example" },
+}), env);
+assert.equal(bridgeTestCspResponse.headers.get("access-control-allow-origin"), "https://bridge.test.example");
+assert.match(bridgeTestCspResponse.headers.get("content-security-policy") || "", /https:\/\/api-bridge-test\.otherline\.cc/);
 
 const diagnostics = await api("GET", "/v1/diagnostics");
 assert.equal(diagnostics.protocol, "panda-bridge-protocol-v0.2");
@@ -149,8 +197,8 @@ assert.deepEqual(diagnostics.relay.queue_limits, {
 assert.equal(diagnostics.legacy_runtime_api.removed, true);
 assert.equal("jobs" in diagnostics, false);
 for (const product of diagnostics.products) {
-  assert.deepEqual(product.capabilities, ["relay.envelope", "relay.ack"]);
-  assert.doesNotMatch(JSON.stringify(product), /codex\.|claude\.|syllo\.|shell\.run|fs\.|data\./);
+  assert.deepEqual(product.capabilities, RELAY_CAPABILITIES);
+  assert.doesNotMatch(JSON.stringify({ ...product, capabilities: [] }), /codex\.|claude\.|shell\.run|fs\.|data\./);
 }
 assert.equal(assertRegistryWellFormed(), true);
 assert.throws(() => assertRegistryWellFormed({
@@ -187,10 +235,50 @@ const guestLogin = await apiRaw("POST", "/v1/sessions/guest", { display_name: "T
 assert.ok(guestLogin.response.ok);
 assert.match(jar.cookie, /^pb_session=/);
 
+const loginOnlyMissing = await apiRaw("POST", "/v1/sessions/password", {
+  email: "missing-login-only@example.com",
+  password: "secret-password",
+  create: false,
+});
+assert.equal(loginOnlyMissing.response.status, 401);
+assert.equal(loginOnlyMissing.payload.error, "invalid_credentials");
+assert.equal(__bridgeTestMemorySnapshot().bridge_users.some((row) => row.email === "missing-login-only@example.com"), false);
+
 const products = await api("GET", "/v1/products");
 assert.ok(products.items.some((item) => item.id === "panda-chat"));
 assert.ok(products.items.every((item) => item.capabilities.includes("relay.envelope")));
-assert.doesNotMatch(JSON.stringify(products), /codex\.|claude\.|syllo\.|shell\.run|fs\.|data\./);
+for (const product of products.items) {
+  assert.deepEqual(product.capabilities, RELAY_CAPABILITIES);
+  assert.doesNotMatch(JSON.stringify(product), /codex\.|claude\.|syllo\.chat|syllo\.sessions|syllo\.issue|syllo\.highlight|syllo\.doc|shell\.run|fs\.|data\./);
+}
+
+const invalidTokenClaim = await apiMissingOrigin("POST", "/v1/connect-intents/pbi_missing/claim", {
+  install_id: "install-invalid-token",
+  device_name: "Invalid Token Device",
+}, "", {
+  "x-panda-bridge-local-client": "desktop",
+  "x-panda-bridge-install-id": "install-invalid-token",
+});
+assert.equal(invalidTokenClaim.response.status, 400);
+assert.equal(invalidTokenClaim.payload.error, "token_invalid");
+
+env.BRIDGE_CONNECT_INTENT_TTL_MS = "1";
+const expiredIntent = await api("POST", "/v1/connect-intents", {
+  product_id: "panda-chat",
+  device_name: "Expired Token Device",
+  install_id: "install-expired-token",
+});
+await new Promise((resolve) => setTimeout(resolve, 10));
+const expiredTokenClaim = await apiMissingOrigin("POST", `/v1/connect-intents/${encodeURIComponent(expiredIntent.token)}/claim`, {
+  install_id: "install-expired-token",
+  device_name: "Expired Token Device",
+}, "", {
+  "x-panda-bridge-local-client": "desktop",
+  "x-panda-bridge-install-id": "install-expired-token",
+});
+assert.equal(expiredTokenClaim.response.status, 400);
+assert.equal(expiredTokenClaim.payload.error, "token_expired");
+delete env.BRIDGE_CONNECT_INTENT_TTL_MS;
 
 const customRegistryEnv = {
   ...env,
@@ -283,6 +371,7 @@ const claimed = await nativeClaimIntent(intent.token, {
   },
 });
 assert.deepEqual(claimed.authorization.policy.capabilities, ["relay.envelope", "relay.ack"]);
+assert.equal(claimed.authorization.status, "pending");
 assert.equal(claimed.authorization.policy.domain_boundaries.relay.boundary_type, "relay_channel");
 assert.equal(claimed.device.status, "online");
 assert.deepEqual(claimed.device.capabilities, {
@@ -290,6 +379,20 @@ assert.deepEqual(claimed.device.capabilities, {
   adapter_router: { mode: "external_http" },
 });
 assert.doesNotMatch(JSON.stringify(claimed.device), /codex|commands|workspaces|Users\/private|shell\.run|fs\.read|data\./);
+const alreadyClaimed = await apiMissingOrigin("POST", `/v1/connect-intents/${encodeURIComponent(intent.token)}/claim`, {
+  install_id: "install-relay-test-duplicate",
+  device_name: "Duplicate Claim Device",
+}, "", {
+  "x-panda-bridge-local-client": "desktop",
+  "x-panda-bridge-install-id": "install-relay-test-duplicate",
+});
+assert.equal(alreadyClaimed.response.status, 400);
+assert.equal(alreadyClaimed.payload.error, "token_already_claimed");
+
+const confirmed = await nativeConfirmIntent(intent.token, claimed.device_token, {
+  "x-panda-bridge-install-id": "install-relay-test",
+});
+assert.equal(confirmed.authorization.status, "active");
 
 const heartbeat = await api("POST", "/v1/connectors/heartbeat", {
   install_id: "install-relay-test",
@@ -300,15 +403,140 @@ const heartbeat = await api("POST", "/v1/connectors/heartbeat", {
     workspaces: { default: "/Users/private/heartbeat" },
     adapter_router: { configured: true },
   },
-}, claimed.device_token);
+}, confirmed.device_token || claimed.device_token);
 assert.equal(heartbeat.device.status, "online");
 assert.doesNotMatch(JSON.stringify(heartbeat.device), /codex|commands|workspaces|Users\/private|shell\.run|fs\.read|data\./);
 
 const readyState = await api("GET", "/v1/bridge/state?product_id=panda-chat");
 assert.equal(readyState.accounts[0].authorization.status, "active");
 assert.equal(readyState.connected, true);
-assert.equal("capabilities" in readyState.product, false);
-assert.equal("policy" in readyState.authorization, false);
+assert.deepEqual(readyState.product.capabilities, ["relay.envelope", "relay.ack"]);
+assert.deepEqual(readyState.authorization.policy.capabilities, ["relay.envelope", "relay.ack"]);
+assert.doesNotMatch(JSON.stringify(readyState.authorization.policy), /Users\/private|commands|workspaces|shell\.run|fs\.read/);
+
+const relayKeyExchange = {
+  algorithm: "ECDH-P256+A256GCM",
+  key_id: "rkx_test_chat",
+  public_jwk: {
+    kty: "EC",
+    crv: "P-256",
+    x: "f83OJ3D2xF4B2XIBm9W8GvROqVRsY6x1Z3xA4C7v3x8",
+    y: "x_FEzRu9i85-Wz9rn8bL1XxVQwWxS4kVYzH8Y8rjWbs",
+  },
+};
+const keyExchangeHeartbeat = await api("POST", "/v1/connectors/heartbeat", {
+  install_id: "install-relay-test",
+  capabilities: { relay: ["relay.envelope", "relay.ack"] },
+  local_state: {
+    platform: "macos",
+    relay: { envelopes: true, ack: true },
+    adapter_router: {
+      configured: true,
+      mode: "external_http",
+      products: {
+        "panda-chat": {
+          configured: true,
+          relay_key_exchange: relayKeyExchange,
+        },
+      },
+    },
+  },
+}, confirmed.device_token || claimed.device_token);
+assert.equal(keyExchangeHeartbeat.device.local_state.adapter_router.products["panda-chat"].relay_key_exchange.key_id, "rkx_test_chat");
+const exchangeState = await api("GET", "/v1/bridge/state?product_id=panda-chat");
+const exchangeDevice = exchangeState.devices.find((device) => device.id === claimed.device.id);
+assert.equal(exchangeDevice.relay_key_exchange.key_id, "rkx_test_chat");
+
+const relayKeyBootstrap = await api("POST", "/v1/products/panda-chat/relay-key-bootstrap", {
+  device_id: claimed.device.id,
+  relay_key_bootstrap: {
+    algorithm: "ECDH-P256+A256GCM",
+    key_id: "rkx_test_chat",
+    wrapped_key: {
+      algorithm: "ECDH-P256+A256GCM",
+      key_id: "rkx_test_chat",
+      app_public_jwk: {
+        kty: "EC",
+        crv: "P-256",
+        x: "wWwQx5Dul2jDRdB7r6C5C5h6GdPK6eNi02T0tVPwBiY",
+        y: "JL0C83dGqz1U3uc0GRQzZJslcF6ctvPd_EwFQ5QwdXg",
+	      },
+	      nonce_b64: "AAAAAAAAAAAAAAAA",
+	      ciphertext_b64: "ZmFrZS13cmFwcGVkLWtleQ==",
+	      aad_b64: b64Text(relayKeyBootstrapAadText(
+	        "panda-chat",
+	        claimed.device.id,
+	        confirmed.authorization.id,
+	        confirmed.authorization.epoch,
+	        "rkx_test_chat",
+	      )),
+	    },
+	  },
+	});
+assert.equal(relayKeyBootstrap.relay_key_bootstrap.status, "ready");
+assert.equal(relayKeyBootstrap.relay_key_bootstrap.key_id, "rkx_test_chat");
+assert.equal(relayKeyBootstrap.authorization.relay_key_bootstrap.status, "ready");
+assert.doesNotMatch(JSON.stringify(relayKeyBootstrap), /relay_key_b64|relayKeyB64|key_b64|keyB64/);
+assert.doesNotMatch(JSON.stringify(relayKeyBootstrap.authorization), /_relay_key_bootstrap/);
+
+const connectorBootstrap = await api("GET", "/v1/connectors/products/panda-chat/relay-key-bootstrap", null, confirmed.device_token || claimed.device_token);
+assert.equal(connectorBootstrap.relay_key_bootstrap.status, "ready");
+assert.equal(connectorBootstrap.relay_key_bootstrap.wrapped_key.ciphertext_b64, "ZmFrZS13cmFwcGVkLWtleQ==");
+assert.doesNotMatch(JSON.stringify(connectorBootstrap.authorization), /_relay_key_bootstrap/);
+
+const plaintextBootstrapRejected = await apiRaw("POST", "/v1/products/panda-chat/relay-key-bootstrap", {
+  device_id: claimed.device.id,
+  relay_key_b64: "server-must-not-store-this",
+  relay_key_bootstrap: { key_id: "rkx_test_chat" },
+});
+assert.equal(plaintextBootstrapRejected.response.status, 400);
+assert.equal(plaintextBootstrapRejected.payload.error, "plaintext_relay_key_forbidden");
+assert.deepEqual(plaintextBootstrapRejected.payload.plaintext_fields, ["relay_key_b64"]);
+
+const mismatchBootstrapRejected = await apiRaw("POST", "/v1/products/panda-chat/relay-key-bootstrap", {
+  device_id: claimed.device.id,
+  relay_key_bootstrap: {
+    algorithm: "ECDH-P256+A256GCM",
+    key_id: "rkx_test_chat",
+    wrapped_key: {
+      algorithm: "ECDH-P256+A256GCM",
+      key_id: "rkx_test_chat",
+      app_public_jwk: {
+        kty: "EC",
+        crv: "P-256",
+        x: "wWwQx5Dul2jDRdB7r6C5C5h6GdPK6eNi02T0tVPwBiY",
+        y: "JL0C83dGqz1U3uc0GRQzZJslcF6ctvPd_EwFQ5QwdXg",
+      },
+      nonce_b64: "AAAAAAAAAAAAAAAA",
+      ciphertext_b64: "ZmFrZS13cmFwcGVkLWtleQ==",
+      aad_b64: b64Text("wrong-bootstrap-context"),
+    },
+  },
+});
+assert.equal(mismatchBootstrapRejected.response.status, 409);
+assert.equal(mismatchBootstrapRejected.payload.error, "relay_key_bootstrap_aad_mismatch");
+
+const secondIntent = await api("POST", "/v1/connect-intents", {
+  product_id: "panda-chat",
+  device_name: "Relay Test Device Two",
+  install_id: "install-relay-test-two",
+  policy: authorizationPolicy(["relay.envelope", "relay.ack"], "[local]/secondary"),
+});
+const secondClaim = await nativeClaimIntent(secondIntent.token, {
+  device_name: "Relay Test Device Two",
+  install_id: "install-relay-test-two",
+  capabilities: { relay: ["relay.envelope", "relay.ack"] },
+});
+const secondConfirmed = await nativeConfirmIntent(secondIntent.token, secondClaim.device_token, {
+  "x-panda-bridge-install-id": "install-relay-test-two",
+});
+assert.equal(secondConfirmed.authorization.status, "active");
+const multiDeviceState = await api("GET", "/v1/bridge/state?product_id=panda-chat");
+const authorizedDeviceRows = multiDeviceState.devices.filter((device) => device.authorization);
+assert.ok(authorizedDeviceRows.length >= 2);
+assert.ok(authorizedDeviceRows.every((device) => device.authorization.source_origin === "http://local.test"));
+assert.ok(authorizedDeviceRows.every((device) => Array.isArray(device.authorization.policy.capabilities)));
+assert.ok(authorizedDeviceRows.some((device) => JSON.stringify(device.authorization.policy).includes("[local]/secondary")));
 
 const plaintextRejected = await apiRaw("POST", "/v1/products/panda-chat/relay/envelopes", {
   ...relayEnvelope({ device_id: claimed.device.id }),
@@ -439,6 +667,180 @@ assert.ok(snapshot.bridge_relay_envelopes.every((row) => row.ciphertext && row.a
 assert.ok(snapshot.bridge_relay_envelopes.every((row) => row.idempotency_hash));
 assert.doesNotMatch(JSON.stringify(snapshot.bridge_relay_envelopes), /prompt|stdout|stderr|"input"|"result"|"policy"|"kind"|"runtime"/);
 
+const sylloIntent = await api("POST", "/v1/connect-intents", {
+  product_id: "panda-syllo",
+  device_name: "Syllo Full Device",
+  install_id: "install-syllo-full",
+  policy: {
+    ...authorizationPolicy(RELAY_CAPABILITIES, "[local]/syllo"),
+    product_authorization: {
+      owner: "panda-syllo",
+      enforcement: "syllo-product-adapter",
+      capabilities: ["syllo.sessions", "syllo.chat", "syllo.issue", "syllo.highlight", "syllo.doc"],
+      roots: [{ id: "default", path_display: "[local]/syllo" }],
+    },
+  },
+});
+const sylloClaim = await nativeClaimIntent(sylloIntent.token, {
+  device_name: "Syllo Full Device",
+  install_id: "install-syllo-full",
+  capabilities: { relay: ["relay.envelope", "relay.ack"] },
+});
+const sylloConfirmed = await nativeConfirmIntent(sylloIntent.token, sylloClaim.device_token, {
+  "x-panda-bridge-install-id": "install-syllo-full",
+});
+assert.equal(sylloConfirmed.authorization.status, "active");
+const sylloRelayKeyExchange = {
+  algorithm: "ECDH-P256+A256GCM",
+  key_id: "rkx_test_syllo",
+  public_jwk: {
+    kty: "EC",
+    crv: "P-256",
+    x: "f83OJ3D2xF4B2XIBm9W8GvROqVRsY6x1Z3xA4C7v3x8",
+    y: "x_FEzRu9i85-Wz9rn8bL1XxVQwWxS4kVYzH8Y8rjWbs",
+  },
+};
+await api("POST", "/v1/connectors/heartbeat", {
+  install_id: "install-syllo-full",
+  capabilities: { relay: ["relay.envelope", "relay.ack"] },
+  local_state: {
+    relay: { envelopes: true, ack: true },
+    adapter_router: {
+      configured: true,
+      mode: "external_http",
+      products: {
+        "panda-syllo": {
+          configured: true,
+          relay_key_exchange: sylloRelayKeyExchange,
+        },
+      },
+    },
+  },
+}, sylloConfirmed.device_token || sylloClaim.device_token);
+const sylloState = await api("GET", "/v1/bridge/state?product_id=panda-syllo");
+const sylloStateDevice = sylloState.devices.find((device) => device.id === sylloClaim.device.id);
+assert.equal(sylloStateDevice.relay_key_exchange.key_id, "rkx_test_syllo");
+const sylloBootstrap = await api("POST", "/v1/products/panda-syllo/relay-key-bootstrap", {
+  device_id: sylloClaim.device.id,
+  relay_key_bootstrap: {
+    algorithm: "ECDH-P256+A256GCM",
+    key_id: "rkx_test_syllo",
+    wrapped_key: {
+      algorithm: "ECDH-P256+A256GCM",
+      key_id: "rkx_test_syllo",
+      app_public_jwk: {
+        kty: "EC",
+        crv: "P-256",
+        x: "wWwQx5Dul2jDRdB7r6C5C5h6GdPK6eNi02T0tVPwBiY",
+        y: "JL0C83dGqz1U3uc0GRQzZJslcF6ctvPd_EwFQ5QwdXg",
+      },
+      nonce_b64: "AAAAAAAAAAAAAAAA",
+      ciphertext_b64: "ZmFrZS13cmFwcGVkLWtleQ==",
+      aad_b64: b64Text(relayKeyBootstrapAadText(
+        "panda-syllo",
+        sylloClaim.device.id,
+        sylloConfirmed.authorization.id,
+        sylloConfirmed.authorization.epoch,
+        "rkx_test_syllo",
+        "syllo-relay-key-bootstrap-v1",
+      )),
+    },
+  },
+});
+assert.equal(sylloBootstrap.relay_key_bootstrap.status, "ready");
+const sylloRelayMeta = {
+  adapter_id: "panda-syllo",
+  authorization_id: sylloConfirmed.authorization.id,
+  authorization_epoch: sylloConfirmed.authorization.epoch,
+  relay_key_id: "rkx_test_syllo",
+};
+assert.deepEqual(sylloConfirmed.authorization.policy.capabilities, RELAY_CAPABILITIES);
+assert.deepEqual(sylloConfirmed.authorization.policy.product_authorization.capabilities, ["syllo.sessions", "syllo.chat", "syllo.issue", "syllo.highlight", "syllo.doc"]);
+const sylloChatEnvelope = await api("POST", "/v1/products/panda-syllo/relay/envelopes", relayEnvelope({
+  product_id: "panda-syllo",
+  device_id: sylloClaim.device.id,
+  channel_id: "syllo_chat",
+  direction: "product_to_device",
+  request_key: "rq_syllo_chat",
+  aad: b64Text(relayEnvelopeAadText({
+    productId: "panda-syllo",
+    deviceId: sylloClaim.device.id,
+    channelId: "syllo_chat",
+    authorizationId: sylloConfirmed.authorization.id,
+    authorizationEpoch: sylloConfirmed.authorization.epoch,
+    keyId: "rkx_test_syllo",
+  })),
+  meta: sylloRelayMeta,
+}));
+assert.equal(sylloChatEnvelope.envelope.delivery_status, "queued");
+const sylloWrongRelayKey = await apiRaw("POST", "/v1/products/panda-syllo/relay/envelopes", relayEnvelope({
+  product_id: "panda-syllo",
+  device_id: sylloClaim.device.id,
+  channel_id: "syllo_wrong_key",
+  direction: "product_to_device",
+  request_key: "rq_syllo_wrong_key",
+  aad: b64Text(relayEnvelopeAadText({
+    productId: "panda-syllo",
+    deviceId: sylloClaim.device.id,
+    channelId: "syllo_wrong_key",
+    authorizationId: sylloConfirmed.authorization.id,
+    authorizationEpoch: sylloConfirmed.authorization.epoch,
+    keyId: "rkx_wrong",
+  })),
+  meta: { ...sylloRelayMeta, relay_key_id: "rkx_wrong" },
+}));
+assert.equal(sylloWrongRelayKey.response.status, 201);
+assert.equal(sylloWrongRelayKey.payload.envelope.delivery_status, "queued");
+const pausedSyllo = await api("PATCH", `/v1/products/panda-syllo/authorization?device_id=${encodeURIComponent(sylloClaim.device.id)}`, { status: "paused" });
+assert.equal(pausedSyllo.authorization.status, "paused");
+assert.equal(pausedSyllo.authorization.relay_key_bootstrap, undefined);
+const resumedSyllo = await api("PATCH", `/v1/products/panda-syllo/authorization?device_id=${encodeURIComponent(sylloClaim.device.id)}`, { status: "active" });
+assert.equal(resumedSyllo.authorization.status, "active");
+assert.equal(resumedSyllo.authorization.relay_key_bootstrap, undefined);
+const sylloOldEpochAfterResume = await apiRaw("POST", "/v1/products/panda-syllo/relay/envelopes", relayEnvelope({
+  product_id: "panda-syllo",
+  device_id: sylloClaim.device.id,
+  channel_id: "syllo_stale_epoch",
+  direction: "product_to_device",
+  request_key: "rq_syllo_stale_epoch",
+  aad: b64Text(relayEnvelopeAadText({
+    productId: "panda-syllo",
+    deviceId: sylloClaim.device.id,
+    channelId: "syllo_stale_epoch",
+    authorizationId: sylloConfirmed.authorization.id,
+    authorizationEpoch: sylloConfirmed.authorization.epoch,
+    keyId: "rkx_test_syllo",
+  })),
+  meta: sylloRelayMeta,
+}));
+assert.equal(sylloOldEpochAfterResume.response.status, 201);
+assert.equal(sylloOldEpochAfterResume.payload.envelope.delivery_status, "queued");
+
+const sylloRelayOnlyIntent = await api("POST", "/v1/connect-intents", {
+  product_id: "panda-syllo",
+  device_name: "Syllo Relay Only Device",
+  install_id: "install-syllo-relay-only",
+  policy: authorizationPolicy(RELAY_CAPABILITIES, "[local]/syllo-relay"),
+});
+const sylloRelayOnlyClaim = await nativeClaimIntent(sylloRelayOnlyIntent.token, {
+  device_name: "Syllo Relay Only Device",
+  install_id: "install-syllo-relay-only",
+  capabilities: { relay: ["relay.envelope", "relay.ack"] },
+});
+const sylloRelayOnlyConfirmed = await nativeConfirmIntent(sylloRelayOnlyIntent.token, sylloRelayOnlyClaim.device_token, {
+  "x-panda-bridge-install-id": "install-syllo-relay-only",
+});
+assert.equal(sylloRelayOnlyConfirmed.authorization.status, "active");
+const sylloNoProductAuth = await apiRaw("POST", "/v1/products/panda-syllo/relay/envelopes", relayEnvelope({
+  product_id: "panda-syllo",
+  device_id: sylloRelayOnlyClaim.device.id,
+  channel_id: "syllo_scope",
+  request_key: "rq_syllo_scope",
+  meta: { adapter_id: "panda-syllo" },
+}));
+assert.equal(sylloNoProductAuth.response.status, 201);
+assert.equal(sylloNoProductAuth.payload.envelope.delivery_status, "queued");
+
 const otherlineIntent = await api("POST", "/v1/connect-intents", {
   product_id: "otherline",
   device_name: "Otherline Relay Device",
@@ -449,6 +851,66 @@ const otherlineClaim = await nativeClaimIntent(otherlineIntent.token, {
   install_id: "install-otherline",
   capabilities: { relay: ["relay.envelope", "relay.ack"] },
 }, claimed.device_token);
+assert.equal(otherlineClaim.authorization.status, "pending");
+const otherlineConfirmed = await nativeConfirmIntent(otherlineIntent.token, otherlineClaim.device_token, {
+  "x-panda-bridge-install-id": "install-otherline",
+});
+assert.equal(otherlineConfirmed.authorization.status, "active");
+const otherlineRelayKeyExchange = {
+  algorithm: "ECDH-P256+A256GCM",
+  key_id: "rkx_test_otherline",
+  public_jwk: {
+    kty: "EC",
+    crv: "P-256",
+    x: "f83OJ3D2xF4B2XIBm9W8GvROqVRsY6x1Z3xA4C7v3x8",
+    y: "x_FEzRu9i85-Wz9rn8bL1XxVQwWxS4kVYzH8Y8rjWbs",
+  },
+};
+await api("POST", "/v1/connectors/heartbeat", {
+  install_id: "install-otherline",
+  capabilities: { relay: ["relay.envelope", "relay.ack"] },
+  local_state: {
+    relay: { envelopes: true, ack: true },
+    adapter_router: {
+      configured: true,
+      products: {
+        otherline: {
+          configured: true,
+          relay_key_exchange: otherlineRelayKeyExchange,
+        },
+      },
+    },
+  },
+}, otherlineConfirmed.device_token || otherlineClaim.device_token);
+const delegatedBootstrap = await delegatedApi("POST", "/v1/products/otherline/delegated/relay-key-bootstrap", {
+  device_id: otherlineClaim.device.id,
+  relay_key_bootstrap: {
+    algorithm: "ECDH-P256+A256GCM",
+    key_id: "rkx_test_otherline",
+    wrapped_key: {
+      algorithm: "ECDH-P256+A256GCM",
+      key_id: "rkx_test_otherline",
+      app_public_jwk: {
+        kty: "EC",
+        crv: "P-256",
+        x: "wWwQx5Dul2jDRdB7r6C5C5h6GdPK6eNi02T0tVPwBiY",
+        y: "JL0C83dGqz1U3uc0GRQzZJslcF6ctvPd_EwFQ5QwdXg",
+      },
+      nonce_b64: "AAAAAAAAAAAAAAAA",
+      ciphertext_b64: "ZmFrZS13cmFwcGVkLWtleQ==",
+      aad_b64: b64Text(relayKeyBootstrapAadText(
+        "otherline",
+        otherlineClaim.device.id,
+        otherlineConfirmed.authorization.id,
+        otherlineConfirmed.authorization.epoch,
+        "rkx_test_otherline",
+      )),
+    },
+  },
+}, otherlineClaim.account.id, otherlineClaim.device.id);
+assert.equal(delegatedBootstrap.relay_key_bootstrap.status, "ready");
+assert.equal(delegatedBootstrap.relay_key_bootstrap.key_id, "rkx_test_otherline");
+assert.doesNotMatch(JSON.stringify(delegatedBootstrap), /relay_key_b64|relayKeyB64|key_b64|keyB64/);
 const delegatedCreated = await delegatedApi("POST", "/v1/products/otherline/delegated/relay/envelopes", relayEnvelope({
   product_id: "otherline",
   device_id: otherlineClaim.device.id,
@@ -473,5 +935,35 @@ const expiring = await api("POST", "/v1/products/panda-chat/relay/envelopes", re
 await new Promise((resolve) => setTimeout(resolve, 1100));
 await worker.scheduled({}, env, {});
 assert.equal(__bridgeTestMemorySnapshot().bridge_relay_envelopes.some((row) => row.id === expiring.envelope.id), false);
+
+const revokeTarget = await api("POST", "/v1/products/panda-chat/relay/envelopes", relayEnvelope({
+  device_id: claimed.device.id,
+  channel_id: "revoke",
+  request_key: "rq_revoke_cancel",
+}));
+assert.equal(revokeTarget.envelope.delivery_status, "queued");
+const revokeInbox = await api("GET", `/v1/connectors/relay/envelopes?product_id=panda-chat&channel_id=revoke`, null, claimed.device_token);
+assert.equal(revokeInbox.items.length, 1);
+assert.equal(revokeInbox.items[0].id, revokeTarget.envelope.id);
+assert.equal(revokeInbox.items[0].delivery_status, "delivered");
+const revokeResult = await api("DELETE", `/v1/products/panda-chat/authorization?device_id=${encodeURIComponent(claimed.device.id)}`);
+assert.equal(revokeResult.authorization.status, "revoked");
+assert.equal(revokeResult.cancelled_relay_envelopes, 1);
+const revokedSnapshot = __bridgeTestMemorySnapshot();
+const cancelledEnvelope = revokedSnapshot.bridge_relay_envelopes.find((row) => row.id === revokeTarget.envelope.id);
+assert.equal(cancelledEnvelope.delivery_status, "cancelled");
+assert.equal(cancelledEnvelope.meta.cancelled_reason, "authorization_revoked");
+const cancelledAck = await apiRaw("POST", `/v1/connectors/relay/envelopes/${encodeURIComponent(revokeTarget.envelope.id)}/ack`, {}, claimed.device_token);
+assert.equal(cancelledAck.response.status, 409);
+assert.equal(cancelledAck.payload.error, "relay_envelope_cancelled");
+const revokedInbox = await api("GET", `/v1/connectors/relay/envelopes?product_id=panda-chat&channel_id=revoke`, null, claimed.device_token);
+assert.equal(revokedInbox.items.some((item) => item.id === revokeTarget.envelope.id), false);
+const revokedCreate = await apiRaw("POST", "/v1/products/panda-chat/relay/envelopes", relayEnvelope({
+  device_id: claimed.device.id,
+  channel_id: "revoke_after",
+  request_key: "rq_after_revoke",
+}));
+assert.equal(revokedCreate.response.status, 403);
+assert.equal(revokedCreate.payload.error, "authorization_revoked");
 
 console.log("[worker.test] pass");

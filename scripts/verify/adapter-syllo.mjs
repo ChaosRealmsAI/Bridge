@@ -34,4 +34,12 @@ assert.ok(registry.includes("SylloConnector::new"));
 assert.ok(registry.includes("#[cfg(not(test))]"));
 assert.ok(registry.includes("Ok(ConnectorRegistry::new())"));
 
+const localStateStart = main.indexOf("fn local_state() -> Value");
+const localStateEnd = main.indexOf("fn low_tier_capabilities", localStateStart);
+assert.ok(localStateStart > 0 && localStateEnd > localStateStart, "local_state function not found");
+const localState = main.slice(localStateStart, localStateEnd);
+assert.equal(localState.includes('"panda-syllo"'), false, "local_state must not hard-code Syllo product identity");
+assert.ok(localState.includes("local_state_for_products"), "Desktop must build local state from product context");
+assert.ok(localState.includes("adapter_state_for_products"), "Desktop must expose product-scoped adapter state generically");
+
 console.log("[adapter-syllo] pass");

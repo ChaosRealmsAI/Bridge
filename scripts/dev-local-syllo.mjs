@@ -11,7 +11,8 @@ import worker from "../apps/cloud-worker/src/index.js";
 import { createBridgeClient } from "../packages/sdk/src/index.js";
 
 const PRODUCT_ID = "panda-syllo";
-const SYLLO_CAPABILITIES = ["relay.envelope", "relay.ack"];
+const BRIDGE_RELAY_CAPABILITIES = ["relay.envelope", "relay.ack"];
+const SYLLO_PRODUCT_PERMISSIONS = ["syllo.sessions", "syllo.chat", "syllo.issue", "syllo.highlight", "syllo.doc"];
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, "..");
 const args = parseArgs(process.argv.slice(2));
@@ -36,6 +37,7 @@ let shuttingDown = false;
 let desktopQueue = Promise.resolve();
 let apiBase = "";
 let sylloAdapter = null;
+let phoneActionQueue = null;
 const relayKeyBytes = randomBytes(32);
 const relayKeyB64 = relayKeyBytes.toString("base64");
 
@@ -63,6 +65,8 @@ try {
 
   sylloAdapter = await startLocalSylloAdapter();
   console.log(`[syllo:local] syllo adapter: ${sylloAdapter.url}`);
+  phoneActionQueue = await startLocalPhoneActionQueue();
+  console.log(`[syllo:local] phone action queue: ${phoneActionQueue.url}`);
 
   devSession = await bindLocalDesktop({
     apiBase,
@@ -98,6 +102,8 @@ async function handle(request, response) {
       senderKeyId: "syllo-android",
       recipientKeyId: "syllo-adapter",
       channelPrefix: "syllo-android",
+      phoneActionBaseUrl: phoneActionBaseUrlFor(requestUrl),
+      phoneActionToken: phoneActionQueue?.appToken || "",
     });
     return;
   }
@@ -125,6 +131,8 @@ async function handle(request, response) {
       senderKeyId: "syllo-android",
       recipientKeyId: "syllo-adapter",
       channelPrefix: "syllo-android",
+      phoneActionBaseUrl: phoneActionBaseUrlFor(requestUrl),
+      phoneActionToken: phoneActionQueue?.appToken || "",
     }, 201);
     return;
   }
@@ -138,6 +146,8 @@ async function handle(request, response) {
       deviceId: devSession?.deviceId || null,
       pollIntervalMs,
       pendingBackground: pendingBackground.size,
+      phoneActionReady: Boolean(phoneActionQueue),
+      phoneActionBaseUrl: phoneActionBaseUrlFor(requestUrl),
       checkedAt: new Date().toISOString(),
     });
     return;
@@ -208,6 +218,9 @@ async function bindLocalDesktop({ apiBase: nextApiBase, displayName, deviceName:
   const claim = parseJson(connected.stdout, "headless-connect");
   const deviceId = claim.device_id || claim.device?.id;
   if (!deviceId) throw new Error(`headless-connect did not return device_id: ${connected.stdout}`);
+  const deviceToken = claim.device_token || claim.token || "";
+  if (!deviceToken) throw new Error(`headless-connect did not return device_token: ${connected.stdout}`);
+  await confirmLocalDesktopAuthorization(nextApiBase, intent.token, deviceToken);
 
   await bridge.ensureReady({ wait: true, timeoutMs: 10000, intervalMs: 250 });
   return {
@@ -217,6 +230,31 @@ async function bindLocalDesktop({ apiBase: nextApiBase, displayName, deviceName:
     apiBase: nextApiBase,
     createdAt: new Date().toISOString(),
   };
+}
+
+async function confirmLocalDesktopAuthorization(nextApiBase, token, deviceToken) {
+  const response = await fetch(`${nextApiBase}/v1/connect-intents/${encodeURIComponent(token)}/confirm`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${deviceToken}`,
+      "content-type": "application/json",
+      "x-panda-bridge-local-client": "desktop",
+    },
+    body: JSON.stringify({ confirmed: true }),
+  });
+  let payload = {};
+  try {
+    payload = await response.json();
+  } catch {
+    payload = {};
+  }
+  if (!response.ok) {
+    throw new Error(`connect-intent confirm failed: http ${response.status} ${JSON.stringify(payload)}`);
+  }
+  if (!["active", "authorized"].includes(String(payload.authorization?.status || ""))) {
+    throw new Error(`connect-intent confirm did not activate authorization: ${JSON.stringify(payload)}`);
+  }
+  return payload;
 }
 
 async function pollLoop() {
@@ -300,6 +338,22 @@ async function startLocalSylloAdapter() {
   return startSylloRelayAdapter({ keyBytes: relayKeyBytes, root: sylloRoot });
 }
 
+async function startLocalPhoneActionQueue() {
+  const modulePath = resolve(sylloRoot, "scripts/bridge/syllo-phone-action-queue.mjs");
+  const { startPhoneActionQueue } = await import(pathToFileURL(modulePath).href);
+  return startPhoneActionQueue({
+    host: args.phoneActionHost || process.env.SYLLO_PHONE_ACTION_HOST || "0.0.0.0",
+    port: Number(args.phoneActionPort || process.env.SYLLO_PHONE_ACTION_PORT || 8798),
+    enqueueToken: process.env.SYLLO_PHONE_ACTION_TOKEN || randomBytes(24).toString("base64url"),
+    appToken: process.env.SYLLO_PHONE_ACTION_APP_TOKEN || randomBytes(24).toString("base64url"),
+  });
+}
+
+function phoneActionBaseUrlFor(requestUrl) {
+  if (!phoneActionQueue) return "";
+  return `${requestUrl.protocol}//${requestUrl.hostname}:${phoneActionQueue.port}`;
+}
+
 function localWorkerEnv(origin) {
   const localOrigins = [...new Set([
     origin,
@@ -341,7 +395,13 @@ function sylloPermissions(sourceOrigin) {
     request_source: "syllo_local_dev",
     product_id: PRODUCT_ID,
     source_origin: sourceOrigin,
-    capabilities: SYLLO_CAPABILITIES,
+    capabilities: BRIDGE_RELAY_CAPABILITIES,
+    product_authorization: {
+      owner: "panda-syllo",
+      enforcement: "syllo-product-adapter",
+      capabilities: SYLLO_PRODUCT_PERMISSIONS,
+      roots: [{ id: "default", path_display: "[local]/default" }],
+    },
     workspace_roots: [{ id: "default", path_display: "[local]/default" }],
     sandbox_floor: "workspace-write",
     approval_policy_floor: "on-request",
@@ -444,6 +504,8 @@ function printReady(session) {
   console.log(`  http://127.0.0.1:${port}/authorize`);
   console.log("[syllo:local] phone connect:");
   console.log(`  Android emulator: http://10.0.2.2:${port}`);
+  if (phoneActionQueue) console.log(`  Android phone action queue: http://10.0.2.2:${phoneActionQueue.port}`);
+  if (phoneActionQueue) console.log(`  AI enqueue env: SYLLO_PHONE_ACTION_URL=http://127.0.0.1:${phoneActionQueue.port} SYLLO_PHONE_ACTION_TOKEN=${phoneActionQueue.enqueueToken}`);
   for (const url of phoneUrls(port)) console.log(`  Physical device: ${url}`);
   console.log("[syllo:local] press Ctrl-C to stop the local worker and desktop poller");
 }
@@ -607,6 +669,7 @@ async function shutdown(code = 0) {
   shuttingDown = true;
   for (const child of activeChildren) killChild(child);
   if (sylloAdapter) await sylloAdapter.close();
+  if (phoneActionQueue) await phoneActionQueue.close();
   await new Promise((resolveClose) => server.close(() => resolveClose()));
   process.exit(code);
 }

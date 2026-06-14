@@ -54,6 +54,10 @@ export type BridgeErrorCode =
   | "bridge_ready_timeout";
 
 export const BRIDGE_SDK_VERSION: string;
+export const BridgeRelayKeyBootstrapAadVersions: Readonly<{
+  bridge: "bridge-relay-key-bootstrap-v1";
+  legacySyllo: "syllo-relay-key-bootstrap-v1";
+}>;
 export const BridgeErrorCodes: Readonly<Partial<Record<BridgeErrorCode, BridgeErrorCode>>>;
 export const BRIDGE_ERROR_MESSAGES: Readonly<Partial<Record<BridgeErrorCode, string>>>;
 export function bridgeErrorMessageForCode(code: BridgeErrorCode | string, status?: number): string;
@@ -354,6 +358,110 @@ export type BridgeRelayWaitForResponseResult = {
   ack(input?: JsonObject): Promise<JsonObject>;
 };
 
+export type BridgeRelayAadInput = {
+  productId?: string;
+  product_id?: string;
+  deviceId?: string;
+  device_id?: string;
+  channelId?: string;
+  channel_id?: string;
+  direction?: "product_to_device" | "device_to_product" | string;
+  seq?: number;
+  authorizationId?: string;
+  authorization_id?: string;
+  authorizationEpoch?: string | number;
+  authorization_epoch?: string | number;
+  relayKeyId?: string;
+  relay_key_id?: string;
+  keyId?: string;
+  key_id?: string;
+};
+
+export function bridgeRelayEnvelopeAadText(input?: BridgeRelayAadInput): string;
+export function bridgeRelayEnvelopeAadBase64(input?: BridgeRelayAadInput): string;
+export function bridgeRelayKeyBootstrapAadText(input?: BridgeRelayAadInput & { wireVersion?: string; wire_version?: string }): string;
+
+export type BridgeRelayCryptoContext = {
+  productId: string;
+  deviceId: string;
+  channelId: string;
+  direction: "product_to_device";
+  seq: number;
+  requestKey: string;
+  authorizationId: string;
+  authorizationEpoch: string;
+  relayKeyId: string;
+};
+
+export type BridgeRelayEncryptInput = {
+  payload: JsonValue | undefined;
+  context: BridgeRelayCryptoContext;
+  aad: string;
+  aadText: string;
+  productId: string;
+  deviceId: string;
+  channelId: string;
+  direction: "product_to_device";
+  seq: number;
+  requestKey: string;
+};
+
+export type BridgeRelayEncryptedEnvelopeFields = {
+  ciphertext: string;
+  aad?: string;
+  nonce?: string;
+  iv?: string;
+  algorithm?: string;
+  alg?: string;
+  senderKeyId?: string;
+  sender_key_id?: string;
+  recipientKeyId?: string;
+  recipient_key_id?: string;
+  meta?: JsonObject;
+};
+
+export type BridgeRelaySession = {
+  encrypt?(input: BridgeRelayEncryptInput): Promise<BridgeRelayEncryptedEnvelopeFields> | BridgeRelayEncryptedEnvelopeFields;
+  encryptEnvelope?(input: BridgeRelayEncryptInput): Promise<BridgeRelayEncryptedEnvelopeFields> | BridgeRelayEncryptedEnvelopeFields;
+  decrypt?(envelope: JsonObject, input: { context: BridgeRelayCryptoContext; requestEnvelope: JsonObject | null; responseEnvelope: JsonObject; aadText: string }): Promise<JsonValue> | JsonValue;
+  decryptEnvelope?(envelope: JsonObject, input: { context: BridgeRelayCryptoContext; requestEnvelope: JsonObject | null; responseEnvelope: JsonObject; aadText: string }): Promise<JsonValue> | JsonValue;
+};
+
+export type BridgeRelayCallInput = BridgeRelayWaitInput & {
+  session?: BridgeRelaySession;
+  crypto?: BridgeRelaySession;
+  payload?: JsonValue;
+  command?: JsonValue;
+  input?: JsonValue;
+  deviceId?: string;
+  device_id?: string;
+  channelId?: string;
+  channel_id?: string;
+  seq?: number;
+  requestKey?: string;
+  request_key?: string;
+  aad?: string;
+  ttlMs?: number;
+  ttl_ms?: number;
+  authorizationId?: string;
+  authorization_id?: string;
+  authorizationEpoch?: string | number;
+  authorization_epoch?: string | number;
+  relayKeyId?: string;
+  relay_key_id?: string;
+  recipientKeyId?: string;
+  recipient_key_id?: string;
+  meta?: JsonObject;
+};
+
+export type BridgeRelayCallResult = {
+  created: JsonObject;
+  request: JsonObject | null;
+  response: JsonObject;
+  payload: JsonValue;
+  ack(input?: JsonObject): Promise<JsonObject>;
+};
+
 export type BridgeClient = {
   productId: string;
   state(): Promise<BridgeStateModel>;
@@ -401,6 +509,7 @@ export type BridgeClient = {
     list(input?: BridgeRelayListInput): Promise<JsonObject>;
     ack(envelopeId: string, input?: JsonObject): Promise<JsonObject>;
     waitForResponse(input?: BridgeRelayWaitInput): Promise<BridgeRelayWaitForResponseResult>;
+    createCall(input?: BridgeRelayCallInput): Promise<BridgeRelayCallResult>;
   };
 };
 

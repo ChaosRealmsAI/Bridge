@@ -28,32 +28,24 @@ state.accounts.forEach((item) => render({
   connected: item.connected, // 全自动连接，只读
 }));
 
-// 2. 就绪后投递密文 envelope（current_account 已帮你选好账号）
+// 2. 就绪后发起一次通用加密 relay call（current_account 已帮你选好账号）
 const current = state.current_account;
 if (current?.authorization?.status === "active" && current.connected) {
   const deviceId = current.current_device.id;
-  const created = await bridge.relay.create({
+  const result = await bridge.relay.createCall({
     deviceId,
     channelId: "chan_1",
     seq: 1,
-    ciphertext: encryptedBody,
-    aad: encodedAad,
-    nonce,
-    algorithm: "AES-GCM-256",
-    senderKeyId: "product-key-1",
-    recipientKeyId: "device-key-1",
     requestKey: crypto.randomUUID(),
-  });
-  console.log(created.envelope.id);
-
-  const { envelope, ack } = await bridge.relay.waitForResponse({
-    deviceId,
-    channelId: "chan_1",
-    afterSeq: 1,
+    payload: { type: "workspace.list" },
+    session: {
+      encrypt: encryptForProductAdapter,
+      decrypt: decryptFromProductAdapter,
+    },
     timeoutMs: 120000,
   });
-  const plaintext = await decryptInProduct(envelope);
-  await ack(); // 只在调用方成功解密/处理后 ACK
+  render(result.payload);
+  await result.ack(); // 只在调用方成功解密/处理后 ACK
 }
 ```
 
@@ -121,6 +113,12 @@ const ready = await bridge.ensureReady({ wait: true, timeoutMs: 120000 });
 // ready.ready: boolean
 // ready.action?.kind: "authorize" | "resume_authorization" | "wait_for_device"
 ```
+
+### relay
+
+高层调用用 `bridge.relay.createCall({ payload, session })`：SDK 负责稳定 AAD、创建 product-to-device envelope、等待 device-to-product envelope，并把 ACK 留给调用方显式执行。`session.encrypt` / `session.decrypt` 由产品提供，里面放 AES-GCM、relay key、压缩和 payload 编解码。
+
+低层调用仍可直接使用 `relay.create/list/ack/waitForResponse`，用于自管 envelope、流式 channel 或迁移期兼容。
 
 ### server client
 

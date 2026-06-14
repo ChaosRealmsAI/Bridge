@@ -71,7 +71,19 @@ function makeApi(env) {
     return result.payload;
   };
 
-  return { api, apiRaw, nativeClaimIntent };
+  const nativeConfirmIntent = async (token, bearer, installId) => {
+    const result = await apiRaw("POST", `/v1/connect-intents/${encodeURIComponent(token)}/confirm`, {
+      confirmed: true,
+    }, bearer, {
+      origin: null,
+      "x-panda-bridge-local-client": "desktop",
+      "x-panda-bridge-install-id": installId,
+    });
+    assert.ok(result.response.ok, `confirm intent: ${JSON.stringify(result.payload)}`);
+    return result.payload;
+  };
+
+  return { api, apiRaw, nativeClaimIntent, nativeConfirmIntent };
 }
 
 function relayEnvelope(overrides = {}) {
@@ -93,16 +105,19 @@ function relayEnvelope(overrides = {}) {
 }
 
 async function authorizeProduct(api, productId, label, bearer = "") {
+  const installId = `install-${label}`;
   const intent = await api.api("POST", "/v1/connect-intents", {
     product_id: productId,
     device_name: `Relay Backpressure ${label}`,
-    install_id: `install-${label}`,
+    install_id: installId,
   });
-  return api.nativeClaimIntent(intent.token, {
+  const claim = await api.nativeClaimIntent(intent.token, {
     device_name: `Relay Backpressure ${label}`,
-    install_id: `install-${label}`,
+    install_id: installId,
     capabilities: { relay: ["relay.envelope", "relay.ack"] },
   }, bearer);
+  const confirmed = await api.nativeConfirmIntent(intent.token, claim.device_token, installId);
+  return { ...confirmed, device_token: claim.device_token };
 }
 
 async function createEnvelope(api, productId, deviceId, overrides = {}) {

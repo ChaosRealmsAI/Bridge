@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
   BRIDGE_ERROR_MESSAGES,
+  BridgeRelayKeyBootstrapAadVersions,
   BridgeError,
   BridgeErrorCodes,
   bridgeDelegatedAccountStatusModel,
@@ -8,6 +9,9 @@ import {
   bridgeDesktopInstallDefaults,
   bridgeDesktopInstallTarget,
   bridgeDesktopStatusModel,
+  bridgeRelayEnvelopeAadBase64,
+  bridgeRelayEnvelopeAadText,
+  bridgeRelayKeyBootstrapAadText,
   bridgeSnapshotStatusForDevice,
   bridgeStateModel,
   createBridgeClient,
@@ -57,6 +61,49 @@ assert.deepEqual(JSON.parse(calls[0].init.body), {
   ttl_ms: 300000,
   meta: { adapter_id: "panda-syllo" },
 });
+
+const relayAadText = bridgeRelayEnvelopeAadText({
+  productId: "panda-syllo",
+  deviceId: "dev_1",
+  channelId: "syllo_chat",
+  direction: "product_to_device",
+  seq: 7,
+  authorizationId: "auth_1",
+  authorizationEpoch: 3,
+  relayKeyId: "rkx_test",
+});
+assert.equal(relayAadText, "product:panda-syllo|device:dev_1|channel:syllo_chat|direction:product_to_device|seq:7|authorization:auth_1|epoch:3|relay_key:rkx_test");
+assert.equal(bridgeRelayEnvelopeAadBase64({
+  productId: "panda-syllo",
+  deviceId: "dev_1",
+  channelId: "syllo_chat",
+  direction: "product_to_device",
+  seq: 7,
+  authorizationId: "auth_1",
+  authorizationEpoch: 3,
+  relayKeyId: "rkx_test",
+}), Buffer.from(relayAadText, "utf8").toString("base64"));
+assert.equal(
+  bridgeRelayKeyBootstrapAadText({
+    productId: "panda-syllo",
+    deviceId: "dev_1",
+    authorizationId: "auth_1",
+    authorizationEpoch: 3,
+    relayKeyId: "rkx_test",
+  }),
+  "bridge-relay-key-bootstrap-v1|panda-syllo|dev_1|auth_1|3|rkx_test",
+);
+assert.equal(
+  bridgeRelayKeyBootstrapAadText({
+    wireVersion: BridgeRelayKeyBootstrapAadVersions.legacySyllo,
+    productId: "panda-syllo",
+    deviceId: "dev_1",
+    authorizationId: "auth_1",
+    authorizationEpoch: 3,
+    relayKeyId: "rkx_test",
+  }),
+  "syllo-relay-key-bootstrap-v1|panda-syllo|dev_1|auth_1|3|rkx_test",
+);
 
 assert.equal(bridgeDesktopInstallDefaults.macos.fileName, "panda-bridge-macos.dmg");
 assert.equal(
@@ -109,10 +156,50 @@ const directState = bridgeStateModel({
 assert.equal(directState.product_id, "panda-chat");
 assert.equal(directState.ready, true);
 assert.equal(directState.accounts[0].authorization.status, "active");
-assert.equal(directState.accounts[0].authorization.policy, undefined);
+assert.deepEqual(directState.accounts[0].authorization.policy, { capabilities: ["relay.envelope"] });
 assert.equal(directState.accounts[0].connected, true);
 assert.equal(directState.accounts[0].current_device.id, "dev_1");
-assert.equal(directState.bridge_state, undefined);
+assert.equal(directState.bridge_state, "ready");
+
+const deviceAuthorizationState = bridgeStateModel({
+  product: { id: "panda-chat" },
+  install: stateInstall(),
+  accounts: [{
+    account: { id: "acct_1", email: "panda@example.test" },
+    authorization: { id: "auth_1", device_id: "dev_1", status: "active" },
+    connected: true,
+    current_device: { id: "dev_1", device_name: "Mac Studio", status: "online" },
+  }],
+  devices: [
+    {
+      id: "dev_1",
+      device_name: "Mac Studio",
+      status: "online",
+      authorization: {
+        id: "auth_1",
+        device_id: "dev_1",
+        status: "active",
+        policy: { capabilities: ["relay.envelope"], workspace_roots: [{ path_display: "[local]/default" }] },
+        source_origin: "http://local.test",
+      },
+    },
+    {
+      id: "dev_2",
+      device_name: "MacBook",
+      status: "offline",
+      authorization: {
+        id: "auth_2",
+        device_id: "dev_2",
+        status: "paused",
+        policy: { capabilities: ["relay.envelope"], workspace_roots: [{ path_display: "[local]/secondary" }] },
+        source_origin: "http://chat.local.test",
+      },
+    },
+  ],
+});
+assert.equal(deviceAuthorizationState.devices[0].authorization.origin, "http://local.test");
+assert.equal(deviceAuthorizationState.devices[1].authorization.status, "paused");
+assert.deepEqual(deviceAuthorizationState.devices[1].authorization.policy.workspace_roots, [{ path_display: "[local]/secondary" }]);
 
 const legacyOffline = bridgeStateModel({
   bridge_state: "authorized_offline",
@@ -123,7 +210,7 @@ const legacyOffline = bridgeStateModel({
 });
 assert.equal(legacyOffline.accounts[0].authorization.status, "active");
 assert.equal(legacyOffline.accounts[0].connected, false);
-assert.equal(legacyOffline.bridge_state, undefined);
+assert.equal(legacyOffline.bridge_state, "authorized_offline");
 
 const delegatedReady = bridgeDelegatedAccountStatusModel({
   devices: [{ id: "dev_1", device_name: "Mac Studio", status: "online" }],
@@ -216,8 +303,13 @@ await client.auth.password("panda-test@example.com", "secret-password", "Panda T
 assert.equal(calls[4].url, "https://api.example.test/v1/sessions/password");
 assert.equal(JSON.parse(calls[4].init.body).email, "panda-test@example.com");
 
+await client.auth.password("panda-test@example.com", "secret-password", "Panda Test", { create: false, mode: "login" });
+assert.equal(calls[5].url, "https://api.example.test/v1/sessions/password");
+assert.equal(JSON.parse(calls[5].init.body).create, false);
+assert.equal(JSON.parse(calls[5].init.body).mode, "login");
+
 await client.products.list();
-assert.equal(calls[5].url, "https://api.example.test/v1/products");
+assert.equal(calls[6].url, "https://api.example.test/v1/products");
 
 const authCalls = [];
 const authClient = createBridgeClient({
@@ -238,7 +330,7 @@ const authClient = createBridgeClient({
 });
 const listed = await authClient.authorization.list({ deviceId: "dev_1" });
 assert.equal(listed.authorization.status, "active");
-assert.equal(listed.authorization.policy, undefined);
+assert.deepEqual(listed.authorization.policy, { capabilities: ["relay.envelope"] });
 assert.equal(authCalls[0].url, "https://api.example.test/v1/products/panda-chat/authorization?device_id=dev_1");
 assert.equal(authCalls[0].init.method, "GET");
 
@@ -262,8 +354,8 @@ assert.equal(authCalls[4].url, "https://api.example.test/v1/products/panda-chat/
 assert.equal(authCalls[4].init.method, "DELETE");
 
 await client.diagnostics();
-assert.equal(calls[6].url, "https://api.example.test/v1/diagnostics");
-assert.equal(calls[6].init.method, "GET");
+assert.equal(calls[7].url, "https://api.example.test/v1/diagnostics");
+assert.equal(calls[7].init.method, "GET");
 
 const customCalls = [];
 const customClient = createBridgeClient({
@@ -350,6 +442,111 @@ assert.equal(waitCalls[1].url, "https://api.example.test/v1/products/panda-chat/
 assert.equal(waitCalls[1].init.method, "POST");
 assert.deepEqual(JSON.parse(waitCalls[1].init.body), {});
 
+const callCalls = [];
+const callClient = createBridgeClient({
+  apiBase: "https://api.example.test",
+  productId: "panda-syllo",
+  fetch: async (url, init) => {
+    callCalls.push({ url, init });
+    const parsed = new URL(url);
+    if (parsed.pathname.endsWith("/ack")) {
+      return new Response(JSON.stringify({ acked: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (init.method === "GET") {
+      return new Response(JSON.stringify({
+        items: [{
+          id: "env_call_response",
+          device_id: "dev_call_1",
+          channel_id: "chan_call_1",
+          direction: "device_to_product",
+          seq: 6,
+          ciphertext: "base64:response",
+        }],
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return new Response(JSON.stringify({ envelope: { id: "env_call_request", seq: 5 } }), {
+      status: 201,
+      headers: { "content-type": "application/json" },
+    });
+  },
+});
+const callResult = await callClient.relay.createCall({
+  deviceId: "dev_call_1",
+  channelId: "chan_call_1",
+  seq: 5,
+  requestKey: "rq_call_1",
+  payload: { type: "workspace.list" },
+  authorizationId: "auth_call_1",
+  authorizationEpoch: 9,
+  relayKeyId: "rkx_call_1",
+  timeoutMs: 20,
+  intervalMs: 1,
+  session: {
+    encrypt(input) {
+      assert.equal(input.context.productId, "panda-syllo");
+      assert.equal(input.context.requestKey, "rq_call_1");
+      assert.equal(input.aadText, "product:panda-syllo|device:dev_call_1|channel:chan_call_1|direction:product_to_device|seq:5|authorization:auth_call_1|epoch:9|relay_key:rkx_call_1");
+      assert.deepEqual(input.payload, { type: "workspace.list" });
+      return {
+        ciphertext: "base64:encrypted-request",
+        nonce: "base64:nonce",
+        algorithm: "AES-GCM-256",
+        senderKeyId: "product-key-1",
+        recipientKeyId: "rkx_call_1",
+        meta: { adapter_id: "panda-syllo" },
+      };
+    },
+    decrypt(envelope, input) {
+      assert.equal(envelope.id, "env_call_response");
+      assert.equal(input.requestEnvelope.id, "env_call_request");
+      return { ok: true, envelopeId: envelope.id };
+    },
+  },
+});
+assert.deepEqual(callResult.payload, { ok: true, envelopeId: "env_call_response" });
+assert.equal(callCalls[0].url, "https://api.example.test/v1/products/panda-syllo/relay/envelopes");
+assert.deepEqual(JSON.parse(callCalls[0].init.body), {
+  envelope_version: "relay-envelope-v1",
+  product_id: "panda-syllo",
+  device_id: "dev_call_1",
+  channel_id: "chan_call_1",
+  direction: "product_to_device",
+  seq: 5,
+  request_key: "rq_call_1",
+  ciphertext: "base64:encrypted-request",
+  aad: bridgeRelayEnvelopeAadBase64({
+    productId: "panda-syllo",
+    deviceId: "dev_call_1",
+    channelId: "chan_call_1",
+    direction: "product_to_device",
+    seq: 5,
+    authorizationId: "auth_call_1",
+    authorizationEpoch: 9,
+    relayKeyId: "rkx_call_1",
+  }),
+  nonce: "base64:nonce",
+  algorithm: "AES-GCM-256",
+  sender_key_id: "product-key-1",
+  recipient_key_id: "rkx_call_1",
+  ttl_ms: 300000,
+  meta: {
+    adapter_id: "panda-syllo",
+    authorization_id: "auth_call_1",
+    authorization_epoch: "9",
+    relay_key_id: "rkx_call_1",
+  },
+});
+assert.equal(callCalls[1].url, "https://api.example.test/v1/products/panda-syllo/relay/envelopes?device_id=dev_call_1&channel_id=chan_call_1&after_seq=5");
+await callResult.ack({ processed: true });
+assert.equal(callCalls[2].url, "https://api.example.test/v1/products/panda-syllo/relay/envelopes/env_call_response/ack");
+assert.deepEqual(JSON.parse(callCalls[2].init.body), { processed: true });
+
 const unauthPreflight = mockClient([
   { body: { ok: true, protocol: "panda-bridge-protocol-v0.2" } },
   { status: 401, body: { authenticated: false, error: "unauthorized" } },
@@ -379,7 +576,7 @@ const state = await stateClient.client.state();
 assert.equal(state.ready, true);
 assert.equal(state.accounts[0].authorization.status, "active");
 assert.equal(state.accounts[0].connected, true);
-assert.equal(state.bridge_state, undefined);
+assert.equal(state.bridge_state, "ready");
 assert.equal(stateClient.calls[0].path, "/v1/bridge/state?product_id=panda-chat");
 
 const install = client.install();

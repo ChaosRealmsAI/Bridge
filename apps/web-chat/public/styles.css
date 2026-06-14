@@ -44,6 +44,14 @@ body {
   color: var(--text);
 }
 
+body[data-surface="authorization"] {
+  background:
+    linear-gradient(180deg, rgba(73, 198, 177, 0.11), transparent 250px),
+    linear-gradient(90deg, rgba(212, 163, 79, 0.07), transparent 440px),
+    repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.022) 0 1px, transparent 1px 74px),
+    var(--bg);
+}
+
 button,
 select,
 input,
@@ -431,6 +439,56 @@ button.danger {
   min-height: 38px;
 }
 
+.auth-scope {
+  gap: 12px;
+  background:
+    linear-gradient(180deg, rgba(73, 198, 177, 0.06), transparent 130px),
+    rgba(14, 20, 22, 0.94);
+}
+
+.auth-scope-head {
+  display: grid;
+  gap: 5px;
+}
+
+.scope-grid {
+  display: grid;
+  grid-template-columns: 58px minmax(0, 1fr);
+  gap: 8px 10px;
+  align-items: start;
+  font-size: 12px;
+}
+
+.scope-grid span {
+  color: var(--faint);
+}
+
+.scope-grid strong {
+  color: var(--text);
+  font-weight: 760;
+  overflow-wrap: anywhere;
+  line-height: 1.35;
+}
+
+.capability-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.capability-pill {
+  min-height: 26px;
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid rgba(73, 198, 177, 0.28);
+  border-radius: 999px;
+  background: rgba(73, 198, 177, 0.08);
+  color: #c8fff3;
+  padding: 0 8px;
+  font-size: 11px;
+  font-weight: 820;
+}
+
 @keyframes panel-in {
   from {
     opacity: 0;
@@ -707,6 +765,24 @@ summary {
   border-color: rgba(232, 189, 112, 0.58);
   color: #ffe2a8;
   background: rgba(96, 63, 21, 0.45);
+}
+
+body[data-surface="authorization"] .chat {
+  background:
+    linear-gradient(180deg, rgba(73, 198, 177, 0.06), transparent 280px),
+    rgba(8, 11, 12, 0.64);
+}
+
+body[data-surface="authorization"] .chat-head {
+  min-height: 112px;
+}
+
+body[data-surface="authorization"] .messages {
+  align-content: start;
+}
+
+body[data-surface="authorization"] .composer {
+  display: none;
 }
 
 textarea {

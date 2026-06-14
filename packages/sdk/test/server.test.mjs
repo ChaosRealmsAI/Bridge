@@ -150,7 +150,7 @@ assert.deepEqual(fallbackCalls, [
 ]);
 assert.equal(fallbackState.ready, true);
 assert.equal(fallbackState.accounts[0].current_device.id, "dev_1");
-assert.equal(fallbackState.bridge_state, undefined);
+assert.equal(fallbackState.bridge_state, "ready");
 
 // Account-level pause/resume/remove sign the "account" placeholder device id, so
 // the signing path carries no concrete device and the worker resolves it.

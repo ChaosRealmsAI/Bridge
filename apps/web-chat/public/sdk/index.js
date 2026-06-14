@@ -1,5 +1,10 @@
 export const BRIDGE_SDK_VERSION = "0.1.0";
 
+export const BridgeRelayKeyBootstrapAadVersions = Object.freeze({
+  bridge: "bridge-relay-key-bootstrap-v1",
+  legacySyllo: "syllo-relay-key-bootstrap-v1",
+});
+
 export const BridgeErrorCodes = Object.freeze({
   already_authorized: "already_authorized",
   authorization_import_proof_required: "authorization_import_proof_required",
@@ -257,6 +262,43 @@ export function bridgeSnapshotStatusForDevice(device = {}) {
   return deviceOnline(device) ? "connected" : "reconnecting";
 }
 
+export function bridgeRelayEnvelopeAadText(input = {}) {
+  const value = objectValue(input);
+  const authorizationId = stringValue(value.authorizationId || value.authorization_id || value.authId || value.auth_id, 180);
+  const relayKeyId = stringValue(value.relayKeyId || value.relay_key_id || value.keyId || value.key_id, 180);
+  const parts = [
+    `product:${stringValue(value.productId || value.product_id, 120)}`,
+    `device:${stringValue(value.deviceId || value.device_id || value.connector_id, 200)}`,
+    `channel:${stringValue(value.channelId || value.channel_id, 200)}`,
+    `direction:${stringValue(value.direction, 80) || "product_to_device"}`,
+    `seq:${boundedNumber(value.seq, 0, 0, Number.MAX_SAFE_INTEGER)}`,
+  ];
+  if (authorizationId && relayKeyId) {
+    parts.push(
+      `authorization:${authorizationId}`,
+      `epoch:${scalarString(value.authorizationEpoch ?? value.authorization_epoch, 80) || "1"}`,
+      `relay_key:${relayKeyId}`,
+    );
+  }
+  return parts.join("|");
+}
+
+export function bridgeRelayEnvelopeAadBase64(input = {}) {
+  return base64Utf8(bridgeRelayEnvelopeAadText(input));
+}
+
+export function bridgeRelayKeyBootstrapAadText(input = {}) {
+  const value = objectValue(input);
+  return [
+    stringValue(value.wireVersion || value.wire_version, 80) || BridgeRelayKeyBootstrapAadVersions.bridge,
+    stringValue(value.productId || value.product_id, 120),
+    stringValue(value.deviceId || value.device_id || value.connector_id, 200),
+    stringValue(value.authorizationId || value.authorization_id || value.authId || value.auth_id, 180),
+    scalarString(value.authorizationEpoch ?? value.authorization_epoch, 80) || "1",
+    stringValue(value.relayKeyId || value.relay_key_id || value.keyId || value.key_id, 180),
+  ].join("|");
+}
+
 export function createBridgeClient(options = {}) {
   const apiBase = String(options.apiBase || "").replace(/\/$/, "");
   const productId = options.productId || "panda-chat";
@@ -347,8 +389,14 @@ export function createBridgeClient(options = {}) {
     preflight: (input = {}) => preflight(request, productId, input),
     auth: {
       session: () => request("GET", "/v1/session"),
-      password: (email, password, displayName = "") =>
-        request("POST", "/v1/sessions/password", { email, password, display_name: displayName }),
+      password: (email, password, displayName = "", options = {}) =>
+        request("POST", "/v1/sessions/password", {
+          email,
+          password,
+          display_name: displayName,
+          ...(Object.hasOwn(options, "create") ? { create: options.create } : {}),
+          ...(options.mode ? { mode: options.mode } : {}),
+        }),
       guest: (displayName = "Guest") => request("POST", "/v1/sessions/guest", { display_name: displayName }),
       share: () => request("POST", "/v1/sessions/share", {}),
       join: (token) => request("POST", "/v1/sessions/join", { token }),
@@ -376,6 +424,10 @@ export function createBridgeClient(options = {}) {
           local_state: input.localState || input.local_state || {},
           policy: input.policy || {},
         }),
+      confirm: (token, input = {}) =>
+        request("POST", `/v1/connect-intents/${encodeURIComponent(token)}/confirm`, {
+          confirmed: input.confirmed !== false,
+        }),
     },
     authorization,
     products: {
@@ -391,6 +443,7 @@ export function createBridgeClient(options = {}) {
       list: (input = {}) => listRelayEnvelopes(request, productId, input),
       ack: (envelopeId, input = {}) => ackRelayEnvelope(request, productId, envelopeId, input),
       waitForResponse: (input = {}) => waitForRelayResponse(request, productId, input),
+      createCall: (input = {}) => callEncryptedRelay(request, productId, input),
     },
   };
 }
@@ -462,15 +515,40 @@ export function bridgeStateModel(payload = {}, productId = "") {
     || accounts.find((account) => account.authorization?.status === "paused")
     || accounts[0]
     || null;
+  const devices = arrayValue(data.devices).map((device) => normalizeStateDevice(device)).filter(Boolean);
+  const currentDevice = currentAccount?.current_device || devices.find((device) => device.current) || devices.find(deviceOnline) || devices[0] || null;
+  const authorization = currentAccount?.authorization || null;
 
   return {
     ...(normalizedProductId ? { product_id: normalizedProductId } : {}),
     ...(product ? { product } : {}),
+    authenticated: data.authenticated === true || Boolean(currentAccount?.account),
+    bridge_state: bridgeStateName({ authenticated: data.authenticated, accounts, devices, authorization, currentDevice, connected: currentAccount?.connected === true }),
+    session: {
+      authenticated: data.authenticated === true || Boolean(currentAccount?.account),
+      user: currentAccount?.account || null,
+    },
     install,
+    devices,
+    authorization,
+    current_device: currentDevice,
+    connected: currentAccount?.connected === true,
     accounts,
     ready: Boolean(readyAccount),
     current_account: currentAccount,
   };
+}
+
+function bridgeStateName(input = {}) {
+  if (input.authenticated === false || (!input.accounts?.length && input.authenticated !== true)) return "no_session";
+  const devices = Array.isArray(input.devices) ? input.devices : [];
+  const authorization = input.authorization || null;
+  if (!devices.length && !input.currentDevice) return "no_device";
+  if (authorization?.status === "active" && input.connected === true) return "ready";
+  if (authorization?.status === "active") return "authorized_offline";
+  if (authorization?.status === "paused") return "authorized_offline";
+  if (authorization?.status === "pending") return "authorization_pending";
+  return "not_authorized";
 }
 
 function normalizeBridgeStateAccounts(data = {}) {
@@ -558,12 +636,13 @@ function normalizeBridgeStateAuthorization(input = {}) {
     ...(stringValue(value.origin || value.source_origin || value.sourceOrigin, 300)
       ? { origin: stringValue(value.origin || value.source_origin || value.sourceOrigin, 300) }
       : {}),
+    ...(hasObjectKeys(objectValue(value.policy)) ? { policy: objectValue(value.policy) } : {}),
   };
 }
 
 function normalizeAuthorizationStatus(status) {
   const value = stringValue(status, 40);
-  if (value === "active" || value === "paused" || value === "revoked") return value;
+  if (value === "active" || value === "paused" || value === "revoked" || value === "pending") return value;
   return "";
 }
 
@@ -834,6 +913,7 @@ function normalizeStateDevice(device = {}, current = false) {
     online: deviceOnline(value),
     last_seen_at: stringValue(value.last_seen_at || value.lastSeenAt, 100) || null,
     current: value.current === true || current,
+    authorization: normalizeBridgeStateAuthorization(value.authorization),
   };
 }
 
@@ -1039,6 +1119,93 @@ async function waitForRelayResponse(request, productId, input = {}) {
   }
 }
 
+async function callEncryptedRelay(request, productId, input = {}) {
+  const value = objectValue(input);
+  const session = objectValue(value.session || value.crypto);
+  const encrypt = session.encrypt || session.encryptEnvelope || value.encrypt || value.encryptEnvelope;
+  const decrypt = session.decrypt || session.decryptEnvelope || value.decrypt || value.decryptEnvelope;
+  if (typeof encrypt !== "function") {
+    throw new BridgeError("relay_session_encrypt_required", { code: "invalid_relay_envelope", status: 400 });
+  }
+  if (typeof decrypt !== "function") {
+    throw new BridgeError("relay_session_decrypt_required", { code: "invalid_relay_envelope", status: 400 });
+  }
+
+  const seq = boundedNumber(value.seq, 1, 0, Number.MAX_SAFE_INTEGER);
+  const requestKey = stringValue(value.requestKey || value.request_key, 180) || randomRequestKey();
+  const relayKeyId = stringValue(value.relayKeyId || value.relay_key_id || value.recipientKeyId || value.recipient_key_id, 180);
+  const context = {
+    productId: stringValue(value.productId || value.product_id, 120) || productId,
+    deviceId: stringValue(value.deviceId || value.device_id || value.connector_id, 200),
+    channelId: stringValue(value.channelId || value.channel_id, 200) || requestKey,
+    direction: "product_to_device",
+    seq,
+    requestKey,
+    authorizationId: stringValue(value.authorizationId || value.authorization_id || value.authId || value.auth_id, 180),
+    authorizationEpoch: scalarString(value.authorizationEpoch ?? value.authorization_epoch, 80) || "1",
+    relayKeyId,
+  };
+  const aadText = bridgeRelayEnvelopeAadText(context);
+  const aad = stringValue(value.aad, 8192) || bridgeRelayEnvelopeAadBase64(context);
+  const payload = Object.hasOwn(value, "payload")
+    ? value.payload
+    : Object.hasOwn(value, "command")
+      ? value.command
+      : value.input;
+  const encrypted = objectValue(await encrypt.call(session, {
+    payload,
+    context,
+    aad,
+    aadText,
+    productId: context.productId,
+    deviceId: context.deviceId,
+    channelId: context.channelId,
+    direction: context.direction,
+    seq,
+    requestKey,
+  }));
+  const created = await createRelayEnvelope(request, productId, {
+    ...encrypted,
+    productId: context.productId,
+    deviceId: context.deviceId,
+    channelId: context.channelId,
+    direction: context.direction,
+    seq,
+    requestKey,
+    aad: stringValue(encrypted.aad, 8192) || aad,
+    ttlMs: value.ttlMs ?? value.ttl_ms,
+    meta: {
+      ...objectValue(value.meta),
+      ...(context.authorizationId ? { authorization_id: context.authorizationId } : {}),
+      ...(context.authorizationId ? { authorization_epoch: context.authorizationEpoch } : {}),
+      ...(context.relayKeyId ? { relay_key_id: context.relayKeyId } : {}),
+      ...objectValue(encrypted.meta),
+    },
+  });
+  const waited = await waitForRelayResponse(request, productId, {
+    deviceId: context.deviceId,
+    channelId: context.channelId,
+    afterSeq: value.afterSeq ?? value.after_seq ?? seq,
+    intervalMs: value.intervalMs ?? value.interval_ms,
+    timeoutMs: value.timeoutMs ?? value.timeout_ms,
+  });
+  const decrypted = await decrypt.call(session, waited.envelope, {
+    context,
+    requestEnvelope: firstObject(created.envelope) || null,
+    responseEnvelope: waited.envelope,
+    aadText,
+  });
+  return {
+    created,
+    request: firstObject(created.envelope) || null,
+    response: waited.envelope,
+    payload: decrypted && typeof decrypted === "object" && Object.hasOwn(decrypted, "payload")
+      ? decrypted.payload
+      : decrypted,
+    ack: waited.ack,
+  };
+}
+
 function normalizeRelayEnvelopeInput(input = {}, productId = "", direction = "product_to_device") {
   const value = objectValue(input);
   return {
@@ -1090,14 +1257,37 @@ function stringValue(value, max = 1000) {
   return typeof value === "string" ? value.trim().slice(0, max) : "";
 }
 
+function scalarString(value, max = 1000) {
+  if (typeof value === "number" && Number.isFinite(value)) return String(Math.trunc(value)).slice(0, max);
+  return stringValue(value, max);
+}
+
 function stringPassthrough(value) {
   return typeof value === "string" ? value : "";
+}
+
+function base64Utf8(value) {
+  const text = String(value ?? "");
+  if (typeof Buffer !== "undefined") return Buffer.from(text, "utf8").toString("base64");
+  if (typeof TextEncoder === "undefined" || typeof btoa !== "function") {
+    throw new Error("base64 encoder unavailable");
+  }
+  const bytes = new TextEncoder().encode(text);
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  }
+  return btoa(binary);
 }
 
 function boundedNumber(value, fallback, min, max) {
   const number = Number(value);
   if (!Number.isFinite(number)) return fallback;
   return Math.max(min, Math.min(max, Math.trunc(number)));
+}
+
+function randomRequestKey() {
+  return globalThis.crypto?.randomUUID?.() || `bridge-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
 function realtimeDeviceUrl(apiBase, deviceId, role) {

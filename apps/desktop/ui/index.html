@@ -133,6 +133,11 @@ body{
 .dsrc h3{font-size:16px;font-weight:700;letter-spacing:-.02em}
 .dsrc .org{font-family:var(--mono);font-size:11.5px;color:var(--ink-3)}
 .dacct{text-align:center;font-size:12.5px;font-weight:550;color:var(--ink-2);padding:6px 24px 2px;overflow-wrap:anywhere}
+.dsum{margin:10px 18px 0;border:1px solid var(--line-soft);border-radius:11px;background:var(--surface);box-shadow:var(--card-shadow);overflow:hidden}
+.dsum-row{display:grid;grid-template-columns:96px minmax(0,1fr);gap:9px;padding:7px 11px;font-size:10.5px;line-height:1.35}
+.dsum-row+.dsum-row{border-top:1px solid var(--line-soft)}
+.dsum-k{font-weight:650;color:var(--ink-2)}
+.dsum-v{font-family:var(--mono);color:var(--ink-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .dfoot{display:flex;gap:8px;padding:14px 18px 16px}
 .dfoot .btn{flex:1;padding:7.5px;font-size:13px;text-align:center;border-radius:8px}
 .dfoot .btn[disabled]{opacity:.45;pointer-events:none}
@@ -334,9 +339,22 @@ function modalHtml(){
   return `<div class="sheetwrap on" id="sheetwrap"><div class="sheet${d?" haz":""}">
     <div class="dsrc"><h3>${t("wants",{name:esc(ui.pending.product_name)})}</h3><div class="org">${esc(ui.pending.domain)}</div></div>
     <div class="dacct">${esc(ui.pending.account)}</div>
+    ${authSummaryHtml(ui.pending)}
     ${d?dangerHtml(d):""}
     <div class="dfoot"><button class="btn" onclick="denyIntent()">${t("deny")}</button><button class="btn ${crit?"dangerfill":"primary"}" ${ready?"":"disabled"} onclick="allowIntent()">${t("allow")}</button></div>
   </div></div>`;
+}
+function authSummaryHtml(p){
+  const pa=p.product_authorization||{};
+  const caps=(p.policy_caps||[]).join(", ")||"none";
+  const productCaps=(pa.capabilities||[]).slice(0,5).join(", ")||"none";
+  const roots=(pa.roots||[]).map(r=>r.path_display||r.id).filter(Boolean).slice(0,3).join(", ")||"none";
+  return `<div class="dsum">
+    <div class="dsum-row"><span class="dsum-k">source_origin</span><span class="dsum-v">${esc(p.source_origin||p.domain||"unknown")}</span></div>
+    <div class="dsum-row"><span class="dsum-k">policy caps</span><span class="dsum-v">${esc(caps)}</span></div>
+    <div class="dsum-row"><span class="dsum-k">product auth</span><span class="dsum-v">${esc(pa.owner||"none")} · ${esc(productCaps)}</span></div>
+    <div class="dsum-row"><span class="dsum-k">roots</span><span class="dsum-v">${esc(roots)}</span></div>
+  </div>`;
 }
 function dangerReady(d){
   if(!d)return true;
@@ -474,7 +492,8 @@ async function handleDeepLink(raw){
   const api=url.searchParams.get("api")||DEFAULT_API;
   const pre=await window.PandaBridge.call("preview_intent",{api,intent});
   const known=knownFrom(pre.product_id,pre.product_name,pre.cloud_origin);
-  ui.pending={api,intent,product_id:pre.product_id,product_name:known.name,domain:known.origin,account:pre.user_display_name||"Panda Account",account_id:pre.user_id||null,select:known.id,danger:dangerFromPreview(pre)};
+  const policy=pre.local_policy||{};
+  ui.pending={api,intent,product_id:pre.product_id,product_name:known.name,domain:known.origin,source_origin:policy.source_origin||pre.cloud_origin,policy_caps:pre.capabilities||policy.capabilities||[],product_authorization:policy.product_authorization||{},account:pre.user_display_name||"Panda Account",account_id:pre.user_id||null,select:known.id,danger:dangerFromPreview(pre)};
   render();
 }
 function knownFrom(id,name,origin){
@@ -491,7 +510,11 @@ function normalizeProductKey(value){return String(value||"").replace(/[^a-z0-9]/
 function denyIntent(){ui.pending=null;render()}
 async function allowIntent(){
   const p=ui.pending;if(!p)return;
-  try{await window.PandaBridge.call("claim_intent",{api:p.api,intent:p.intent,device_name:`Panda Bridge ${navigator.platform||"Desktop"}`});ui.pending=null;ui.selected=p.select;ui.view="product";await window.PandaBridge.call("start_worker");await refresh()}catch(e){showError(e)}
+  try{
+    const pending=await window.PandaBridge.call("claim_intent_preview",{api:p.api,intent:p.intent,device_name:`Panda Bridge ${navigator.platform||"Desktop"}`});
+    await window.PandaBridge.call("confirm_pending_intent",{pending_id:pending.pending_id,intent:p.intent});
+    ui.pending=null;ui.selected=p.select;ui.view="product";await window.PandaBridge.call("start_worker");await refresh()
+  }catch(e){showError(e)}
 }
 let popEl=null;
 function closePop(){if(popEl){popEl.remove();popEl=null}}
@@ -528,13 +551,14 @@ function installFallback(){
     if(req.command==="remove_authorization"){const p=mock.products.find(x=>x.id===req.params.product_id);if(p)p.accounts=p.accounts.filter(x=>x.id!==req.params.account_id&&x.email!==req.params.account_id);return reply(true,{ok:true})}
     if(req.command==="preview_intent"){
       const dz=new URLSearchParams(location.search).get("danger");
-      const base={product_id:"otherline",product_name:"Otherline",cloud_origin:"otherline.cc",user_display_name:"chaos.realms.ai@gmail.com",user_id:"demo_ot",capabilities:["codex.chat"],local_policy:{},local_root_state:{fs:{},shell:{}}};
+      const base={product_id:"otherline",product_name:"Otherline",cloud_origin:"otherline.cc",user_display_name:"chaos.realms.ai@gmail.com",user_id:"demo_ot",capabilities:["relay.envelope","relay.ack"],local_policy:{source_origin:"otherline.cc",capabilities:["relay.envelope","relay.ack"],product_authorization:{owner:"product-adapter",capabilities:["syllo.chat"],roots:[{id:"project",path_display:"[local]/project"}]}},local_root_state:{fs:{},shell:{}}};
       if(dz==="high"){base.capabilities=["codex.chat","fs.read","fs.write"];base.local_policy={boundaries:{fs:{allowed_roots:[{id:"project",path_display:"[local]/你的项目"}],write_roots:[{id:"export",path_display:"[local]/导出目录"}]}},danger_tiers:{high:{granted:true}}};base.local_root_state={fs:{project:{bound:true,redacted_path:"[local]/panda-bridge",kind:"read"}},shell:{}};}
       if(dz==="critical"){base.capabilities=["shell.run"];base.local_policy={boundaries:{shell:{cwd_root_id:"sandbox",cwd_root:{id:"sandbox",path_display:"[local]/沙箱工作区"},net:"deny",allow_exec_subtree:false}},danger_tiers:{critical:{granted:true}}};base.local_root_state={fs:{},shell:{}};}
       return reply(true,base);
     }
     if(req.command==="pick_local_root")return reply(true,{root_id:req.params.root_id,path_display:req.params.path_display,redacted_path:"[local]/"+(req.params.root_id||"chosen")});
-    if(req.command==="claim_intent"){mock.products[1].accounts.push({id:"team",email:"team-demo@otherline.cc",authorized:"active",connected:true,connection:"connected"});return reply(true,{ok:true})}
+    if(req.command==="claim_intent_preview"||req.command==="claim_intent_pending")return reply(true,{pending_id:"pending_demo",status:"pending"});
+    if(req.command==="confirm_pending_intent"||req.command==="claim_intent"){mock.products[1].accounts.push({id:"team",email:"team-demo@otherline.cc",authorized:"active",connected:true,connection:"connected"});return reply(true,{ok:true})}
     if(req.command==="open_web"||req.command==="start_worker")return reply(true,{ok:true});
     reply(false,null,"unknown command");
   }};

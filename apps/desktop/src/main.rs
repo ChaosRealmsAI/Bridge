@@ -71,6 +71,7 @@ struct AppState {
     realtime_connected: Arc<AtomicBool>,
     realtime_connection_keys: Arc<Mutex<HashSet<String>>>,
     events: Arc<Mutex<Vec<Value>>>,
+    pending_authorizations: Arc<Mutex<Vec<PendingIntentClaim>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -286,8 +287,10 @@ struct DesktopProductCatalogEntry {
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 enum AuthorizationState {
+    #[serde(alias = "authorized")]
     Active,
     Paused,
+    Pending,
 }
 
 impl AuthorizationState {
@@ -320,7 +323,7 @@ fn default_api_base() -> String {
     DEFAULT_API.to_string()
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 struct IntentPreview {
     product_id: String,
     product_name: String,
@@ -335,6 +338,22 @@ struct IntentPreview {
     confirmation_mode: String,
     scope_widening: bool,
     scope_diff: Value,
+}
+
+#[derive(Debug, Clone)]
+struct PendingIntentClaim {
+    api_base: String,
+    intent: String,
+    device_token: String,
+    token_expires_at: Option<String>,
+    install_id: String,
+    install_identity_bound: Option<bool>,
+    device: Device,
+    account: Option<ConnectUser>,
+    product: Option<ProductInfo>,
+    authorization: Option<AuthorizationInfo>,
+    devices: Option<Vec<CloudDevice>>,
+    preview: IntentPreview,
 }
 
 #[derive(Debug, Serialize)]
@@ -367,7 +386,7 @@ struct ConnectIntent {
     user: Option<ConnectUser>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 struct ConnectUser {
     id: Option<String>,
     display_name: Option<String>,
@@ -377,19 +396,33 @@ struct ConnectUser {
 #[derive(Debug, Deserialize)]
 struct ClaimResponse {
     device: Device,
+    #[serde(default)]
+    authorization: Option<AuthorizationInfo>,
     device_token: String,
     token_expires_at: Option<String>,
     install_identity_bound: Option<bool>,
     account: Option<ConnectUser>,
     product: Option<ProductInfo>,
     #[serde(default)]
-    authorization: Option<AuthorizationInfo>,
-    #[serde(default)]
     devices: Option<Vec<CloudDevice>>,
 }
 
 #[derive(Debug, Deserialize)]
+struct ConfirmResponse {
+    device: Device,
+    account: Option<ConnectUser>,
+    product: Option<ProductInfo>,
+    #[serde(default)]
+    authorization: Option<AuthorizationInfo>,
+    #[serde(default)]
+    devices: Option<Vec<CloudDevice>>,
+    install_identity_bound: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
 struct AuthorizationInfo {
+    #[serde(default)]
+    status: Option<AuthorizationState>,
     #[serde(default)]
     policy: Value,
     #[serde(default)]
@@ -406,7 +439,7 @@ struct RotateTokenResponse {
     install_identity_bound: Option<bool>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 struct Device {
     id: String,
     device_name: String,
@@ -597,6 +630,7 @@ fn new_app_state() -> AppState {
         realtime_connected: Arc::new(AtomicBool::new(false)),
         realtime_connection_keys: Arc::new(Mutex::new(HashSet::new())),
         events: Arc::new(Mutex::new(Vec::new())),
+        pending_authorizations: Arc::new(Mutex::new(Vec::new())),
     }
 }
 
@@ -622,6 +656,72 @@ fn state_events(state: &AppState) -> Vec<Value> {
         .lock()
         .map(|events| events.clone())
         .unwrap_or_default()
+}
+
+fn state_pending_authorizations(state: &AppState) -> Vec<Value> {
+    state
+        .pending_authorizations
+        .lock()
+        .map(|items| items.iter().map(pending_claim_public_value).collect())
+        .unwrap_or_default()
+}
+
+fn store_pending_authorization(state: &AppState, pending: PendingIntentClaim) -> Value {
+    let public = pending_claim_public_value(&pending);
+    let pending_id = public
+        .get("pending_id")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    if let Ok(mut items) = state.pending_authorizations.lock() {
+        items.retain(|item| pending_claim_id(item) != pending_id);
+        items.push(pending);
+        let len = items.len();
+        if len > 20 {
+            items.drain(0..(len - 20));
+        }
+    }
+    public
+}
+
+fn take_pending_authorization(
+    state: &AppState,
+    pending_id: Option<&str>,
+    intent: Option<&str>,
+) -> Result<PendingIntentClaim, String> {
+    let mut items = state
+        .pending_authorizations
+        .lock()
+        .map_err(|_| "pending_authorizations lock poisoned".to_string())?;
+    let index = items
+        .iter()
+        .position(|item| {
+            pending_id
+                .map(|value| pending_claim_id(item) == value)
+                .unwrap_or(false)
+                || intent.map(|value| item.intent == value).unwrap_or(false)
+        })
+        .or_else(|| {
+            if pending_id.is_none() && intent.is_none() && items.len() == 1 {
+                Some(0)
+            } else {
+                None
+            }
+        })
+        .ok_or_else(|| "pending_authorization_not_found".to_string())?;
+    Ok(items.remove(index))
+}
+
+fn pending_claim_id(pending: &PendingIntentClaim) -> String {
+    let digest = Sha256::digest(format!(
+        "{}\n{}\n{}",
+        pending.api_base, pending.intent, pending.device.id
+    ));
+    let mut out = "pending_".to_string();
+    for byte in digest.iter().take(10) {
+        out.push_str(&format!("{byte:02x}"));
+    }
+    out
 }
 
 fn next_event_seq() -> u128 {
@@ -1069,6 +1169,42 @@ fn run_verify_action(
             let _ = start_worker(state, proxy.clone());
             serde_json::to_value(claim).map_err(|error| error.to_string())?
         }
+        "claim_intent_preview" | "claim_intent_pending" => {
+            let api = string_param(params, "api").unwrap_or_else(|| DEFAULT_API.to_string());
+            let intent = required_param(params, "intent")?;
+            let device_name = string_param(params, "device_name").unwrap_or_else(device_name);
+            let pending = claim_intent_pending(&api, &intent, &device_name)?;
+            let public = store_pending_authorization(state, pending);
+            push_event(state, "authorization_preview_pending", public.clone());
+            let _ = proxy.send_event(UserEvent::UiEvent(json!({
+                "type": "event",
+                "event": "authorization_preview_pending",
+                "authorization": public
+            })));
+            public
+        }
+        "confirm_pending_intent" | "click_confirm_intent" | "click_confirm_pending_intent" => {
+            let pending_id = string_param(params, "pending_id");
+            let intent = string_param(params, "intent");
+            let pending =
+                take_pending_authorization(state, pending_id.as_deref(), intent.as_deref())?;
+            let result = match confirm_pending_intent(pending.clone()) {
+                Ok(value) => value,
+                Err(error) => {
+                    let public = store_pending_authorization(state, pending);
+                    push_event(
+                        state,
+                        "authorization_confirm_failed",
+                        json!({ "error": error.clone(), "authorization": public }),
+                    );
+                    return Err(error);
+                }
+            };
+            let _ = start_worker(state, proxy.clone());
+            let payload = serde_json::to_value(result).map_err(|error| error.to_string())?;
+            push_event(state, "authorization_confirmed", payload.clone());
+            payload
+        }
         "add_cloud_profile" => {
             serde_json::to_value(add_cloud_profile(params)?).map_err(|error| error.to_string())?
         }
@@ -1111,8 +1247,99 @@ fn verify_snapshot(state: &AppState) -> Value {
     json!({
         "ok": true,
         "status": status(state),
+        "pending_authorizations": state_pending_authorizations(state),
         "events": state_events(state)
     })
+}
+
+fn pending_claim_public_value(pending: &PendingIntentClaim) -> Value {
+    let policy = pending
+        .authorization
+        .as_ref()
+        .map(|authorization| authorization.policy.clone())
+        .filter(|policy| !policy.is_null())
+        .unwrap_or_else(|| pending.preview.local_policy.clone());
+    let source_origin = pending
+        .authorization
+        .as_ref()
+        .and_then(|authorization| authorization.source_origin.clone())
+        .or_else(|| {
+            policy
+                .get("source_origin")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+        })
+        .or_else(|| {
+            pending
+                .product
+                .as_ref()
+                .and_then(|product| product.origin.clone())
+        })
+        .unwrap_or_else(|| pending.preview.cloud_origin.clone());
+    let policy_capabilities = authorization_policy_capabilities(&policy)
+        .unwrap_or_else(|| pending.preview.capabilities.clone());
+    let product_authorization = policy
+        .get("product_authorization")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let authorization_status = pending
+        .authorization
+        .as_ref()
+        .and_then(|authorization| authorization.status)
+        .unwrap_or(AuthorizationState::Pending);
+    json!({
+        "pending_id": pending_claim_id(pending),
+        "status": "pending",
+        "api_base": pending.api_base,
+        "intent_preview": {
+            "redacted": true,
+            "sha256": sha256_short(&pending.intent)
+        },
+        "device": {
+            "id": pending.device.id,
+            "name": pending.device.device_name
+        },
+        "account": pending.account.as_ref().map(|account| json!({
+            "id": account.id,
+            "display_name": account.display_name,
+            "email": account.email
+        })),
+        "product": pending.product.as_ref().map(|product| json!({
+            "id": product.id,
+            "name": product.name,
+            "origin": product.origin,
+            "official_origin": product.official_origin,
+            "official_origins": product.official_origins,
+            "web_url": product.web_url,
+            "capabilities": product.capabilities
+        })),
+        "authorization": {
+            "status": authorization_status,
+            "source_origin": source_origin,
+            "policy": policy
+        },
+        "policy_capabilities": policy_capabilities,
+        "product_authorization": product_authorization,
+        "local_root_state": pending.preview.local_root_state,
+        "scope_widening": pending.preview.scope_widening,
+        "scope_diff": pending.preview.scope_diff,
+        "confirmation_mode": pending.preview.confirmation_mode,
+        "expires_at": pending.preview.expires_at,
+        "token": {
+            "redacted": true,
+            "expires_at": pending.token_expires_at
+        },
+        "install_identity_bound": pending.install_identity_bound
+    })
+}
+
+fn sha256_short(value: &str) -> String {
+    let digest = Sha256::digest(value.as_bytes());
+    let mut out = String::new();
+    for byte in digest.iter().take(8) {
+        out.push_str(&format!("{byte:02x}"));
+    }
+    out
 }
 
 fn desktop_screenshot(state: &AppState) -> Result<Value, String> {
@@ -1194,9 +1421,33 @@ fn write_builtin_screenshot(path: &Path, snapshot: &Value) -> Result<(), String>
         y += 30;
     }
 
-    canvas.fill_rect(34, 344, 1132, 2, [203, 213, 225]);
-    canvas.draw_text(42, 374, "LOCAL AUTHORIZATION RECORDS", [24, 32, 48], 3);
-    y = 426;
+    let pending_items = snapshot
+        .get("pending_authorizations")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let local_section_y = if let Some(pending) = pending_items.first() {
+        canvas.fill_rect(34, 308, 1132, 2, [203, 213, 225]);
+        canvas.draw_text(42, 338, "PENDING AUTHORIZATION PREVIEW", [24, 32, 48], 3);
+        y = 390;
+        for row in pending_authorization_screenshot_rows(pending) {
+            canvas.draw_text(54, y, &truncate_ascii(&row, 92), [51, 65, 85], 2);
+            y += 26;
+        }
+        558
+    } else {
+        344
+    };
+
+    canvas.fill_rect(34, local_section_y, 1132, 2, [203, 213, 225]);
+    canvas.draw_text(
+        42,
+        local_section_y + 30,
+        "LOCAL AUTHORIZATION RECORDS",
+        [24, 32, 48],
+        3,
+    );
+    y = local_section_y + 82;
     if let Some(products) = status.get("authorized_products").and_then(Value::as_array) {
         if products.is_empty() {
             canvas.draw_text(
@@ -1261,6 +1512,81 @@ fn product_display_origin(product: &Value) -> &str {
         .and_then(Value::as_str)
         .or_else(|| product.get("origin").and_then(Value::as_str))
         .unwrap_or("unknown")
+}
+
+fn pending_authorization_screenshot_rows(pending: &Value) -> Vec<String> {
+    let source_origin = pending
+        .pointer("/authorization/source_origin")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let product_id = pending
+        .pointer("/product/id")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let product_name = pending
+        .pointer("/product/name")
+        .and_then(Value::as_str)
+        .unwrap_or(product_id);
+    let status = pending
+        .pointer("/authorization/status")
+        .and_then(Value::as_str)
+        .unwrap_or("pending");
+    let capabilities = pending
+        .get("policy_capabilities")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>()
+                .join(",")
+        })
+        .unwrap_or_else(|| "none".to_string());
+    let product_authorization = pending.get("product_authorization").unwrap_or(&Value::Null);
+    let product_auth_owner = product_authorization
+        .get("owner")
+        .and_then(Value::as_str)
+        .unwrap_or("none");
+    let product_auth_capabilities = product_authorization
+        .get("capabilities")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or(0);
+    let product_auth_roots = product_authorization
+        .get("roots")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or(0);
+    let root_state = pending.get("local_root_state").unwrap_or(&Value::Null);
+    let fs_roots = root_state
+        .get("fs")
+        .and_then(Value::as_object)
+        .map(|items| items.len())
+        .unwrap_or(0);
+    let shell_roots = root_state
+        .get("shell")
+        .and_then(Value::as_object)
+        .map(|items| items.len())
+        .unwrap_or(0);
+    vec![
+        format!("STATUS: {}  CONFIRM ACTION: confirm_pending_intent", status),
+        format!("PRODUCT: {} ({})", product_name, product_id),
+        format!("SOURCE ORIGIN: {}", source_origin),
+        format!("POLICY CAPS: {}", capabilities),
+        format!(
+            "PRODUCT AUTH: OWNER {}  CAPS {}  ROOTS {}",
+            product_auth_owner, product_auth_capabilities, product_auth_roots
+        ),
+        format!(
+            "ROOT PREVIEW: FS {}  SHELL {}  SCOPE WIDENING {}",
+            fs_roots,
+            shell_roots,
+            pending
+                .get("scope_widening")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        ),
+    ]
 }
 
 fn write_png(path: &Path, width: u32, height: u32, pixels: &[u8]) -> Result<(), String> {
@@ -1602,6 +1928,42 @@ fn run_command(
             let claimed = claim_intent(&api, &intent, &device_name)?;
             let _ = start_worker(state, proxy);
             serde_json::to_value(claimed).map_err(|error| error.to_string())
+        }
+        "claim_intent_preview" | "claim_intent_pending" => {
+            let api = string_param(params, "api").unwrap_or_else(|| DEFAULT_API.to_string());
+            let intent = required_param(params, "intent")?;
+            let device_name = string_param(params, "device_name").unwrap_or_else(device_name);
+            let pending = claim_intent_pending(&api, &intent, &device_name)?;
+            let public = store_pending_authorization(state, pending);
+            push_event(state, "authorization_preview_pending", public.clone());
+            let _ = proxy.send_event(UserEvent::UiEvent(json!({
+                "type": "event",
+                "event": "authorization_preview_pending",
+                "authorization": public
+            })));
+            Ok(public)
+        }
+        "confirm_pending_intent" | "click_confirm_intent" | "click_confirm_pending_intent" => {
+            let pending_id = string_param(params, "pending_id");
+            let intent = string_param(params, "intent");
+            let pending =
+                take_pending_authorization(state, pending_id.as_deref(), intent.as_deref())?;
+            let result = match confirm_pending_intent(pending.clone()) {
+                Ok(value) => value,
+                Err(error) => {
+                    let public = store_pending_authorization(state, pending);
+                    push_event(
+                        state,
+                        "authorization_confirm_failed",
+                        json!({ "error": error.clone(), "authorization": public }),
+                    );
+                    return Err(error);
+                }
+            };
+            let _ = start_worker(state, proxy);
+            let payload = serde_json::to_value(result).map_err(|error| error.to_string())?;
+            push_event(state, "authorization_confirmed", payload.clone());
+            Ok(payload)
         }
         "toggle_authorization" => {
             let product_id = product_param(params)?;
@@ -2335,6 +2697,15 @@ fn approval_rank(value: &str) -> i32 {
 }
 
 fn claim_intent(api: &str, intent: &str, device_name: &str) -> Result<ClaimResult, String> {
+    let pending = claim_intent_pending(api, intent, device_name)?;
+    confirm_pending_intent(pending)
+}
+
+fn claim_intent_pending(
+    api: &str,
+    intent: &str,
+    device_name: &str,
+) -> Result<PendingIntentClaim, String> {
     let api_base = clean_api(api)?;
     let existing = load_credentials().ok();
     let intent_preview = preview_intent(&api_base, intent)?;
@@ -2355,7 +2726,7 @@ fn claim_intent(api: &str, intent: &str, device_name: &str) -> Result<ClaimResul
         "device_name": if device_name.trim().is_empty() { "Panda Bridge Desktop" } else { device_name.trim() },
         "app_version": VERSION,
         "capabilities": capabilities(),
-        "local_state": local_state(),
+        "local_state": local_state_for_products(&[intent_preview.product_id.clone()]),
         "install_id": install_id.clone(),
         "policy": authorization_policy
     });
@@ -2374,33 +2745,111 @@ fn claim_intent(api: &str, intent: &str, device_name: &str) -> Result<ClaimResul
             ));
         }
     }
-    let account_display = payload
+    Ok(PendingIntentClaim {
+        api_base,
+        intent: intent.to_string(),
+        device_token: payload.device_token,
+        token_expires_at: payload.token_expires_at,
+        install_id,
+        install_identity_bound: payload.install_identity_bound,
+        device: payload.device,
+        account: payload.account,
+        product: payload.product,
+        authorization: payload.authorization,
+        devices: payload.devices,
+        preview: intent_preview,
+    })
+}
+
+fn confirm_pending_intent(pending: PendingIntentClaim) -> Result<ClaimResult, String> {
+    let PendingIntentClaim {
+        api_base,
+        intent,
+        device_token,
+        token_expires_at,
+        install_id,
+        install_identity_bound,
+        device,
+        account,
+        product,
+        authorization: _,
+        devices,
+        preview: intent_preview,
+    } = pending;
+    let confirmed = confirm_claimed_intent(&api_base, &intent, &device_token, &install_id)?;
+    if confirmed.device.id != device.id {
+        return Err(format!(
+            "Bridge Cloud confirm device mismatch: expected {}, got {}",
+            device.id, confirmed.device.id
+        ));
+    }
+    if let Some(confirmed_product_id) = confirmed
+        .product
+        .as_ref()
+        .map(|product| product.id.as_str())
+    {
+        if confirmed_product_id != intent_preview.product_id {
+            return Err(format!(
+                "Bridge Cloud confirm product mismatch: expected {}, got {}",
+                intent_preview.product_id, confirmed_product_id
+            ));
+        }
+    }
+    let existing = load_credentials().ok();
+    let existing_connections = existing
+        .as_ref()
+        .map(credentials_connections)
+        .unwrap_or_default();
+    let bearer_connection = intent_preview.user_id.as_deref().and_then(|user_id| {
+        existing_connections.iter().find(|connection| {
+            connection.api_base == api_base
+                && connection.account_id.as_deref() == Some(user_id)
+                && !connection.device_token.trim().is_empty()
+        })
+    });
+    let authorization_state = confirmed
+        .authorization
+        .as_ref()
+        .and_then(|authorization| authorization.status)
+        .ok_or_else(|| "Bridge Cloud confirm response missing authorization status".to_string())?;
+    if !authorization_state.is_active() {
+        return Err(format!(
+            "Bridge Cloud confirm did not activate product authorization: {:?}",
+            authorization_state
+        ));
+    }
+    let cloud_devices = confirmed.devices.clone().or_else(|| devices.clone());
+    let account_display = confirmed
         .account
         .as_ref()
         .map(display_account)
+        .or_else(|| account.as_ref().map(display_account))
         .or_else(|| bearer_connection.and_then(|item| item.account_display.clone()));
-    let account_id = payload
+    let account_id = confirmed
         .account
         .as_ref()
         .and_then(|account| account.id.clone())
+        .or_else(|| account.as_ref().and_then(|account| account.id.clone()))
         .or_else(|| bearer_connection.and_then(|item| item.account_id.clone()))
         .or_else(|| intent_preview.user_id.clone());
-    let product_id = payload
+    let product_id = confirmed
         .product
         .as_ref()
         .map(|product| product.id.clone())
+        .or_else(|| product.as_ref().map(|product| product.id.clone()))
         .or_else(|| Some(intent_preview.product_id.clone()));
-    let product_name = payload
+    let product_name = confirmed
         .product
         .as_ref()
         .map(|product| product.name.clone())
+        .or_else(|| product.as_ref().map(|product| product.name.clone()))
         .or_else(|| Some(intent_preview.product_name.clone()));
-    let cloud_origin = payload
+    let cloud_origin = confirmed
         .authorization
         .as_ref()
         .and_then(|authorization| authorization.source_origin.clone())
         .or_else(|| {
-            payload.authorization.as_ref().and_then(|authorization| {
+            confirmed.authorization.as_ref().and_then(|authorization| {
                 authorization
                     .policy
                     .get("source_origin")
@@ -2409,23 +2858,25 @@ fn claim_intent(api: &str, intent: &str, device_name: &str) -> Result<ClaimResul
             })
         })
         .or_else(|| {
-            payload
+            confirmed
                 .product
                 .as_ref()
                 .and_then(|product| product.origin.clone())
         })
+        .or_else(|| product.as_ref().and_then(|product| product.origin.clone()))
         .or_else(|| Some(intent_preview.cloud_origin.clone()));
-    let product_capabilities = payload
+    let product_capabilities = confirmed
         .product
         .as_ref()
         .map(|product| product.capabilities.clone())
+        .or_else(|| product.as_ref().map(|product| product.capabilities.clone()))
         .unwrap_or_else(|| intent_preview.capabilities.clone());
-    let authorization_policy = payload
+    let authorization_policy = confirmed
         .authorization
         .as_ref()
         .map(|authorization| authorization.policy.clone())
         .unwrap_or(Value::Null);
-    let authorization_epoch = payload
+    let authorization_epoch = confirmed
         .authorization
         .as_ref()
         .map(|authorization| authorization.epoch)
@@ -2433,7 +2884,7 @@ fn claim_intent(api: &str, intent: &str, device_name: &str) -> Result<ClaimResul
     let grant_capabilities =
         authorization_policy_capabilities(&authorization_policy).unwrap_or(product_capabilities);
     let existing_connection = existing_connections.iter().find(|connection| {
-        connection.device_id == payload.device.id
+        connection.device_id == device.id
             || (connection.api_base == api_base
                 && account_id
                     .as_deref()
@@ -2448,24 +2899,25 @@ fn claim_intent(api: &str, intent: &str, device_name: &str) -> Result<ClaimResul
         grant_capabilities,
         authorization_policy,
         authorization_epoch,
+        authorization_state,
     );
     let connection = Credentials {
         api_base: api_base.clone(),
-        device_id: payload.device.id.clone(),
-        device_name: payload.device.device_name.clone(),
-        device_token: payload.device_token,
-        install_id: Some(install_id),
+        device_id: confirmed.device.id.clone(),
+        device_name: confirmed.device.device_name.clone(),
+        device_token,
+        install_id: Some(install_id.clone()),
         account_id: account_id.clone(),
         account_display: account_display.clone(),
         product_id: product_id.clone(),
         product_name: product_name.clone(),
         cloud_origin: cloud_origin.clone(),
         authorized_products: authorized_products.clone(),
-        device_token_expires_at: payload.token_expires_at,
+        device_token_expires_at: token_expires_at,
         device_token_rotated_at_unix: Some(unix_seconds()),
-        install_identity_bound: payload.install_identity_bound,
-        device_online: cloud_device_online(&payload.devices, &payload.device.id),
-        device_last_seen_at: cloud_device_last_seen_at(&payload.devices, &payload.device.id),
+        install_identity_bound: confirmed.install_identity_bound.or(install_identity_bound),
+        device_online: cloud_device_online(&cloud_devices, &confirmed.device.id),
+        device_last_seen_at: cloud_device_last_seen_at(&cloud_devices, &confirmed.device.id),
         connections: Vec::new(),
         claimed_at: now_string(),
     };
@@ -2475,7 +2927,7 @@ fn claim_intent(api: &str, intent: &str, device_name: &str) -> Result<ClaimResul
         &mut connections,
         &api_base,
         account_id.as_deref(),
-        payload.devices.as_deref(),
+        cloud_devices.as_deref(),
     );
     let credentials =
         credentials_from_connections(connections, Some(&connection), existing.as_ref());
@@ -2483,8 +2935,8 @@ fn claim_intent(api: &str, intent: &str, device_name: &str) -> Result<ClaimResul
     save_credentials(&credentials)?;
     write_connector_state(&credentials)?;
     Ok(ClaimResult {
-        device_id: payload.device.id,
-        device_name: payload.device.device_name,
+        device_id: confirmed.device.id,
+        device_name: confirmed.device.device_name,
         account_id,
         account_display,
         product_id,
@@ -2492,6 +2944,25 @@ fn claim_intent(api: &str, intent: &str, device_name: &str) -> Result<ClaimResul
         cloud_origin,
         authorized_products: public_product_grants(&authorized_products),
     })
+}
+
+fn confirm_claimed_intent(
+    api_base: &str,
+    intent: &str,
+    device_token: &str,
+    install_id: &str,
+) -> Result<ConfirmResponse, String> {
+    let url = format!(
+        "{}/v1/connect-intents/{}/confirm",
+        api_base,
+        urlencoding::encode(intent)
+    );
+    post_json_with_install(
+        &url,
+        &json!({ "confirmed": true }),
+        Some(device_token),
+        Some(install_id),
+    )
 }
 
 fn toggle_authorization(product_id: &str, account: &str) -> Result<Value, String> {
@@ -3598,6 +4069,7 @@ fn merge_authorized_products(
     capabilities: Vec<String>,
     policy: Value,
     epoch: u64,
+    authorization: AuthorizationState,
 ) -> Vec<ProductGrant> {
     let mut products = existing.map(connection_products).unwrap_or_default();
     if let Some(id) = product_id {
@@ -3606,7 +4078,7 @@ fn merge_authorized_products(
             id: id.clone(),
             name,
             origin: cloud_origin,
-            authorization: AuthorizationState::Active,
+            authorization,
             capabilities,
             policy,
             epoch: epoch.max(1),
@@ -3773,10 +4245,14 @@ fn apply_cloud_devices_to_connections(
 
 fn heartbeat(credentials: &Credentials) -> Result<HeartbeatResponse, String> {
     let install_id = credentials_install_id(Some(credentials));
+    let product_ids = active_connection_products(credentials)
+        .into_iter()
+        .map(|product| product.id)
+        .collect::<Vec<_>>();
     let body = json!({
         "app_version": VERSION,
         "capabilities": capabilities(),
-        "local_state": local_state(),
+        "local_state": local_state_for_products(&product_ids),
         "install_id": install_id
     });
     let url = format!("{}/v1/connectors/heartbeat", credentials.api_base);
@@ -3851,10 +4327,14 @@ fn prepare_connections_for_worker(
 }
 
 fn rotate_device_token(credentials: &Credentials) -> Result<Credentials, String> {
+    let product_ids = active_connection_products(credentials)
+        .into_iter()
+        .map(|product| product.id)
+        .collect::<Vec<_>>();
     let body = json!({
         "app_version": VERSION,
         "capabilities": capabilities(),
-        "local_state": local_state(),
+        "local_state": local_state_for_products(&product_ids),
         "install_id": credentials.install_id.clone().unwrap_or_default()
     });
     let url = format!("{}/v1/connectors/token/rotate", credentials.api_base);
@@ -4339,9 +4819,10 @@ fn poll_all_connections(credentials: &Credentials) -> Result<Value, String> {
     let mut errors = Vec::new();
     let mut synced_connections = credentials_connections(credentials);
     for connection in connections.iter() {
-        match heartbeat(connection)
-            .and_then(|heartbeat| poll_once(connection).map(|count| (heartbeat, count)))
-        {
+        match heartbeat(connection).and_then(|heartbeat| {
+            let _ = sync_relay_key_bootstrap(connection);
+            poll_once(connection).map(|count| (heartbeat, count))
+        }) {
             Ok((heartbeat, count)) => {
                 if heartbeat.devices.is_some() {
                     apply_cloud_devices_to_connections(
@@ -4409,6 +4890,53 @@ fn poll_once(credentials: &Credentials) -> Result<usize, String> {
         route_and_ack_relay_envelope(credentials, &envelope)?;
     }
     Ok(count)
+}
+
+fn sync_relay_key_bootstrap(credentials: &Credentials) -> Result<usize, String> {
+    let mut synced = 0_usize;
+    for product in active_connection_products(credentials) {
+        let bootstrap_endpoint =
+            match adapter_url_for_product_path(&product.id, "/v1/relay-key/bootstrap") {
+                Some(url) => url,
+                None => continue,
+            };
+        let cloud_url = format!(
+            "{}/v1/connectors/products/{}/relay-key-bootstrap",
+            credentials.api_base,
+            urlencoding::encode(&product.id),
+        );
+        let payload: Value = get_json_with_install(
+            &cloud_url,
+            Some(&credentials.device_token),
+            credentials.install_id.as_deref(),
+        )?;
+        let bootstrap = payload
+            .get("relay_key_bootstrap")
+            .cloned()
+            .unwrap_or(Value::Null);
+        if bootstrap
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            != "ready"
+        {
+            continue;
+        }
+        let response = Client::new()
+            .post(&bootstrap_endpoint)
+            .json(&bootstrap)
+            .send()
+            .map_err(|error| format!("adapter_bootstrap_failed: {error}"))?;
+        let status = response.status();
+        if !status.is_success() {
+            return Err(format!(
+                "adapter_bootstrap_failed: status={}",
+                status.as_u16()
+            ));
+        }
+        synced += 1;
+    }
+    Ok(synced)
 }
 
 fn connection_authorizes_product_active(credentials: &Credentials, product_id: &str) -> bool {
@@ -4515,6 +5043,32 @@ fn adapter_endpoint_for_product(product_id: &str) -> Option<String> {
         .or_else(|| env::var("PANDA_BRIDGE_ADAPTER_URL").ok())
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+}
+
+fn adapter_url_for_product_path(product_id: &str, path: &str) -> Option<String> {
+    let endpoint = adapter_endpoint_for_product(product_id)?;
+    let mut parsed = url::Url::parse(&endpoint).ok()?;
+    parsed.set_path(path);
+    parsed.set_query(None);
+    Some(parsed.to_string())
+}
+
+fn adapter_relay_key_exchange_for_product(product_id: &str) -> Option<Value> {
+    let endpoint = adapter_url_for_product_path(product_id, "/v1/relay-key/public")?;
+    let response = Client::new().get(&endpoint).send().ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    let payload: Value = response.json().ok()?;
+    let exchange = payload
+        .get("relay_key_exchange")
+        .cloned()
+        .unwrap_or_else(|| payload.clone());
+    if exchange.get("status").and_then(Value::as_str).unwrap_or("") == "available" {
+        Some(exchange)
+    } else {
+        None
+    }
 }
 
 fn refreshed_connection(credentials: &Credentials) -> Credentials {
@@ -5793,14 +6347,83 @@ fn capabilities() -> Value {
 }
 
 fn local_state() -> Value {
-    json!({
+    local_state_for_products(&configured_adapter_product_ids())
+}
+
+fn local_state_for_products(product_ids: &[String]) -> Value {
+    let products = adapter_state_for_products(product_ids);
+    let adapter_configured = adapter_endpoint_for_product("").is_some()
+        || products.values().any(|product| {
+            product
+                .get("configured")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        });
+    let mut state = json!({
         "platform": env::consts::OS,
         "relay": { "envelopes": true, "ack": true },
         "adapter_router": {
             "mode": "external_http",
-            "configured": env::var("PANDA_BRIDGE_ADAPTER_URL").ok().map(|value| !value.trim().is_empty()).unwrap_or(false)
+            "configured": adapter_configured
         }
-    })
+    });
+    if !products.is_empty() {
+        state["adapter_router"]["products"] = Value::Object(products.clone());
+    }
+    if products.len() == 1 {
+        if let Some(exchange) = products
+            .values()
+            .next()
+            .and_then(|product| product.get("relay_key_exchange").cloned())
+        {
+            state["relay_key_exchange"] = exchange;
+        }
+    }
+    state
+}
+
+fn adapter_state_for_products(product_ids: &[String]) -> Map<String, Value> {
+    let mut products = Map::new();
+    for product_id in product_ids
+        .iter()
+        .map(|item| item.trim())
+        .filter(|item| !item.is_empty())
+    {
+        if products.contains_key(product_id) {
+            continue;
+        }
+        let configured = adapter_endpoint_for_product(product_id).is_some();
+        let mut product = json!({ "configured": configured });
+        if let Some(exchange) = adapter_relay_key_exchange_for_product(product_id) {
+            product["relay_key_exchange"] = exchange;
+        }
+        products.insert(product_id.to_string(), product);
+    }
+    products
+}
+
+fn configured_adapter_product_ids() -> Vec<String> {
+    env::vars()
+        .filter_map(|(key, value)| {
+            if value.trim().is_empty()
+                || !key.starts_with("PANDA_BRIDGE_ADAPTER_")
+                || !key.ends_with("_URL")
+                || key == "PANDA_BRIDGE_ADAPTER_URL"
+            {
+                return None;
+            }
+            let product = key
+                .trim_start_matches("PANDA_BRIDGE_ADAPTER_")
+                .trim_end_matches("_URL")
+                .to_ascii_lowercase()
+                .replace('_', "-");
+            if product.is_empty() {
+                None
+            } else {
+                Some(product)
+            }
+        })
+        .collect()
 }
 
 fn low_tier_capabilities() -> Vec<String> {
@@ -5809,6 +6432,7 @@ fn low_tier_capabilities() -> Vec<String> {
         .iter()
         .flat_map(|declaration| declaration.kinds.iter())
         .filter(|kind| kind.danger == ConnectorDanger::Low)
+        .filter(|kind| !kind.kind.starts_with("syllo."))
         .map(|kind| kind.kind.clone())
         .collect()
 }
@@ -6470,7 +7094,7 @@ fn validate_bridge_product(product: &ProductInfo) -> Result<(), String> {
             )
         })?;
     }
-    let allowed_capabilities = ["relay.envelope", "relay.ack"];
+    let allowed_capabilities = allowed_product_capabilities(&product.id);
     if product.capabilities.is_empty()
         || product
             .capabilities
@@ -6483,6 +7107,11 @@ fn validate_bridge_product(product: &ProductInfo) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+fn allowed_product_capabilities(product_id: &str) -> Vec<&'static str> {
+    let _ = product_id;
+    vec!["relay.envelope", "relay.ack"]
 }
 
 fn valid_product_id(value: &str) -> bool {
@@ -6513,12 +7142,11 @@ fn clean_product_origin(value: &str) -> Option<String> {
 }
 
 fn clean_product_web_url(value: &str) -> Option<String> {
-    let trimmed = value.trim().trim_end_matches('/');
+    let trimmed = value.trim();
     let parsed = url::Url::parse(trimmed).ok()?;
     if !matches!(parsed.scheme(), "https" | "http")
         || !parsed.username().is_empty()
         || parsed.password().is_some()
-        || parsed.query().is_some()
         || parsed.fragment().is_some()
     {
         return None;
@@ -8160,6 +8788,50 @@ mod tests {
     }
 
     #[test]
+    fn diagnostics_product_accepts_authorize_web_url_query() {
+        let product = ProductInfo {
+            id: "panda-syllo".to_string(),
+            name: "Panda Syllo".to_string(),
+            origin: Some("https://syllo.test.example".to_string()),
+            official_origin: None,
+            official_origins: Vec::new(),
+            web_url: Some(
+                "https://syllo.test.example/authorize?source=bridge&product=panda-syllo"
+                    .to_string(),
+            ),
+            capabilities: vec!["relay.envelope".to_string(), "relay.ack".to_string()],
+        };
+
+        validate_bridge_product(&product).unwrap();
+        let entry = product_entry_from_info(&product, "https://api.bridge.test.example");
+
+        assert_eq!(
+            entry.web_url.as_deref(),
+            Some("https://syllo.test.example/authorize?source=bridge&product=panda-syllo"),
+        );
+    }
+
+    #[test]
+    fn diagnostics_product_rejects_unknown_capability() {
+        let product = ProductInfo {
+            id: "panda-syllo".to_string(),
+            name: "Panda Syllo".to_string(),
+            origin: Some("http://local.test".to_string()),
+            official_origin: None,
+            official_origins: Vec::new(),
+            web_url: None,
+            capabilities: vec![
+                "relay.envelope".to_string(),
+                "relay.ack".to_string(),
+                "shell.run".to_string(),
+            ],
+        };
+
+        let error = validate_bridge_product(&product).unwrap_err();
+        assert!(error.contains("unsupported product capabilities"));
+    }
+
+    #[test]
     fn official_cloud_profile_cannot_be_removed() {
         let _guard = ENV_LOCK.lock().unwrap();
         reset_credentials_env();
@@ -8225,6 +8897,95 @@ mod tests {
                 }
             }
         })
+    }
+
+    fn test_pending_intent_claim() -> PendingIntentClaim {
+        let policy = json!({
+            "version": "AUTH-SCOPE-v2",
+            "product_id": "panda-syllo",
+            "source_origin": "https://syllo.test.example",
+            "capabilities": ["relay.envelope", "relay.ack"],
+            "product_authorization": {
+                "owner": "syllo-product-adapter",
+                "capabilities": ["syllo.chat"],
+                "roots": [{ "id": "project", "path_display": "[local]/project" }]
+            }
+        });
+        PendingIntentClaim {
+            api_base: "http://local.test".to_string(),
+            intent: "intent_secret_token".to_string(),
+            device_token: "pbd_secret_device_token".to_string(),
+            token_expires_at: Some("2099-01-01T00:00:00Z".to_string()),
+            install_id: "install_1".to_string(),
+            install_identity_bound: Some(true),
+            device: Device {
+                id: "dev_1".to_string(),
+                device_name: "Device".to_string(),
+            },
+            account: Some(ConnectUser {
+                id: Some("user_1".to_string()),
+                display_name: None,
+                email: Some("user@example.test".to_string()),
+            }),
+            product: Some(ProductInfo {
+                id: "panda-syllo".to_string(),
+                name: "Panda Syllo".to_string(),
+                origin: Some("https://syllo.test.example".to_string()),
+                official_origin: None,
+                official_origins: Vec::new(),
+                web_url: Some("https://syllo.test.example/authorize".to_string()),
+                capabilities: vec!["relay.envelope".to_string(), "relay.ack".to_string()],
+            }),
+            authorization: Some(AuthorizationInfo {
+                status: Some(AuthorizationState::Pending),
+                policy: policy.clone(),
+                source_origin: Some("https://syllo.test.example".to_string()),
+                epoch: 1,
+            }),
+            devices: None,
+            preview: IntentPreview {
+                product_id: "panda-syllo".to_string(),
+                product_name: "Panda Syllo".to_string(),
+                cloud_origin: "https://syllo.test.example".to_string(),
+                capabilities: vec!["relay.envelope".to_string(), "relay.ack".to_string()],
+                local_policy: policy,
+                local_root_state: json!({ "fs": {}, "shell": {} }),
+                device_name: "Panda Bridge Desktop".to_string(),
+                user_id: Some("user_1".to_string()),
+                user_display_name: "user@example.test".to_string(),
+                expires_at: "2099-01-01T00:00:00Z".to_string(),
+                confirmation_mode: "full".to_string(),
+                scope_widening: true,
+                scope_diff: json!({ "widening": true }),
+            },
+        }
+    }
+
+    #[test]
+    fn pending_claim_public_value_exposes_preview_without_device_token() {
+        let pending = test_pending_intent_claim();
+        let public = pending_claim_public_value(&pending);
+        assert_eq!(public["status"], "pending");
+        assert_eq!(
+            public["policy_capabilities"],
+            json!(["relay.envelope", "relay.ack"])
+        );
+        assert_eq!(
+            public["product_authorization"]["owner"],
+            "syllo-product-adapter"
+        );
+        assert_eq!(
+            public["product_authorization"]["capabilities"],
+            json!(["syllo.chat"])
+        );
+        assert_eq!(
+            public["authorization"]["source_origin"],
+            "https://syllo.test.example"
+        );
+        let text = serde_json::to_string(&public).unwrap();
+        assert!(!text.contains("pbd_secret_device_token"));
+        assert!(!text.contains("intent_secret_token"));
+        assert!(text.contains("product_authorization"));
     }
 
     fn start_one_shot_json_server(payload: Value) -> (String, std::thread::JoinHandle<()>) {
@@ -9172,7 +9933,7 @@ mod tests {
         assert_eq!(preview["request_source"], "desktop_fallback_low_tier");
         assert_eq!(
             preview["capabilities"],
-            json!(["codex.chat", "codex.run", "codex.rpc", "syllo.sessions"])
+            json!(["codex.chat", "codex.run", "codex.rpc"])
         );
         assert_eq!(
             preview["capabilities"]
@@ -9404,7 +10165,7 @@ mod tests {
         assert_eq!(policy["request_source"], "desktop_fallback_low_tier");
         assert_eq!(
             policy["capabilities"],
-            json!(["codex.chat", "codex.run", "codex.rpc", "syllo.sessions"])
+            json!(["codex.chat", "codex.run", "codex.rpc"])
         );
         assert_eq!(
             policy["workspace_roots"],
@@ -9415,6 +10176,23 @@ mod tests {
         assert_eq!(policy["allow_approval_never"], false);
         assert_eq!(policy["allow_developer_instructions"], false);
         assert_eq!(policy["danger_tiers"]["critical"]["granted"], false);
+    }
+
+    #[test]
+    fn merge_authorized_products_preserves_pending_until_confirm() {
+        let products = merge_authorized_products(
+            None,
+            Some("panda-chat".to_string()),
+            Some("Panda Chat".to_string()),
+            Some("http://local.test".to_string()),
+            vec!["relay.envelope".to_string()],
+            json!({ "capabilities": ["relay.envelope"] }),
+            1,
+            AuthorizationState::Pending,
+        );
+        assert_eq!(products.len(), 1);
+        assert_eq!(products[0].authorization, AuthorizationState::Pending);
+        assert!(!products[0].authorization.is_active());
     }
 
     #[test]
