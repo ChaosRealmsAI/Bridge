@@ -138,7 +138,9 @@ const desktopMain = readFileSync(new URL("../../apps/desktop/src/main.rs", impor
 assert.ok(desktopMain.includes("/v1/connectors/relay/envelopes"), "Desktop must poll relay envelope endpoint");
 assert.ok(desktopMain.includes("route_relay_envelope_to_adapter"), "Desktop must route relay envelopes to AdapterRouter");
 assert.ok(desktopMain.includes("PANDA_BRIDGE_ADAPTER_URL"), "Desktop must use product adapter endpoint env");
-assert.ok(desktopMain.includes("Ok(ConnectorRegistry::new())"), "non-test execution registry must be empty");
+assert.equal(desktopMain.includes("ConnectorRegistry"), false, "Desktop core must not retain a vertical connector registry");
+assert.equal(desktopMain.includes("execution_registry"), false, "Desktop core must not retain a vertical execution registry");
+assert.equal(/\bmod connector\b/.test(desktopMain), false, "Desktop core must not retain the vertical connector module");
 assert.ok(desktopMain.includes("claim_intent_pending"), "Desktop must expose claim without immediate confirm for authorization preview");
 assert.ok(desktopMain.includes("confirm_pending_intent"), "Desktop must expose explicit pending authorization confirm");
 assert.ok(desktopMain.includes("pending_authorizations"), "Desktop verify snapshot must expose pending authorization previews");

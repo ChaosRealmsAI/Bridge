@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 
 const main = readFileSync(new URL("../../apps/desktop/src/main.rs", import.meta.url), "utf8");
 
@@ -24,15 +24,23 @@ assert.equal(adapterRouter.includes("codex."), false, "AdapterRouter must not pa
 assert.ok(adapterRouter.includes("response_envelope"), "AdapterRouter must forward opaque adapter response envelopes");
 assert.ok(main.includes("fn post_connector_relay_envelope("), "Desktop must post adapter response envelopes through connector relay");
 
-const syllo = readFileSync(new URL("../../apps/desktop/src/connector/syllo.rs", import.meta.url), "utf8");
-assert.ok(syllo.includes("Legacy Syllo vertical adapter"));
-const registryStart = main.indexOf("fn execution_registry(");
-const registryEnd = main.indexOf("fn declaration_registry", registryStart);
-const registry = main.slice(registryStart, registryEnd);
-assert.ok(registry.includes("#[cfg(test)]"));
-assert.ok(registry.includes("SylloConnector::new"));
-assert.ok(registry.includes("#[cfg(not(test))]"));
-assert.ok(registry.includes("Ok(ConnectorRegistry::new())"));
+// The legacy in-process Syllo (and all other) vertical connectors were removed
+// from Bridge Desktop core entirely. Syllo runs only as an external Product
+// Adapter reached over the generic relay, so none of the connector/registry
+// machinery may come back.
+assert.equal(
+  existsSync(new URL("../../apps/desktop/src/connector/syllo.rs", import.meta.url)),
+  false,
+  "Desktop core must not retain the Syllo vertical connector",
+);
+assert.equal(
+  existsSync(new URL("../../apps/desktop/src/connector/codex.rs", import.meta.url)),
+  false,
+  "Desktop core must not retain the Codex vertical connector",
+);
+for (const banned of ["SylloConnector", "CodexConnector", "execution_registry", "declaration_registry", "ConnectorRegistry"]) {
+  assert.equal(main.includes(banned), false, `Desktop core must not reference removed vertical symbol: ${banned}`);
+}
 
 const localStateStart = main.indexOf("fn local_state() -> Value");
 const localStateEnd = main.indexOf("fn low_tier_capabilities", localStateStart);
