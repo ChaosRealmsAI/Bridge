@@ -6010,7 +6010,17 @@ fn delete_credentials() -> Result<(), String> {
 }
 
 fn keychain_enabled() -> bool {
-    !env_flag("PANDA_BRIDGE_SKIP_KEYCHAIN")
+    if env_flag("PANDA_BRIDGE_SKIP_KEYCHAIN") {
+        return false;
+    }
+    // Dev/debug builds are unsigned (or ad-hoc signed), so the macOS keychain would
+    // re-prompt for the login password on every launch. Default debug builds to the
+    // file-backed credential store; release builds (signed + notarized for
+    // distribution) use the keychain. Either default can be overridden by env.
+    if cfg!(debug_assertions) {
+        return env_flag("PANDA_BRIDGE_USE_KEYCHAIN");
+    }
+    true
 }
 
 fn keychain_entry() -> Result<Entry, String> {
@@ -6581,12 +6591,22 @@ mod tests {
     }
 
     #[test]
-    fn keychain_is_enabled_by_default_and_skip_disables_it() {
+    fn keychain_default_depends_on_build_and_env_overrides() {
         let _guard = ENV_LOCK.lock().unwrap();
         reset_credentials_env();
-        assert!(keychain_enabled(), "keychain should be on by default");
+        env::remove_var("PANDA_BRIDGE_USE_KEYCHAIN");
+        // Default: dev/debug builds use the file store (no per-launch keychain prompt);
+        // release builds (signed + notarized) use the keychain.
+        assert_eq!(
+            keychain_enabled(),
+            !cfg!(debug_assertions),
+            "default keychain state should follow build profile"
+        );
+        env::set_var("PANDA_BRIDGE_USE_KEYCHAIN", "1");
+        assert!(keychain_enabled(), "USE_KEYCHAIN should opt into the keychain");
         env::set_var("PANDA_BRIDGE_SKIP_KEYCHAIN", "1");
-        assert!(!keychain_enabled(), "skip env should disable keychain");
+        assert!(!keychain_enabled(), "SKIP_KEYCHAIN should take precedence");
+        env::remove_var("PANDA_BRIDGE_USE_KEYCHAIN");
         reset_credentials_env();
     }
 
