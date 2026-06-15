@@ -3486,7 +3486,22 @@ fn declared_local_root_for_policy(
 
 fn declared_fs_roots(policy: &Value, snake_key: &str, camel_key: &str) -> Vec<DeclaredLocalRoot> {
     let fs = policy.pointer("/boundaries/fs").unwrap_or(&Value::Null);
-    declared_fs_roots_from_raw(fs, snake_key, camel_key)
+    let mut roots = declared_fs_roots_from_raw(fs, snake_key, camel_key);
+    roots.extend(declared_product_authorization_roots(policy));
+    roots
+}
+
+fn declared_product_authorization_roots(policy: &Value) -> Vec<DeclaredLocalRoot> {
+    let product_authorization = policy
+        .get("product_authorization")
+        .or_else(|| policy.get("productAuthorization"))
+        .unwrap_or(&Value::Null);
+    let roots = product_authorization
+        .get("roots")
+        .or_else(|| product_authorization.get("workspace_roots"))
+        .or_else(|| product_authorization.get("workspaceRoots"))
+        .unwrap_or(&Value::Null);
+    declared_root_list_from_raw(roots)
 }
 
 fn declared_fs_roots_from_raw(
@@ -3497,6 +3512,30 @@ fn declared_fs_roots_from_raw(
     raw.get(snake_key)
         .or_else(|| raw.get(camel_key))
         .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, item)| {
+            let id = item
+                .get("id")
+                .and_then(Value::as_str)
+                .map(trim_nfc_no_trailing_slash)
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| format!("root-{}", index + 1));
+            let path_display = item
+                .get("path_display")
+                .or_else(|| item.get("pathDisplay"))
+                .and_then(Value::as_str)
+                .map(trim_nfc_no_trailing_slash)
+                .filter(|value| !value.is_empty())?;
+            Some(DeclaredLocalRoot { id, path_display })
+        })
+        .collect()
+}
+
+fn declared_root_list_from_raw(raw: &Value) -> Vec<DeclaredLocalRoot> {
+    raw.as_array()
         .cloned()
         .unwrap_or_default()
         .into_iter()
@@ -4799,9 +4838,10 @@ fn sync_relay_key_bootstrap(credentials: &Credentials) -> Result<usize, String> 
         {
             continue;
         }
+        let adapter_payload = adapter_relay_key_bootstrap_payload(&bootstrap, &product, credentials);
         let response = Client::new()
             .post(&bootstrap_endpoint)
-            .json(&bootstrap)
+            .json(&adapter_payload)
             .send()
             .map_err(|error| format!("adapter_bootstrap_failed: {error}"))?;
         let status = response.status();
@@ -4814,6 +4854,120 @@ fn sync_relay_key_bootstrap(credentials: &Credentials) -> Result<usize, String> 
         synced += 1;
     }
     Ok(synced)
+}
+
+fn adapter_relay_key_bootstrap_payload(
+    bootstrap: &Value,
+    product: &ProductGrant,
+    credentials: &Credentials,
+) -> Value {
+    let mut payload = bootstrap.clone();
+    if let Some(payload_object) = payload.as_object_mut() {
+        payload_object.insert(
+            "authorization_mirror".to_string(),
+            adapter_authorization_mirror(product, credentials, bootstrap),
+        );
+    }
+    payload
+}
+
+fn adapter_authorization_mirror(
+    product: &ProductGrant,
+    credentials: &Credentials,
+    bootstrap: &Value,
+) -> Value {
+    let policy = if product.policy.is_null() {
+        json!({})
+    } else {
+        product.policy.clone()
+    };
+    let policy = policy_with_local_root_bindings(policy, product);
+    let product_authorization = policy
+        .get("product_authorization")
+        .cloned()
+        .or_else(|| policy.get("productAuthorization").cloned())
+        .unwrap_or(Value::Null);
+    let source_origin = product
+        .origin
+        .clone()
+        .or_else(|| credentials.cloud_origin.clone())
+        .unwrap_or_default();
+    let authorization_context = json!({
+        "product_id": bootstrap
+            .get("product_id")
+            .and_then(Value::as_str)
+            .unwrap_or(product.id.as_str()),
+        "device_id": bootstrap
+            .get("device_id")
+            .and_then(Value::as_str)
+            .unwrap_or(credentials.device_id.as_str()),
+        "authorization_id": bootstrap
+            .get("authorization_id")
+            .and_then(Value::as_str)
+            .unwrap_or(""),
+        "authorization_epoch": bootstrap
+            .get("authorization_epoch")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| product.epoch.to_string()),
+        "relay_key_id": bootstrap
+            .get("key_id")
+            .and_then(Value::as_str)
+            .unwrap_or(""),
+    });
+    json!({
+        "status": product.authorization,
+        "source_origin": source_origin,
+        "product_id": product.id,
+        "policy": policy,
+        "product_authorization": product_authorization,
+        "authorization_context": authorization_context,
+        "authorization_epoch": product.epoch,
+    })
+}
+
+fn policy_with_local_root_bindings(mut policy: Value, product: &ProductGrant) -> Value {
+    if let Some(roots) = policy.pointer_mut("/product_authorization/roots") {
+        apply_local_root_bindings_to_roots(roots, product);
+    }
+    if let Some(roots) = policy.pointer_mut("/productAuthorization/roots") {
+        apply_local_root_bindings_to_roots(roots, product);
+    }
+    if let Some(roots) = policy.get_mut("workspace_roots") {
+        apply_local_root_bindings_to_roots(roots, product);
+    }
+    if let Some(roots) = policy.get_mut("roots") {
+        apply_local_root_bindings_to_roots(roots, product);
+    }
+    policy
+}
+
+fn apply_local_root_bindings_to_roots(roots: &mut Value, product: &ProductGrant) {
+    let Some(items) = roots.as_array_mut() else {
+        return;
+    };
+    for item in items {
+        let Some(object) = item.as_object_mut() else {
+            continue;
+        };
+        let root_id = object
+            .get("id")
+            .and_then(Value::as_str)
+            .map(trim_nfc_keep_slash_local)
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "default".to_string());
+        let binding = product
+            .local_roots
+            .fs_roots
+            .get(&root_id)
+            .or_else(|| product.local_roots.shell_cwd.get(&root_id));
+        let Some(binding) = binding else {
+            continue;
+        };
+        object.insert("path".to_string(), json!(binding.real_path));
+        object.insert("real_path".to_string(), json!(binding.real_path));
+        object.insert("path_display".to_string(), json!(binding.path_display));
+    }
 }
 
 fn connection_authorizes_product_active(credentials: &Credentials, product_id: &str) -> bool {
@@ -6563,6 +6717,65 @@ mod tests {
         env::remove_var("PANDA_BRIDGE_USE_KEYCHAIN");
         env::remove_var("PANDA_BRIDGE_SKIP_KEYCHAIN");
         env::remove_var("PANDA_BRIDGE_SKIP_REMOTE_REVOKE");
+    }
+
+    #[test]
+    fn adapter_bootstrap_payload_includes_product_authorization_mirror() {
+        let credentials = test_credentials(vec!["relay.envelope", "relay.ack"]);
+        let mut product = credentials.authorized_products[0].clone();
+        product.policy["product_authorization"] = json!({
+            "owner": "panda-chat",
+            "capabilities": ["acme.chat"],
+            "roots": [{ "id": "default", "path_display": "[local]/default" }]
+        });
+        product.local_roots.fs_roots.insert(
+            "default".to_string(),
+            LocalRootBinding {
+                real_path: "/tmp/acme-chat".to_string(),
+                path_display: "[local]/default".to_string(),
+                bound_at: now_string(),
+                bound_device_id: credentials.device_id.clone(),
+            },
+        );
+        let bootstrap = json!({
+            "status": "ready",
+            "product_id": product.id,
+            "device_id": credentials.device_id,
+            "authorization_id": "auth_1",
+            "authorization_epoch": "7",
+            "key_id": "rkx_1",
+            "wrapped_key": {
+                "algorithm": "ECDH-P256+A256GCM"
+            }
+        });
+
+        let payload = adapter_relay_key_bootstrap_payload(&bootstrap, &product, &credentials);
+        let mirror = payload
+            .get("authorization_mirror")
+            .expect("authorization mirror missing");
+
+        assert_eq!(mirror["status"], json!("active"));
+        assert_eq!(mirror["product_id"], json!("panda-chat"));
+        assert_eq!(
+            mirror["authorization_context"],
+            json!({
+                "product_id": "panda-chat",
+                "device_id": "dev_1",
+                "authorization_id": "auth_1",
+                "authorization_epoch": "7",
+                "relay_key_id": "rkx_1"
+            })
+        );
+        assert_eq!(
+            mirror["product_authorization"]["capabilities"],
+            json!(["acme.chat"])
+        );
+        assert_eq!(
+            mirror["product_authorization"]["roots"][0]["path"],
+            json!("/tmp/acme-chat")
+        );
+        let text = serde_json::to_string(&payload).unwrap();
+        assert!(!text.contains("pbd_test"));
     }
 
     fn restore_env_var(key: &str, value: Option<std::ffi::OsString>) {
