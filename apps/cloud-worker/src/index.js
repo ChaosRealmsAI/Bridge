@@ -1,19 +1,11 @@
 import {
   BRIDGE_PROTOCOL_VERSION,
-  EVENT_TYPES,
   RELAY_ENVELOPE_VERSION,
   bridgeEvent,
   publicRelayEnvelope,
   relayEnvelopeRecord,
   validateRelayEnvelope,
 } from "@panda-bridge/protocol";
-import {
-  authorizationEpoch,
-  capTokenMode,
-  issueCapToken,
-  parseCompactJws,
-  verifyCapTokenJws,
-} from "./captoken.js";
 import {
   BRIDGE_RUNTIME_CAPABILITY_REGISTRY,
   allProducts,
@@ -23,6 +15,12 @@ import {
   productById,
   scopeDangerMetadataFromCapabilities,
 } from "./products.js";
+
+// Authorization epoch helper (relocated from the removed cap-token module).
+function authorizationEpoch(authorization) {
+  const value = Number(object(authorization).epoch ?? 1);
+  return Number.isInteger(value) && value > 0 ? value : 1;
+}
 
 const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 30;
 const SESSION_LINK_TTL_MS = 1000 * 60 * 10;
@@ -39,11 +37,6 @@ const PASSWORD_LOCK_MS = 1000 * 60 * 15;
 const DEVICE_TOKEN_TTL_MS = SESSION_TTL_MS;
 const DEVICE_TOKEN_ROTATION_GRACE_MS = 1000 * 60 * 10;
 const DEVICE_TOKEN_PREFIX = "pbd_";
-const DEVICE_MAX_RUNNING_JOBS = 1;
-const DEVICE_MAX_QUEUED_JOBS = 150;
-const ACCOUNT_MAX_ACTIVE_JOBS = 500;
-const PRODUCT_MAX_ACTIVE_JOBS = 300;
-const JOB_ASSIGNMENT_GRACE_MS = 1000 * 30;
 const RELAY_DEVICE_MAX_UNACKED = 150;
 const RELAY_ACCOUNT_MAX_UNACKED = 500;
 const RELAY_PRODUCT_MAX_UNACKED = 300;
@@ -898,47 +891,6 @@ async function rotateConnectorToken(request, env) {
   }, env);
 }
 
-async function connectorJobs(request, env) {
-  const connector = await requireConnector(request, env);
-  const store = storage(env);
-  const rows = await store.select("bridge_jobs", { device_id: connector.device.id, status: "queued" }, { order: "created_at" });
-  const authorizedRows = [];
-  for (const row of rows) {
-    const authorization = await authorizationForProduct(env, row.user_id, row.device_id, row.product_id);
-    const denial = authorizationJobDenial(authorization);
-    if (!denial) {
-      authorizedRows.push(row);
-    } else {
-      await cancelAuthorizationInactiveJob(env, row, denial);
-    }
-  }
-  const available = await availableDeviceSlots(env, connector.device.id);
-  if (available <= 0) return json({ items: [], queue: await publicDeviceQueue(env, connector.device.id) }, env);
-  const jobs = [];
-  for (const row of authorizedRows.slice(0, available)) {
-    const authorization = await authorizationForProduct(env, row.user_id, row.device_id, row.product_id);
-    const l1 = await cloudCapTokenAcceptGate(env, row, authorization);
-    if (!l1.allow) continue;
-    const acceptedAt = now();
-    const job = await store.update("bridge_jobs", row.id, {
-      status: "running",
-      pushed_at: row.pushed_at || acceptedAt,
-      desktop_received_at: row.desktop_received_at || acceptedAt,
-      accepted_at: row.accepted_at || acceptedAt,
-      updated_at: acceptedAt,
-    });
-    const event = await appendEvent(env, job.id, "claimed", {
-      device_id: connector.device.id,
-      transport: "poll",
-      accepted_at: acceptedAt,
-      desktop_received_at: job.desktop_received_at,
-    }, 2);
-    await notifyJobEvent(env, connector.device.id, job, event);
-    jobs.push(publicJob(job));
-  }
-  return json({ items: jobs, queue: await publicDeviceQueue(env, connector.device.id) }, env);
-}
-
 function legacyRuntimeApiRemoved(env) {
   return json({
     error: "legacy_runtime_api_removed",
@@ -1647,30 +1599,6 @@ async function connectorRelayKeyBootstrap(request, env, productId) {
   }, env);
 }
 
-async function createProductJob(request, env, productId, ctx = {}) {
-  const product = requireOfficialProduct(productId, env);
-  const source_origin = sourceOrigin(env);
-  const originError = rejectProductOrigin(product, source_origin, env);
-  if (originError) return originError;
-  const session = await requireSession(request, env);
-  const body = await readJson(request, env);
-  return await createAuthorizedProductJob(env, product, session.user.id, source_origin, body, ctx, {
-    auditAction: "job.create",
-  });
-}
-
-async function createDelegatedProductJob(request, env, productId, ctx = {}) {
-  const product = requireOfficialProduct(productId, env);
-  const rawBody = await readJsonText(request, env);
-  const delegation = await requireProductDelegation(request, env, product, rawBody);
-  const body = rawBody ? parseJsonText(rawBody) : {};
-  return await createAuthorizedProductJob(env, product, delegation.bridgeUserId, delegation.sourceOrigin, body, ctx, {
-    auditAction: "job.create.delegated",
-    delegatedDeviceId: delegation.deviceId,
-    delegationNonce: delegation.nonce,
-  });
-}
-
 async function delegatedProductAuthorization(request, env, productId) {
   const product = requireOfficialProduct(productId, env);
   const delegation = await requireProductDelegation(request, env, product, "");
@@ -1877,447 +1805,6 @@ async function revokeDelegatedProductAuthorization(request, env, productId) {
   return json({ authorization: publicAuthorization(revoked), device: publicDevice(device, env), product: publicStateProduct(product), cancelled_jobs, cancelled_relay_envelopes }, env);
 }
 
-async function createAuthorizedProductJob(env, product, userId, source_origin, body, ctx = {}, options = {}) {
-  const validation = validateLegacyBridgeJob({ ...body, productId: product.id });
-  if (!validation.ok) return json({ error: "invalid_job", errors: validation.errors }, env, 400);
-  const normalized = validation.job;
-  if (!Object.hasOwn(SUPPORTED_JOB_KIND_REGISTRY, normalized.kind)) return json({ error: "unsupported_job_kind" }, env, 400);
-  if (!product.capabilities.includes(normalized.kind)) return json({ error: "scope_insufficient" }, env, 403);
-  if (options.delegatedDeviceId && normalized.device_id !== options.delegatedDeviceId) {
-    return json({ error: "delegated_device_mismatch" }, env, 403);
-  }
-  const device = await ownedDevice(env, userId, normalized.device_id);
-  if (!device || device.status === "revoked") return json({ error: "device_not_found" }, env, 404);
-  if (!isDeviceOnline(device, env)) return json({ error: "device_offline" }, env, 409);
-  const authorization = await authorizationForProduct(env, userId, device.id, product.id);
-  const denial = authorizationJobDenial(authorization);
-  if (denial) return json({ error: denial.error }, env, 403);
-  const authorizationScopeError = authorizationScopeDenial(authorization.policy, normalized);
-  if (authorizationScopeError) {
-    return json({ error: "authorization_scope_denied", ...authorizationScopeError }, env, 403);
-  }
-
-  const existing = await existingRequestKeyJob(env, userId, device.id, product.id, normalized.request_key);
-  if (existing) {
-    if (!sameNormalizedJob(existing, normalized)) return json({ error: "idempotency_key_conflict" }, env, 409);
-    const tokenized = existing.cap_token
-      ? existing
-      : await attachCapTokenToJob(env, ctx, { authorization, job: existing, product, userId, device });
-    return json({ job: publicJob(tokenized), reused: true }, env);
-  }
-
-  const limits = jobQueueLimits(env);
-  const active = await activeJobsForDevice(env, device.id);
-  const accountActive = await activeJobsForAccount(env, userId);
-  const productActive = accountActive.filter((job) => job.product_id === product.id).length;
-  if (active.length >= limits.deviceMaxQueued) {
-    return json({
-      error: "device_queue_full",
-      queue: queueLimitPayload(active.length, limits.deviceMaxQueued, limits.deviceMaxRunning),
-    }, env, 429);
-  }
-  if (accountActive.length >= limits.accountMaxActive) {
-    return json({
-      error: "account_queue_full",
-      queue: queueLimitPayload(accountActive.length, limits.accountMaxActive, limits.deviceMaxRunning),
-    }, env, 429);
-  }
-  if (productActive >= limits.productMaxActive) {
-    return json({
-      error: "product_queue_full",
-      queue: queueLimitPayload(productActive, limits.productMaxActive, limits.deviceMaxRunning),
-    }, env, 429);
-  }
-
-  const queuedAt = now();
-  let job;
-  try {
-    job = await storage(env).insert("bridge_jobs", {
-      user_id: userId,
-      device_id: device.id,
-      product_id: product.id,
-      source_origin,
-      kind: normalized.kind,
-      runtime: "codex_app_server",
-      workspace_ref: normalized.workspace_ref,
-      input: normalized.input,
-      policy: normalized.policy,
-      request_key: normalized.request_key,
-      status: "queued",
-      result: {},
-      queued_at: queuedAt,
-      pushed_at: null,
-      created_at: queuedAt,
-      updated_at: queuedAt,
-    });
-  } catch (error) {
-    const duplicate = await existingRequestKeyJob(env, userId, device.id, product.id, normalized.request_key);
-    if (duplicate && sameNormalizedJob(duplicate, normalized)) {
-      const tokenized = duplicate.cap_token
-        ? duplicate
-        : await attachCapTokenToJob(env, ctx, { authorization, job: duplicate, product, userId, device });
-      return json({ job: publicJob(tokenized), reused: true }, env);
-    }
-    if (duplicate) return json({ error: "idempotency_key_conflict" }, env, 409);
-    throw error;
-  }
-  job = await attachCapTokenToJob(env, ctx, { authorization, job, product, userId, device });
-  await runBackground(ctx, appendEvent(env, job.id, "queued", {
-    product_id: product.id,
-    source_origin,
-    kind: job.kind,
-    transport: realtimeEnabled(env) ? "scheduled_websocket" : "poll",
-    queued_at: queuedAt,
-    queue_position: active.length + 1,
-  }, 1));
-  await runBackground(ctx, audit(env, userId, device.id, product.id, options.auditAction || "job.create", job.id, {
-    kind: job.kind,
-    source_origin,
-    delegated: Boolean(options.delegationNonce),
-  }));
-  await dispatchQueuedJobs(env, device.id);
-  const refreshed = await jobById(env, job.id) || job;
-  return json({
-    job: publicJob(refreshed),
-    product,
-    queue: {
-      position: active.length + 1,
-      max_running: limits.deviceMaxRunning,
-      max_queued: limits.deviceMaxQueued,
-    },
-  }, env, 201);
-}
-
-function validateLegacyBridgeJob(input = {}) {
-  const value = object(input);
-  const job = {
-    kind: clean(value.kind || value.job_kind, 120),
-    product_id: clean(value.productId || value.product_id, 120),
-    device_id: clean(value.deviceId || value.device_id || value.connector_id, 120),
-    workspace_ref: clean(value.workspaceRef ?? value.workspace_ref, 200) || null,
-    request_key: clean(value.requestKey || value.request_key, 180) || null,
-    input: object(value.input || value.payload),
-    policy: object(value.policy),
-  };
-  const errors = [];
-  if (!job.kind) errors.push("missing_kind");
-  if (!job.product_id) errors.push("missing_product_id");
-  if (!job.device_id) errors.push("missing_device_id");
-  return { ok: errors.length === 0, errors, job };
-}
-
-async function attachCapTokenToJob(env, ctx, { authorization, job, product, userId, device }) {
-  const issued = await issueCapToken(env, { authorization, job, product, userId, device });
-  const updated = await storage(env).update("bridge_jobs", job.id, {
-    cap_token: issued.token,
-  });
-  await runBackground(ctx, audit(env, userId, device.id, product.id, "cap_token.issue", job.id, {
-    jti: issued.claims.jti,
-    kid: issued.header.kid,
-    cap: issued.claims.cap,
-    bnd: issued.claims.bnd,
-    eph: issued.claims.eph,
-    exp: issued.claims.exp,
-    max: issued.claims.max,
-    danger: issued.danger,
-    mode: capTokenMode(env),
-  }));
-  return updated || { ...job, cap_token: issued.token };
-}
-
-async function cloudCapTokenAcceptGate(env, job, authorization) {
-  const mode = capTokenMode(env);
-  const token = clean(job.cap_token, 20000);
-  if (!token) {
-    await auditCapTokenL1(env, job, "cap_token.l1_missing", {
-      reason: "cap_token_missing",
-      mode,
-    });
-    return { allow: mode === "shadow", reason: "cap_token_missing", mode };
-  }
-
-  const parsed = parseCompactJws(token);
-  const claims = object(parsed?.claims);
-  const context = {
-    device_id: job.device_id,
-    job: {
-      id: job.id,
-      product_id: job.product_id,
-      request_key: job.request_key,
-      kind: job.kind,
-    },
-    epoch: authorizationEpoch(authorization),
-    authorization_policy: authorization?.policy || {},
-    user_id: job.user_id,
-    now: Math.trunc(Date.now() / 1000),
-    env,
-  };
-  const verified = await verifyCapTokenJws(token, context);
-  if (verified.verdict !== "allow") {
-    await auditCapTokenL1(env, job, "cap_token.l1_denied", {
-      ...capTokenAuditFields(claims),
-      reason: verified.reason || "cap_token_denied",
-      mode,
-    });
-    return { allow: mode === "shadow", reason: verified.reason || "cap_token_denied", mode };
-  }
-
-  const consumed = await consumeCapTokenJti(env, job, claims);
-  if (!consumed.ok) {
-    await auditCapTokenL1(env, job, "cap_token.l1_denied", {
-      ...capTokenAuditFields(claims),
-      reason: consumed.reason,
-      mode,
-    });
-    return { allow: mode === "shadow", reason: consumed.reason, mode };
-  }
-
-  await auditCapTokenL1(env, job, "cap_token.l1_verify_ok", {
-    ...capTokenAuditFields(claims),
-    uses: consumed.uses,
-    mode,
-  });
-  return { allow: true, reason: null, mode };
-}
-
-async function consumeCapTokenJti(env, job, claims) {
-  const jti = clean(claims.jti, 160);
-  const maxUses = Number(claims.max);
-  const exp = Number(claims.exp);
-  if (!jti || !Number.isInteger(maxUses) || maxUses < 1 || !Number.isFinite(exp)) {
-    return { ok: false, reason: "cap_token_malformed" };
-  }
-  try {
-    await storage(env).insert("bridge_cap_token_jti", {
-      jti,
-      job_id: job.id,
-      product_id: job.product_id,
-      device_id: job.device_id,
-      uses: 1,
-      max_uses: maxUses,
-      expires_at: new Date(exp * 1000).toISOString(),
-      created_at: now(),
-      updated_at: now(),
-    });
-    return { ok: true, uses: 1 };
-  } catch (error) {
-    if (isUniqueConflict(error, "cap_token_replay")) {
-      return { ok: false, reason: "cap_token_replay" };
-    }
-    return { ok: false, reason: "cap_token_jti_store_failed" };
-  }
-}
-
-async function auditCapTokenL1(env, job, action, payload) {
-  await audit(env, job.user_id, job.device_id, job.product_id, action, job.id, {
-    ...object(payload),
-    job_id: job.id,
-  });
-}
-
-function capTokenAuditFields(claims) {
-  return {
-    jti: clean(claims.jti, 160) || null,
-    eph: Number.isFinite(Number(claims.eph)) ? Number(claims.eph) : null,
-    exp: Number.isFinite(Number(claims.exp)) ? Number(claims.exp) : null,
-    max: Number.isFinite(Number(claims.max)) ? Number(claims.max) : null,
-  };
-}
-
-async function getDelegatedJob(request, env, productId, jobId) {
-  const product = requireOfficialProduct(productId, env);
-  const delegation = await requireProductDelegation(request, env, product, "");
-  const job = await delegatedOwnedJob(env, delegation, product, jobId);
-  if (!job) return json({ error: "job_not_found" }, env, 404);
-  return json({ job: publicJob(job), product }, env);
-}
-
-async function getDelegatedJobEvents(request, env, productId, jobId) {
-  const product = requireOfficialProduct(productId, env);
-  const delegation = await requireProductDelegation(request, env, product, "");
-  const job = await delegatedOwnedJob(env, delegation, product, jobId);
-  if (!job) return json({ error: "job_not_found" }, env, 404);
-  const after = Number(new URL(request.url).searchParams.get("after") || 0);
-  const items = (await storage(env).select("bridge_job_events", { job_id: jobId }, { order: "seq" }))
-    .filter((item) => Number(item.seq || 0) > after);
-  return json({ job: publicJob(job), items }, env);
-}
-
-async function cancelDelegatedJob(request, env, productId, jobId) {
-  const product = requireOfficialProduct(productId, env);
-  const rawBody = await readJsonText(request, env);
-  const delegation = await requireProductDelegation(request, env, product, rawBody);
-  const job = await delegatedOwnedJob(env, delegation, product, jobId);
-  if (!job) return json({ error: "job_not_found" }, env, 404);
-  if (isTerminalJobStatus(job.status)) return json({ job: publicJob(job), cancelled: false }, env);
-  const cancelledAt = now();
-  const next = await storage(env).update("bridge_jobs", job.id, { status: "cancelled", input: terminalJobInput(job, {}), completed_at: job.completed_at || cancelledAt, updated_at: cancelledAt });
-  const event = await appendEvent(env, job.id, "cancelled", { completed_at: next.updated_at });
-  await notifyJobEvent(env, job.device_id, next, event);
-  await dispatchQueuedJobs(env, job.device_id);
-  await audit(env, delegation.bridgeUserId, job.device_id, product.id, "job.cancel.delegated", job.id, { source_origin: delegation.sourceOrigin });
-  return json({ job: publicJob(next), cancelled: true }, env);
-}
-
-async function getJob(request, env, jobId) {
-  const session = await requireSession(request, env);
-  const job = await ownedJob(env, session.user.id, jobId);
-  if (!job) return json({ error: "job_not_found" }, env, 404);
-  return json({ job: publicJob(job) }, env);
-}
-
-async function getJobEvents(request, env, jobId) {
-  const session = await requireSession(request, env);
-  const job = await ownedJob(env, session.user.id, jobId);
-  if (!job) return json({ error: "job_not_found" }, env, 404);
-  const after = Number(new URL(request.url).searchParams.get("after") || 0);
-  const items = (await storage(env).select("bridge_job_events", { job_id: jobId }, { order: "seq" }))
-    .filter((item) => Number(item.seq || 0) > after);
-  return json({ job: publicJob(job), items }, env);
-}
-
-async function cancelJob(request, env, jobId) {
-  const session = await requireSession(request, env);
-  const job = await ownedJob(env, session.user.id, jobId);
-  if (!job) return json({ error: "job_not_found" }, env, 404);
-  if (isTerminalJobStatus(job.status)) return json({ job: publicJob(job), cancelled: false }, env);
-  const cancelledAt = now();
-  const next = await storage(env).update("bridge_jobs", job.id, { status: "cancelled", input: terminalJobInput(job, {}), completed_at: job.completed_at || cancelledAt, updated_at: cancelledAt });
-  const event = await appendEvent(env, job.id, "cancelled", { completed_at: next.updated_at });
-  await notifyJobEvent(env, job.device_id, next, event);
-  await dispatchQueuedJobs(env, job.device_id);
-  return json({ job: publicJob(next), cancelled: true }, env);
-}
-
-async function postConnectorEvents(request, env, jobId) {
-  const connector = await requireConnector(request, env);
-  const job = await jobForDevice(env, connector.device.id, jobId);
-  if (!job) return json({ error: "job_not_found" }, env, 404);
-  if (isTerminalJobStatus(job.status)) {
-    return json({ items: [], job: publicJob(job), ignored: true }, env);
-  }
-  const body = await readJson(request, env);
-  const incoming = Array.isArray(body.events) ? body.events : [body];
-  const events = [];
-  let currentJob = job;
-  for (const item of incoming) {
-    const eventType = clean(item.type, 80) || "status";
-    const eventPayload = object(item.payload || item);
-    const persist = item.persist !== false && eventPayload.persist !== false;
-    const cleanPayload = { ...eventPayload };
-    delete cleanPayload.persist;
-    const patch = timingPatchForEvent(currentJob, eventType);
-    if (Object.keys(patch).length) currentJob = await storage(env).update("bridge_jobs", currentJob.id, patch);
-    const event = persist
-      ? await appendEvent(env, currentJob.id, eventType, { ...cleanPayload, ...patch })
-      : {
-          job_id: currentJob.id,
-          seq: null,
-          transient: true,
-          ...bridgeEvent(eventType, { ...cleanPayload, ...patch }),
-        };
-    events.push(event);
-    if (eventType === "cap_token.verify_ok" || eventType === "cap_token.denied") {
-      await runBackground({}, audit(env, currentJob.user_id, currentJob.device_id, currentJob.product_id, eventType, currentJob.id, {
-        jti: clean(cleanPayload.jti, 120) || null,
-        eph: cleanPayload.eph ?? null,
-        uses: cleanPayload.uses ?? null,
-        denied: clean(cleanPayload.denied, 120) || null,
-        reason: clean(cleanPayload.reason, 160) || null,
-        mode: clean(cleanPayload.mode, 40) || capTokenMode(env),
-      }));
-    }
-    await notifyJobEvent(env, connector.device.id, currentJob, event);
-  }
-  return json({ items: events }, env, 201);
-}
-
-async function acceptConnectorJob(request, env, jobId) {
-  const connector = await requireConnector(request, env);
-  const job = await jobForDevice(env, connector.device.id, jobId);
-  if (!job) return json({ error: "job_not_found" }, env, 404);
-  const body = await readJson(request, env);
-  if (job.status !== "queued") return json({ job: publicJob(job), accepted: false }, env);
-  const authorization = await authorizationForProduct(env, job.user_id, job.device_id, job.product_id);
-  const denial = authorizationJobDenial(authorization);
-  if (denial) {
-    const cancelled = await cancelAuthorizationInactiveJob(env, job, denial);
-    return json({
-      job: publicJob(cancelled),
-      accepted: false,
-      reason: denial.error,
-    }, env);
-  }
-  if (!job.pushed_at && await availableDeviceSlots(env, connector.device.id) <= 0) {
-    return json({
-      job: publicJob(job),
-      accepted: false,
-      reason: "device_busy",
-      queue: await publicDeviceQueue(env, connector.device.id),
-    }, env);
-  }
-  const l1 = await cloudCapTokenAcceptGate(env, job, authorization);
-  if (!l1.allow) {
-    return json({
-      error: l1.reason,
-      job: publicJob(job),
-      accepted: false,
-      reason: l1.reason,
-    }, env, 403);
-  }
-  const acceptedAt = now();
-  const desktopReceivedAt = clean(body.desktop_received_at, 80) || acceptedAt;
-  const next = await storage(env).update("bridge_jobs", job.id, {
-    status: "running",
-    desktop_received_at: job.desktop_received_at || desktopReceivedAt,
-    accepted_at: job.accepted_at || acceptedAt,
-    updated_at: acceptedAt,
-  });
-  const event = await appendEvent(env, job.id, "claimed", {
-    device_id: connector.device.id,
-    transport: clean(body.transport, 40) || "websocket",
-    accepted_at: acceptedAt,
-    desktop_received_at: next.desktop_received_at,
-  }, 2);
-  await notifyJobEvent(env, connector.device.id, next, event);
-  return json({ job: publicJob(next), accepted: true }, env);
-}
-
-async function ackConnectorJob(request, env, jobId) {
-  const connector = await requireConnector(request, env);
-  const job = await jobForDevice(env, connector.device.id, jobId);
-  if (!job) return json({ error: "job_not_found" }, env, 404);
-  const authorization = await authorizationForProduct(env, job.user_id, job.device_id, job.product_id);
-  const denial = authorizationJobDenial(authorization);
-  if (denial) {
-    const cancelled = await cancelAuthorizationInactiveJob(env, job, denial);
-    return json({ error: denial.error, job: publicJob(cancelled) }, env, 403);
-  }
-  if (isTerminalJobStatus(job.status)) {
-    return json({ job: publicJob(job), ignored: true }, env);
-  }
-  const body = await readJson(request, env);
-  const status = body.status === "failed" ? "failed" : "succeeded";
-  const terminalAt = now();
-  const result = object(body.result);
-  const next = await storage(env).update("bridge_jobs", job.id, {
-    status,
-    result,
-    input: terminalJobInput(job, result),
-    completed_at: job.completed_at || terminalAt,
-    acked_at: terminalAt,
-    updated_at: terminalAt,
-  });
-  const event = await appendEvent(env, job.id, status === "failed" ? "failed" : "completed", {
-    ...object(body.result),
-    completed_at: next.completed_at,
-    acked_at: terminalAt,
-  });
-  await notifyJobEvent(env, connector.device.id, next, event);
-  await dispatchQueuedJobs(env, connector.device.id);
-  return json({ job: publicJob(next) }, env);
-}
-
 function terminalJobInput(job, result = {}) {
   const input = object(job.input);
   if (job.kind !== "data.put" || !Object.hasOwn(input, "value")) return input;
@@ -2344,17 +1831,6 @@ async function appendEvent(env, jobId, type, payload = {}, seq = null) {
     seq: nextSeq,
     ...bridgeEvent(type, payload),
   });
-}
-
-function timingPatchForEvent(job, eventType) {
-  const at = now();
-  if (eventType === "started" && !job.started_at) {
-    return { started_at: at, updated_at: at };
-  }
-  if (eventType === "text_delta" && !job.first_delta_at) {
-    return { first_delta_at: at, updated_at: at };
-  }
-  return {};
 }
 
 async function realtimeDevice(request, env, deviceId) {
@@ -2396,10 +1872,6 @@ function realtimeEnabled(env) {
 function deviceRoom(env, deviceId) {
   const id = env.BRIDGE_DEVICE_ROOMS.idFromName(deviceId);
   return env.BRIDGE_DEVICE_ROOMS.get(id);
-}
-
-async function notifyJobAssignment(env, deviceId, job) {
-  return notifyDeviceRoom(env, deviceId, { type: "job.assign", job: publicJob(job), sent_at: now() });
 }
 
 async function notifyJobEvent(env, deviceId, job, event) {
@@ -2789,24 +2261,6 @@ async function updateAuthorizationStatus(env, { userId, deviceId, product, statu
   return { authorization: updated, cancelledJobs };
 }
 
-async function existingRequestKeyJob(env, userId, deviceId, productId, requestKey) {
-  return requestKey
-    ? (await storage(env).select("bridge_jobs", {
-        user_id: userId,
-        device_id: deviceId,
-        product_id: productId,
-        request_key: requestKey,
-      }))[0] || null
-    : null;
-}
-
-async function delegatedOwnedJob(env, delegation, product, jobId) {
-  const job = await ownedJob(env, delegation.bridgeUserId, jobId);
-  if (!job) return null;
-  if (job.product_id !== product.id || job.device_id !== delegation.deviceId) return null;
-  return job;
-}
-
 async function requireProductDelegation(request, env, product, rawBody) {
   const secret = productDelegationSecret(env, product.id);
   if (!secret) throw httpError("product_delegation_not_configured", 503);
@@ -2893,81 +2347,12 @@ async function reserveProductDelegationNonce(env, productId, nonce, timestamp) {
   }
 }
 
-function sameNormalizedJob(existing, normalized) {
-  return existing.kind === normalized.kind
-    && existing.workspace_ref === normalized.workspace_ref
-    && canonicalJson(existing.input || {}) === canonicalJson(normalized.input || {})
-    && canonicalJson(existing.policy || {}) === canonicalJson(normalized.policy || {});
-}
-
 function canonicalJson(value) {
   if (value === null || ["string", "number", "boolean"].includes(typeof value)) return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
   if (!value || typeof value !== "object") return "{}";
   const entries = Object.entries(value).sort(([left], [right]) => codePointCompare(left, right));
   return `{${entries.map(([key, nested]) => `${JSON.stringify(key)}:${canonicalJson(nested)}`).join(",")}}`;
-}
-
-async function jobById(env, jobId) {
-  return (await storage(env).select("bridge_jobs", { id: jobId }))[0] || null;
-}
-
-async function activeJobsForDevice(env, deviceId) {
-  const rows = await storage(env).select("bridge_jobs", { device_id: deviceId }, { order: "created_at" });
-  return rows.filter((job) => isActiveJobStatus(job.status));
-}
-
-async function activeJobsForAccount(env, userId) {
-  const rows = await storage(env).select("bridge_jobs", { user_id: userId }, { order: "created_at" });
-  return rows.filter((job) => isActiveJobStatus(job.status));
-}
-
-async function availableDeviceSlots(env, deviceId) {
-  const limits = jobQueueLimits(env);
-  const active = await activeJobsForDevice(env, deviceId);
-  const assigned = active.filter((job) => isAssignedDeviceJob(job, env)).length;
-  return Math.max(0, limits.deviceMaxRunning - assigned);
-}
-
-async function dispatchQueuedJobs(env, deviceId) {
-  if (!realtimeEnabled(env)) return [];
-  const limits = jobQueueLimits(env);
-  const active = await activeJobsForDevice(env, deviceId);
-  const stillAuthorized = [];
-  for (const job of active) {
-    const authorization = await authorizationForProduct(env, job.user_id, job.device_id, job.product_id);
-    const denial = authorizationJobDenial(authorization);
-    if (job.status === "queued" && denial) {
-      await cancelAuthorizationInactiveJob(env, job, denial);
-    } else {
-      stillAuthorized.push(job);
-    }
-  }
-  const assigned = stillAuthorized.filter((job) => isAssignedDeviceJob(job, env)).length;
-  const available = Math.max(0, limits.deviceMaxRunning - assigned);
-  if (available <= 0) return [];
-  const candidates = stillAuthorized
-    .filter((job) => job.status === "queued" && !isAssignedDeviceJob(job, env))
-    .sort(compareJobsByQueueOrder)
-    .slice(0, available);
-  const dispatched = [];
-  for (const candidate of candidates) {
-    const pushedAt = now();
-    const job = await storage(env).update("bridge_jobs", candidate.id, {
-      pushed_at: pushedAt,
-      updated_at: pushedAt,
-    });
-    const delivery = await notifyJobAssignment(env, deviceId, job);
-    if (delivery?.desktop_delivered) {
-      dispatched.push(job);
-    } else {
-      await storage(env).update("bridge_jobs", candidate.id, {
-        pushed_at: null,
-        updated_at: candidate.updated_at || candidate.created_at || pushedAt,
-      });
-    }
-  }
-  return dispatched;
 }
 
 async function cancelQueuedJobsForAuthorization(env, userId, deviceId, productId, denial = { error: "authorization_revoked", reason: "authorization_revoked" }) {
@@ -3004,10 +2389,6 @@ async function cancelRelayEnvelope(env, row, reason = "authorization_revoked") {
     updated_at: now(),
     meta: { ...object(row.meta), cancelled_reason: reason },
   }) || row;
-}
-
-async function cancelAuthorizationRevokedJob(env, job) {
-  return cancelAuthorizationInactiveJob(env, job, { error: "authorization_revoked", reason: "authorization_revoked" });
 }
 
 async function cancelAuthorizationInactiveJob(env, job, denial = { error: "authorization_revoked", reason: "authorization_revoked" }) {
@@ -3070,105 +2451,12 @@ async function cleanupExpiredJobs(env) {
   return deleted;
 }
 
-async function publicDeviceQueue(env, deviceId) {
-  const limits = jobQueueLimits(env);
-  const active = await activeJobsForDevice(env, deviceId);
-  const running = active.filter((job) => job.status === "running").length;
-  const assigned = active.filter((job) => isAssignedDeviceJob(job, env)).length;
-  return {
-    active: active.length,
-    running,
-    assigned,
-    waiting: Math.max(0, active.length - assigned),
-    max_running: limits.deviceMaxRunning,
-    max_queued: limits.deviceMaxQueued,
-  };
-}
-
-function jobCounts(jobs) {
-  const counts = {
-    total: jobs.length,
-    active: 0,
-    queued: 0,
-    running: 0,
-    succeeded: 0,
-    failed: 0,
-    cancelled: 0,
-    other: 0,
-  };
-  for (const job of jobs) {
-    if (isActiveJobStatus(job.status)) counts.active += 1;
-    if (job.status && Object.prototype.hasOwnProperty.call(counts, job.status)) counts[job.status] += 1;
-    else counts.other += 1;
-  }
-  return counts;
-}
-
-function productJobCounts(jobs) {
-  const buckets = {};
-  for (const job of jobs) {
-    const productId = clean(job.product_id, 80) || "unknown";
-    buckets[productId] = buckets[productId] || [];
-    buckets[productId].push(job);
-  }
-  return Object.fromEntries(Object.entries(buckets).map(([productId, rows]) => [productId, jobCounts(rows)]));
-}
-
-function jobTimingSummary(jobs) {
-  const terminal = jobs.filter((job) => isTerminalJobStatus(job.status));
-  const fields = [
-    "queued_to_claimed_ms",
-    "pushed_to_claimed_ms",
-    "claimed_to_started_ms",
-    "started_to_first_delta_ms",
-    "first_delta_to_completed_ms",
-    "total_job_ms",
-  ];
-  const averages = {};
-  const max = {};
-  for (const field of fields) {
-    const values = terminal
-      .map((job) => Number(jobTiming(job)[field]))
-      .filter(Number.isFinite);
-    averages[field] = averageNumber(values);
-    max[field] = values.length ? Math.max(...values) : null;
-  }
-  return {
-    completed_count: terminal.length,
-    average_ms: averages,
-    max_ms: max,
-  };
-}
-
-function averageNumber(values) {
-  if (!values.length) return null;
-  return Math.round(values.reduce((sum, value) => sum + value, 0) / values.length);
-}
-
-function jobQueueLimits(env) {
-  return {
-    deviceMaxRunning: boundedInteger(env.BRIDGE_DEVICE_MAX_RUNNING_JOBS, DEVICE_MAX_RUNNING_JOBS, 1, 5),
-    deviceMaxQueued: boundedInteger(env.BRIDGE_DEVICE_MAX_QUEUED_JOBS, DEVICE_MAX_QUEUED_JOBS, 1, 1000),
-    accountMaxActive: boundedInteger(env.BRIDGE_ACCOUNT_MAX_ACTIVE_JOBS, ACCOUNT_MAX_ACTIVE_JOBS, 1, 5000),
-    productMaxActive: boundedInteger(env.BRIDGE_PRODUCT_MAX_ACTIVE_JOBS, PRODUCT_MAX_ACTIVE_JOBS, 1, 3000),
-  };
-}
-
 function relayQueueLimits(env) {
   return {
     deviceMaxUnacked: boundedInteger(env.BRIDGE_RELAY_DEVICE_MAX_UNACKED, RELAY_DEVICE_MAX_UNACKED, 1, 1000),
     accountMaxUnacked: boundedInteger(env.BRIDGE_RELAY_ACCOUNT_MAX_UNACKED, RELAY_ACCOUNT_MAX_UNACKED, 1, 5000),
     productMaxUnacked: boundedInteger(env.BRIDGE_RELAY_PRODUCT_MAX_UNACKED, RELAY_PRODUCT_MAX_UNACKED, 1, 3000),
     channelMaxUnacked: boundedInteger(env.BRIDGE_RELAY_CHANNEL_MAX_UNACKED, RELAY_CHANNEL_MAX_UNACKED, 1, 1000),
-  };
-}
-
-function queueLimitPayload(active, max, maxRunning) {
-  return {
-    active,
-    max_queued: max,
-    max_running: maxRunning,
-    retry_after_ms: 3000,
   };
 }
 
@@ -3243,30 +2531,6 @@ function diagnosticsPayload(env) {
       session_link_ttl_ms: sessionLinkTtlMs(env),
     },
   };
-}
-
-function isActiveJobStatus(status) {
-  return status === "queued" || status === "running";
-}
-
-function isAssignedDeviceJob(job, env) {
-  if (job.status === "running") return true;
-  if (job.status !== "queued" || !job.pushed_at) return false;
-  return !isStaleAssignedJob(job, env);
-}
-
-function isStaleAssignedJob(job, env) {
-  const pushedAt = Date.parse(job.pushed_at || "");
-  if (!Number.isFinite(pushedAt)) return false;
-  const graceMs = boundedInteger(env.BRIDGE_JOB_ASSIGNMENT_GRACE_MS, JOB_ASSIGNMENT_GRACE_MS, 1000, 1000 * 60 * 10);
-  return !job.accepted_at && Date.now() - pushedAt > graceMs;
-}
-
-function compareJobsByQueueOrder(left, right) {
-  const leftTime = Date.parse(left.created_at || left.queued_at || "") || 0;
-  const rightTime = Date.parse(right.created_at || right.queued_at || "") || 0;
-  if (leftTime !== rightTime) return leftTime - rightTime;
-  return String(left.id || "").localeCompare(String(right.id || ""));
 }
 
 async function connectIntentByToken(env, token) {
@@ -4146,14 +3410,6 @@ async function consumeAuthorizationImportProof(env, proof) {
   return await storage(env).update("bridge_authorization_import_proofs", proof.id, { consumed_at: consumedAt });
 }
 
-async function ownedJob(env, userId, jobId) {
-  return (await storage(env).select("bridge_jobs", { id: jobId, user_id: userId }))[0] || null;
-}
-
-async function jobForDevice(env, deviceId, jobId) {
-  return (await storage(env).select("bridge_jobs", { id: jobId, device_id: deviceId }))[0] || null;
-}
-
 async function audit(env, userId, deviceId, productId, action, targetId, payload) {
   return storage(env).insert("bridge_audit_log", {
     user_id: userId,
@@ -4393,13 +3649,6 @@ function uniqueConflict(tableName, rows, row) {
     if (duplicate) return "cap_token_replay";
   }
   return "";
-}
-
-function isUniqueConflict(error, code) {
-  return error?.code === code
-    || error?.message === code
-    || error?.status === 409
-    || /unique|duplicate|23505/i.test(String(error?.message || ""));
 }
 
 function selectRows(rows, filters = {}, options = {}) {

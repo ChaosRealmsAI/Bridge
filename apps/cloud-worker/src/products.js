@@ -27,11 +27,6 @@ export const BRIDGE_RUNTIME_CAPABILITY_REGISTRY = Object.freeze({
 });
 
 export const BRIDGE_RUNTIME_CAPABILITIES = Object.freeze(Object.keys(BRIDGE_RUNTIME_CAPABILITY_REGISTRY));
-export const HIGH_TIER_RUNTIME_CAPABILITIES = Object.freeze([]);
-export const CRITICAL_TIER_RUNTIME_CAPABILITIES = Object.freeze([]);
-export const SYLLO_RUNTIME_CAPABILITIES = Object.freeze([]);
-export const NON_DATA_RUNTIME_CAPABILITIES = Object.freeze([...BRIDGE_RUNTIME_CAPABILITIES]);
-export const OTHERLINE_RUNTIME_CAPABILITIES = Object.freeze([...BRIDGE_RUNTIME_CAPABILITIES]);
 
 export const PRODUCT_REGISTRY = {
   "panda-chat": {
