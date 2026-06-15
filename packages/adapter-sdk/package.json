@@ -1,0 +1,19 @@
+{
+  "name": "@panda-bridge/adapter-sdk",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "src/index.js",
+  "types": "src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.d.ts",
+      "default": "./src/index.js"
+    }
+  },
+  "scripts": {
+    "test": "node --test test/*.mjs"
+  },
+  "dependencies": {
+    "@panda-bridge/sdk": "0.1.0"
+  }
+}

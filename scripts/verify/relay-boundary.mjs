@@ -115,10 +115,17 @@ assert.equal(protocolMain.includes("function normalizeBridgeJob"), false, "proto
 const sdkSource = readFileSync(new URL("../../packages/sdk/src/index.js", import.meta.url), "utf8");
 const sdkTypes = readFileSync(new URL("../../packages/sdk/src/index.d.ts", import.meta.url), "utf8");
 const sdkPublicCopy = readFileSync(new URL("../../apps/web-chat/public/sdk/index.js", import.meta.url), "utf8");
+const adapterSdkSource = readFileSync(new URL("../../packages/adapter-sdk/src/index.js", import.meta.url), "utf8");
+const adapterSdkTypes = readFileSync(new URL("../../packages/adapter-sdk/src/index.d.ts", import.meta.url), "utf8");
 assert.equal(sdkPublicCopy, sdkSource, "public web SDK copy drifted from packages/sdk/src/index.js");
 assert.ok(sdkSource.includes("bridgeRelayEnvelopeAadText"), "SDK must expose generic relay AAD helper");
 assert.ok(sdkSource.includes("createCall"), "SDK must expose generic encrypted relay call helper");
 assert.ok(sdkTypes.includes("BridgeRelaySession"), "SDK types must define generic relay crypto session");
+assert.ok(adapterSdkSource.includes("bridgeAdapterAuthorizationContextDenial"), "Adapter SDK must expose generic authorization context guard");
+assert.ok(adapterSdkSource.includes("createBridgeAdapterResponseCache"), "Adapter SDK must expose duplicate delivery response cache");
+assert.ok(adapterSdkSource.includes("getOrSetAsync"), "Adapter SDK response cache must expose async in-flight dedupe");
+assert.ok(adapterSdkTypes.includes("BridgeAdapterResponseCache"), "Adapter SDK types must expose response cache type");
+assert.ok(adapterSdkTypes.includes("getOrSetAsync"), "Adapter SDK types must expose async in-flight dedupe");
 for (const marker of [
   "/v1/jobs",
   "/v1/queue/summary",
@@ -132,6 +139,10 @@ for (const marker of [
   assert.equal(sdkSource.includes(marker), false, `SDK source must not keep legacy job surface: ${marker}`);
   assert.equal(sdkPublicCopy.includes(marker), false, `public SDK must not keep legacy job surface: ${marker}`);
   assert.equal(sdkTypes.includes(marker), false, `SDK types must not keep legacy job surface: ${marker}`);
+}
+for (const marker of verticalKinds) {
+  assert.equal(adapterSdkSource.includes(marker), false, `Adapter SDK source must not contain vertical business kind: ${marker}`);
+  assert.equal(adapterSdkTypes.includes(marker), false, `Adapter SDK types must not contain vertical business kind: ${marker}`);
 }
 
 const desktopMain = readFileSync(new URL("../../apps/desktop/src/main.rs", import.meta.url), "utf8");
