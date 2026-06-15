@@ -501,8 +501,6 @@ struct RealtimeEnvelope {
     #[serde(rename = "type")]
     message_type: String,
     #[serde(default)]
-    job: Option<BridgeJob>,
-    #[serde(default)]
     envelope: Option<RelayEnvelope>,
     #[serde(default)]
     authorization: Option<RealtimeAuthorization>,
@@ -517,21 +515,6 @@ struct RealtimeAuthorization {
     status: Option<AuthorizationState>,
     #[serde(default = "default_authorization_epoch")]
     epoch: u64,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-struct BridgeJob {
-    id: String,
-    product_id: String,
-    kind: String,
-    workspace_ref: Option<String>,
-    input: Value,
-    #[serde(default)]
-    policy: Value,
-    #[serde(default)]
-    request_key: Option<String>,
-    #[serde(default)]
-    cap_token: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -6574,19 +6557,6 @@ mod tests {
 
     use crate::TEST_ENV_LOCK as ENV_LOCK;
 
-    fn test_job(policy: Value) -> BridgeJob {
-        BridgeJob {
-            id: "job_1".to_string(),
-            product_id: "panda-chat".to_string(),
-            kind: "codex.chat".to_string(),
-            workspace_ref: Some("default".to_string()),
-            input: json!({ "prompt": "hello" }),
-            policy,
-            request_key: Some("rk_1".to_string()),
-            cap_token: None,
-        }
-    }
-
     fn test_credentials(capabilities: Vec<&str>) -> Credentials {
         Credentials {
             api_base: "http://local.test".to_string(),
@@ -6786,15 +6756,6 @@ mod tests {
 
     fn test_auth_scope_v2() -> Value {
         project_v1_scope_to_v2(&test_auth_scope())
-    }
-
-    fn fs_read_job_for(path: &Path) -> BridgeJob {
-        BridgeJob {
-            kind: "fs.read".to_string(),
-            input: json!({ "path": path.to_string_lossy().to_string() }),
-            workspace_ref: None,
-            ..test_job(json!({}))
-        }
     }
 
     fn local_root_params(domain: &str, root_id: &str, path_display: &str) -> Value {

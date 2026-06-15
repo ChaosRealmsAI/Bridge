@@ -1,7 +1,6 @@
 import {
   BRIDGE_PROTOCOL_VERSION,
   RELAY_ENVELOPE_VERSION,
-  bridgeEvent,
   publicRelayEnvelope,
   relayEnvelopeRecord,
   validateRelayEnvelope,
@@ -29,7 +28,6 @@ const CONNECT_INTENT_TTL_MS = 1000 * 60 * 10;
 const AUTHORIZATION_IMPORT_PROOF_TTL_MS = 1000 * 60 * 5;
 const DEVICE_ONLINE_GRACE_MS = 1000 * 90;
 const DEVICE_HEARTBEAT_INTERVAL_MS = 1000 * 30;
-const BRIDGE_JOB_RETENTION_DAYS = 7;
 const RELAY_ENVELOPE_TTL_MS = 1000 * 60 * 5;
 const PASSWORD_MAX_FAILED_ATTEMPTS = 5;
 const PASSWORD_ATTEMPT_WINDOW_MS = 1000 * 60 * 15;
@@ -1805,34 +1803,6 @@ async function revokeDelegatedProductAuthorization(request, env, productId) {
   return json({ authorization: publicAuthorization(revoked), device: publicDevice(device, env), product: publicStateProduct(product), cancelled_jobs, cancelled_relay_envelopes }, env);
 }
 
-function terminalJobInput(job, result = {}) {
-  const input = object(job.input);
-  if (job.kind !== "data.put" || !Object.hasOwn(input, "value")) return input;
-  return {
-    ...input,
-    value: null,
-    value_redacted: true,
-    value_redacted_reason: result?.ok === false
-      ? "data_put_terminal_failure"
-      : "data_put_value_written_to_local_product_store",
-  };
-}
-
-function isTerminalJobStatus(status) {
-  return ["succeeded", "failed", "cancelled"].includes(status);
-}
-
-async function appendEvent(env, jobId, type, payload = {}, seq = null) {
-  const store = storage(env);
-  const existing = seq ? [] : await store.select("bridge_job_events", { job_id: jobId });
-  const nextSeq = seq || Math.max(0, ...existing.map((item) => Number(item.seq || 0))) + 1;
-  return store.insert("bridge_job_events", {
-    job_id: jobId,
-    seq: nextSeq,
-    ...bridgeEvent(type, payload),
-  });
-}
-
 async function realtimeDevice(request, env, deviceId) {
   if (!env.BRIDGE_DEVICE_ROOMS) return json({ error: "realtime_unavailable" }, env, 426);
   if ((request.headers.get("upgrade") || "").toLowerCase() !== "websocket") {
@@ -1872,15 +1842,6 @@ function realtimeEnabled(env) {
 function deviceRoom(env, deviceId) {
   const id = env.BRIDGE_DEVICE_ROOMS.idFromName(deviceId);
   return env.BRIDGE_DEVICE_ROOMS.get(id);
-}
-
-async function notifyJobEvent(env, deviceId, job, event) {
-  return notifyDeviceRoom(env, deviceId, {
-    type: "job.event",
-    job: publicJob(job),
-    event,
-    sent_at: now(),
-  });
 }
 
 async function notifyDeviceRoom(env, deviceId, message) {
@@ -2193,15 +2154,6 @@ async function updateAuthorizationWithEpoch(env, authorization, patch, options =
     epoch: to,
   });
   const cancelDenial = options.cancelDenial || null;
-  const cancelledJobs = cancelDenial
-    ? await cancelQueuedJobsForAuthorization(
-        env,
-        authorization.user_id,
-        authorization.device_id,
-        authorization.product_id,
-        cancelDenial,
-      )
-    : 0;
   const cancelledRelayEnvelopes = cancelDenial
     ? await cancelQueuedRelayEnvelopesForAuthorization(
         env,
@@ -2215,7 +2167,6 @@ async function updateAuthorizationWithEpoch(env, authorization, patch, options =
     from,
     to,
     cause: clean(options.cause, 120) || "authorization_update",
-    cancelled_jobs: cancelledJobs,
     cancelled_relay_envelopes: cancelledRelayEnvelopes,
   });
   await notifyDeviceRoom(env, authorization.device_id, {
@@ -2228,7 +2179,7 @@ async function updateAuthorizationWithEpoch(env, authorization, patch, options =
     },
     sent_at: now(),
   });
-  return { authorization: updated, cancelledJobs, cancelledRelayEnvelopes, from, to };
+  return { authorization: updated, cancelledRelayEnvelopes, from, to };
 }
 
 async function updateAuthorizationStatus(env, { userId, deviceId, product, status, sourceOrigin = "", auditActionPrefix = "authorization" }) {
@@ -2355,20 +2306,6 @@ function canonicalJson(value) {
   return `{${entries.map(([key, nested]) => `${JSON.stringify(key)}:${canonicalJson(nested)}`).join(",")}}`;
 }
 
-async function cancelQueuedJobsForAuthorization(env, userId, deviceId, productId, denial = { error: "authorization_revoked", reason: "authorization_revoked" }) {
-  const rows = await storage(env).select("bridge_jobs", {
-    user_id: userId,
-    device_id: deviceId,
-    product_id: productId,
-  });
-  let count = 0;
-  for (const row of rows.filter((job) => ["queued", "running"].includes(job.status))) {
-    await cancelAuthorizationInactiveJob(env, row, denial);
-    count += 1;
-  }
-  return count;
-}
-
 async function cancelQueuedRelayEnvelopesForAuthorization(env, userId, deviceId, productId, denial = { error: "authorization_revoked", reason: "authorization_revoked" }) {
   const rows = await storage(env).select("bridge_relay_envelopes", {
     user_id: userId,
@@ -2391,29 +2328,6 @@ async function cancelRelayEnvelope(env, row, reason = "authorization_revoked") {
   }) || row;
 }
 
-async function cancelAuthorizationInactiveJob(env, job, denial = { error: "authorization_revoked", reason: "authorization_revoked" }) {
-  if (!["queued", "running"].includes(job.status)) return job;
-  const cancelledAt = now();
-  const next = await storage(env).update("bridge_jobs", job.id, {
-    status: "cancelled",
-    input: terminalJobInput(job, { ok: false }),
-    result: {
-      ok: false,
-      error: denial.error,
-      reason: denial.reason,
-    },
-    completed_at: job.completed_at || cancelledAt,
-    updated_at: cancelledAt,
-  });
-  const event = await appendEvent(env, job.id, "cancelled", {
-    error: denial.error,
-    reason: denial.reason,
-    completed_at: next.completed_at,
-  });
-  await notifyJobEvent(env, job.device_id, next, event);
-  return next;
-}
-
 async function cleanupExpiredRows(env) {
   const store = storage(env);
   if (typeof store.deleteExpired !== "function") return {};
@@ -2433,21 +2347,6 @@ async function cleanupExpiredRows(env) {
     deleted[table] = await store.deleteExpired(table, "expires_at");
   }
   deleted.bridge_relay_envelopes = await cleanupExpiredRelayEnvelopes(env);
-  deleted.bridge_jobs = await cleanupExpiredJobs(env);
-  return deleted;
-}
-
-async function cleanupExpiredJobs(env) {
-  const store = storage(env);
-  if (typeof store.deleteWhere !== "function") return 0;
-  const cutoff = new Date(Date.now() - bridgeJobRetentionDays(env) * 24 * 60 * 60 * 1000).toISOString();
-  const jobs = (await store.select("bridge_jobs", {}, { order: "completed_at" }))
-    .filter((job) => isTerminalJobStatus(job.status) && Date.parse(job.completed_at || "") < Date.parse(cutoff));
-  let deleted = 0;
-  for (const job of jobs) {
-    await store.deleteWhere("bridge_job_events", { job_id: job.id });
-    deleted += await store.deleteWhere("bridge_jobs", { id: job.id });
-  }
   return deleted;
 }
 
@@ -2964,10 +2863,6 @@ function sessionLinkTtlMs(env) {
 
 function connectIntentTtlMs(env) {
   return boundedInteger(env.BRIDGE_CONNECT_INTENT_TTL_MS, CONNECT_INTENT_TTL_MS, 1, CONNECT_INTENT_TTL_MS);
-}
-
-function bridgeJobRetentionDays(env) {
-  return boundedInteger(env.BRIDGE_JOB_RETENTION_DAYS, BRIDGE_JOB_RETENTION_DAYS, 1, 365);
 }
 
 function authorizationImportProofTtlMs(env) {
@@ -3619,15 +3514,6 @@ function makeMemoryStore() {
 }
 
 function uniqueConflict(tableName, rows, row) {
-  if (tableName === "bridge_jobs" && row.request_key) {
-    const duplicate = rows.find((item) => (
-      item.user_id === row.user_id
-      && item.device_id === row.device_id
-      && item.product_id === row.product_id
-      && item.request_key === row.request_key
-    ));
-    if (duplicate) return "duplicate_request_key";
-  }
   if (tableName === "bridge_relay_envelopes" && row.request_key) {
     const duplicate = rows.find((item) => (
       item.user_id === row.user_id
@@ -3656,53 +3542,6 @@ function selectRows(rows, filters = {}, options = {}) {
   if (options.order) selected = selected.sort((a, b) => String(a[options.order] || "").localeCompare(String(b[options.order] || "")));
   if (options.desc) selected.reverse();
   return selected.map((row) => structuredClone(row));
-}
-
-function publicJob(job) {
-  const timing = job ? jobTiming(job) : null;
-  return job ? {
-    id: job.id,
-    device_id: job.device_id,
-    product_id: job.product_id,
-    source_origin: job.source_origin || null,
-    kind: job.kind,
-    runtime: job.runtime,
-    workspace_ref: job.workspace_ref,
-    input: job.input,
-    policy: job.policy,
-    status: job.status,
-    result: job.result,
-    request_key: job.request_key,
-    cap_token: job.cap_token || null,
-    created_at: job.created_at,
-    updated_at: job.updated_at,
-    queued_at: job.queued_at || job.created_at || null,
-    pushed_at: job.pushed_at || null,
-    desktop_received_at: job.desktop_received_at || null,
-    accepted_at: job.accepted_at || null,
-    started_at: job.started_at || null,
-    first_delta_at: job.first_delta_at || null,
-    completed_at: job.completed_at || null,
-    acked_at: job.acked_at || null,
-    timing,
-  } : null;
-}
-
-function jobTiming(job) {
-  return {
-    queued_to_claimed_ms: durationMs(job.queued_at || job.created_at, job.accepted_at),
-    pushed_to_claimed_ms: durationMs(job.pushed_at, job.accepted_at),
-    claimed_to_started_ms: durationMs(job.accepted_at, job.started_at),
-    started_to_first_delta_ms: durationMs(job.started_at, job.first_delta_at),
-    first_delta_to_completed_ms: durationMs(job.first_delta_at, job.completed_at),
-    total_job_ms: durationMs(job.created_at, job.acked_at || job.completed_at),
-  };
-}
-
-function durationMs(start, end) {
-  if (!start || !end) return null;
-  const value = Date.parse(end) - Date.parse(start);
-  return Number.isFinite(value) && value >= 0 ? value : null;
 }
 
 function publicDevice(device, env = {}) {
