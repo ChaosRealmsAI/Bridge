@@ -773,6 +773,9 @@ fn run_window() -> Result<(), String> {
                 if load_credentials().is_ok() {
                     let _ = start_worker(&state, proxy.clone());
                 }
+                if !initial_links.is_empty() {
+                    foreground_window_for_deep_link(&window);
+                }
                 for link in &initial_links {
                     let _ = proxy.send_event(UserEvent::UiEvent(json!({
                         "type": "event",
@@ -782,6 +785,9 @@ fn run_window() -> Result<(), String> {
                 }
             }
             Event::Opened { urls } => {
+                if !urls.is_empty() {
+                    foreground_window_for_deep_link(&window);
+                }
                 for url in urls {
                     let _ = proxy.send_event(UserEvent::UiEvent(json!({
                         "type": "event",
@@ -802,6 +808,9 @@ fn run_window() -> Result<(), String> {
                 let _ = webview.evaluate_script(&format!("window.PandaBridge.receive({});", message));
             }
             Event::UserEvent(UserEvent::UiEvent(message)) => {
+                if message.get("event").and_then(Value::as_str) == Some("deep_link") {
+                    foreground_window_for_deep_link(&window);
+                }
                 let _ = webview.evaluate_script(&format!("window.PandaBridge.receive({});", message));
             }
             Event::WindowEvent {
@@ -814,6 +823,13 @@ fn run_window() -> Result<(), String> {
             _ => {}
         }
     });
+}
+
+fn foreground_window_for_deep_link(window: &tao::window::Window) {
+    window.set_visible(true);
+    window.set_minimized(false);
+    window.request_user_attention(Some(tao::window::UserAttentionType::Informational));
+    window.set_focus();
 }
 
 #[cfg(windows)]
@@ -1223,6 +1239,34 @@ fn pending_claim_public_value(pending: &PendingIntentClaim) -> Value {
         .get("product_authorization")
         .cloned()
         .unwrap_or(Value::Null);
+    let product_display_name = authorization_display_product_name(&policy)
+        .or_else(|| pending.product.as_ref().map(|product| product.name.clone()))
+        .unwrap_or_else(|| pending.preview.product_name.clone());
+    let product_value = pending
+        .product
+        .as_ref()
+        .map(|product| {
+            json!({
+                "id": product.id,
+                "name": product_display_name,
+                "origin": product.origin,
+                "official_origin": product.official_origin,
+                "official_origins": product.official_origins,
+                "web_url": product.web_url,
+                "capabilities": product.capabilities
+            })
+        })
+        .unwrap_or_else(|| {
+            json!({
+                "id": pending.preview.product_id,
+                "name": product_display_name,
+                "origin": pending.preview.cloud_origin,
+                "official_origin": Value::Null,
+                "official_origins": Value::Null,
+                "web_url": Value::Null,
+                "capabilities": pending.preview.capabilities
+            })
+        });
     let authorization_status = pending
         .authorization
         .as_ref()
@@ -1245,15 +1289,7 @@ fn pending_claim_public_value(pending: &PendingIntentClaim) -> Value {
             "display_name": account.display_name,
             "email": account.email
         })),
-        "product": pending.product.as_ref().map(|product| json!({
-            "id": product.id,
-            "name": product.name,
-            "origin": product.origin,
-            "official_origin": product.official_origin,
-            "official_origins": product.official_origins,
-            "web_url": product.web_url,
-            "capabilities": product.capabilities
-        })),
+        "product": product_value,
         "authorization": {
             "status": authorization_status,
             "source_origin": source_origin,
@@ -1272,6 +1308,15 @@ fn pending_claim_public_value(pending: &PendingIntentClaim) -> Value {
         },
         "install_identity_bound": pending.install_identity_bound
     })
+}
+
+fn authorization_display_product_name(policy: &Value) -> Option<String> {
+    policy
+        .pointer("/display/product")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
 }
 
 fn sha256_short(value: &str) -> String {
@@ -2252,7 +2297,7 @@ fn preview_intent(api: &str, intent: &str) -> Result<IntentPreview, String> {
     let product_id = payload.connect_intent.product_id.clone();
     let catalog_product = profile_product(&profile, &product_id)
         .ok_or_else(|| format!("Bridge Cloud diagnostics does not expose product: {product_id}"))?;
-    let product_name = payload
+    let fallback_product_name = payload
         .connect_intent
         .product
         .as_ref()
@@ -2283,6 +2328,8 @@ fn preview_intent(api: &str, intent: &str) -> Result<IntentPreview, String> {
         &cloud_origin,
         &product_capabilities,
     );
+    let product_name =
+        authorization_display_product_name(&local_policy).unwrap_or(fallback_product_name);
     let capabilities =
         authorization_policy_capabilities(&local_policy).unwrap_or(product_capabilities);
     let local_credentials = load_credentials().ok();
@@ -6937,12 +6984,12 @@ mod tests {
     fn test_pending_intent_claim() -> PendingIntentClaim {
         let policy = json!({
             "version": "AUTH-SCOPE-v2",
-            "product_id": "panda-syllo",
-            "source_origin": "https://syllo.test.example",
+            "product_id": "acme-chat",
+            "source_origin": "https://acme.example",
             "capabilities": ["relay.envelope", "relay.ack"],
             "product_authorization": {
-                "owner": "syllo-product-adapter",
-                "capabilities": ["syllo.chat"],
+                "owner": "acme-product-adapter",
+                "capabilities": ["acme.chat"],
                 "roots": [{ "id": "project", "path_display": "[local]/project" }]
             }
         });
@@ -6963,25 +7010,25 @@ mod tests {
                 email: Some("user@example.test".to_string()),
             }),
             product: Some(ProductInfo {
-                id: "panda-syllo".to_string(),
-                name: "Panda Syllo".to_string(),
-                origin: Some("https://syllo.test.example".to_string()),
+                id: "acme-chat".to_string(),
+                name: "Acme Chat".to_string(),
+                origin: Some("https://acme.example".to_string()),
                 official_origin: None,
                 official_origins: Vec::new(),
-                web_url: Some("https://syllo.test.example/authorize".to_string()),
+                web_url: Some("https://acme.example/authorize".to_string()),
                 capabilities: vec!["relay.envelope".to_string(), "relay.ack".to_string()],
             }),
             authorization: Some(AuthorizationInfo {
                 status: Some(AuthorizationState::Pending),
                 policy: policy.clone(),
-                source_origin: Some("https://syllo.test.example".to_string()),
+                source_origin: Some("https://acme.example".to_string()),
                 epoch: 1,
             }),
             devices: None,
             preview: IntentPreview {
-                product_id: "panda-syllo".to_string(),
-                product_name: "Panda Syllo".to_string(),
-                cloud_origin: "https://syllo.test.example".to_string(),
+                product_id: "acme-chat".to_string(),
+                product_name: "Acme Chat".to_string(),
+                cloud_origin: "https://acme.example".to_string(),
                 capabilities: vec!["relay.envelope".to_string(), "relay.ack".to_string()],
                 local_policy: policy,
                 local_root_state: json!({ "fs": {}, "shell": {} }),
@@ -7007,20 +7054,35 @@ mod tests {
         );
         assert_eq!(
             public["product_authorization"]["owner"],
-            "syllo-product-adapter"
+            "acme-product-adapter"
         );
         assert_eq!(
             public["product_authorization"]["capabilities"],
-            json!(["syllo.chat"])
+            json!(["acme.chat"])
         );
         assert_eq!(
             public["authorization"]["source_origin"],
-            "https://syllo.test.example"
+            "https://acme.example"
         );
         let text = serde_json::to_string(&public).unwrap();
         assert!(!text.contains("pbd_secret_device_token"));
         assert!(!text.contains("intent_secret_token"));
         assert!(text.contains("product_authorization"));
+    }
+
+    #[test]
+    fn pending_claim_public_value_prefers_policy_display_product() {
+        let mut pending = test_pending_intent_claim();
+        if let Some(authorization) = pending.authorization.as_mut() {
+            authorization.policy["display"] = json!({ "product": "Coco" });
+        }
+        pending.preview.local_policy["display"] = json!({ "product": "Coco" });
+
+        let public = pending_claim_public_value(&pending);
+
+        assert_eq!(public["product"]["name"], "Coco");
+        let rows = pending_authorization_screenshot_rows(&public);
+        assert!(rows.iter().any(|row| row == "PRODUCT: Coco (acme-chat)"));
     }
 
     fn start_one_shot_json_server(payload: Value) -> (String, std::thread::JoinHandle<()>) {

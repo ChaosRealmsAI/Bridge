@@ -56,7 +56,6 @@ export type BridgeErrorCode =
 export const BRIDGE_SDK_VERSION: string;
 export const BridgeRelayKeyBootstrapAadVersions: Readonly<{
   bridge: "bridge-relay-key-bootstrap-v1";
-  legacySyllo: "syllo-relay-key-bootstrap-v1";
 }>;
 export const BridgeErrorCodes: Readonly<Partial<Record<BridgeErrorCode, BridgeErrorCode>>>;
 export const BRIDGE_ERROR_MESSAGES: Readonly<Partial<Record<BridgeErrorCode, string>>>;

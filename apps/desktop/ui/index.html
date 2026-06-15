@@ -244,7 +244,7 @@ window.PandaBridge={
       message.ok?item.resolve(message.result):item.reject(new Error(message.error||"desktop command failed"));
       return;
     }
-    if(message.type==="event"&&message.event==="deep_link")handleDeepLink(message.url).catch(showError);
+    if(message.type==="event"&&message.event==="deep_link")handleDeepLink(message.url).catch((error)=>showDeepLinkError(message.url,error));
     if(message.type==="event"&&message.event==="refresh")refresh().catch(()=>{});
   }
 };
@@ -333,6 +333,11 @@ const ICN={
 };
 function modalHtml(){
   if(!ui.pending)return`<div class="sheetwrap" id="sheetwrap"></div>`;
+  if(ui.pending.error)return `<div class="sheetwrap on" id="sheetwrap"><div class="sheet haz">
+    <div class="dsrc"><h3>${esc(ui.pending.product_name)}</h3><div class="org">${esc(ui.pending.domain)}</div></div>
+    <div class="dgr warn"><div class="dgr-h">${ICN.warn}<span>${t("failed")}</span></div><div class="dperr">${esc(ui.pending.error)}</div></div>
+    <div class="dfoot"><button class="btn" onclick="denyIntent()">${t("cancel")}</button></div>
+  </div></div>`;
   const d=ui.pending.danger;
   const crit=!!d&&d.tier==="critical";
   const ready=!d||dangerReady(d);
@@ -491,10 +496,18 @@ async function handleDeepLink(raw){
   const url=new URL(raw);const intent=url.searchParams.get("intent");if(!intent)return;
   const api=url.searchParams.get("api")||DEFAULT_API;
   const pre=await window.PandaBridge.call("preview_intent",{api,intent});
-  const known=knownFrom(pre.product_id,pre.product_name,pre.cloud_origin);
   const policy=pre.local_policy||{};
-  ui.pending={api,intent,product_id:pre.product_id,product_name:known.name,domain:known.origin,source_origin:policy.source_origin||pre.cloud_origin,policy_caps:pre.capabilities||policy.capabilities||[],product_authorization:policy.product_authorization||{},account:pre.user_display_name||"Panda Account",account_id:pre.user_id||null,select:known.id,danger:dangerFromPreview(pre)};
+  const displayName=(policy.display&&policy.display.product)||pre.product_name;
+  const known=knownFrom(pre.product_id,displayName,pre.cloud_origin);
+  ui.pending={api,intent,product_id:pre.product_id,product_name:displayName||known.name,domain:known.origin,source_origin:policy.source_origin||pre.cloud_origin,policy_caps:pre.capabilities||policy.capabilities||[],product_authorization:policy.product_authorization||{},account:pre.user_display_name||"Panda Account",account_id:pre.user_id||null,select:known.id,danger:dangerFromPreview(pre)};
   render();
+}
+function showDeepLinkError(raw,error){
+  let domain="panda-bridge://connect";
+  try{const u=new URL(raw);domain=u.searchParams.get("api")||u.protocol}catch{}
+  ui.pending={product_name:"Bridge authorization",domain,error:String(error?.message||error).slice(0,240)};
+  render();
+  showError(error);
 }
 function knownFrom(id,name,origin){
   const norm=normalizeProductKey(id);

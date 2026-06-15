@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import {
   BRIDGE_ERROR_MESSAGES,
-  BridgeRelayKeyBootstrapAadVersions,
   BridgeError,
   BridgeErrorCodes,
   bridgeDelegatedAccountStatusModel,
@@ -40,7 +39,7 @@ const envelope = await client.relay.create({
   senderKeyId: "product-key-1",
   recipientKeyId: "device-key-1",
   requestKey: "rq_1",
-  meta: { adapter_id: "panda-syllo" },
+  meta: { adapter_id: "acme-adapter" },
 });
 assert.equal(envelope.envelope.id, "env_1");
 assert.equal(calls[0].url, "https://api.example.test/v1/products/panda-chat/relay/envelopes");
@@ -59,24 +58,24 @@ assert.deepEqual(JSON.parse(calls[0].init.body), {
   sender_key_id: "product-key-1",
   recipient_key_id: "device-key-1",
   ttl_ms: 300000,
-  meta: { adapter_id: "panda-syllo" },
+  meta: { adapter_id: "acme-adapter" },
 });
 
 const relayAadText = bridgeRelayEnvelopeAadText({
-  productId: "panda-syllo",
+  productId: "acme-chat",
   deviceId: "dev_1",
-  channelId: "syllo_chat",
+  channelId: "acme_chat",
   direction: "product_to_device",
   seq: 7,
   authorizationId: "auth_1",
   authorizationEpoch: 3,
   relayKeyId: "rkx_test",
 });
-assert.equal(relayAadText, "product:panda-syllo|device:dev_1|channel:syllo_chat|direction:product_to_device|seq:7|authorization:auth_1|epoch:3|relay_key:rkx_test");
+assert.equal(relayAadText, "product:acme-chat|device:dev_1|channel:acme_chat|direction:product_to_device|seq:7|authorization:auth_1|epoch:3|relay_key:rkx_test");
 assert.equal(bridgeRelayEnvelopeAadBase64({
-  productId: "panda-syllo",
+  productId: "acme-chat",
   deviceId: "dev_1",
-  channelId: "syllo_chat",
+  channelId: "acme_chat",
   direction: "product_to_device",
   seq: 7,
   authorizationId: "auth_1",
@@ -85,24 +84,13 @@ assert.equal(bridgeRelayEnvelopeAadBase64({
 }), Buffer.from(relayAadText, "utf8").toString("base64"));
 assert.equal(
   bridgeRelayKeyBootstrapAadText({
-    productId: "panda-syllo",
+    productId: "acme-chat",
     deviceId: "dev_1",
     authorizationId: "auth_1",
     authorizationEpoch: 3,
     relayKeyId: "rkx_test",
   }),
-  "bridge-relay-key-bootstrap-v1|panda-syllo|dev_1|auth_1|3|rkx_test",
-);
-assert.equal(
-  bridgeRelayKeyBootstrapAadText({
-    wireVersion: BridgeRelayKeyBootstrapAadVersions.legacySyllo,
-    productId: "panda-syllo",
-    deviceId: "dev_1",
-    authorizationId: "auth_1",
-    authorizationEpoch: 3,
-    relayKeyId: "rkx_test",
-  }),
-  "syllo-relay-key-bootstrap-v1|panda-syllo|dev_1|auth_1|3|rkx_test",
+  "bridge-relay-key-bootstrap-v1|acme-chat|dev_1|auth_1|3|rkx_test",
 );
 
 assert.equal(bridgeDesktopInstallDefaults.macos.fileName, "panda-bridge-macos.dmg");
@@ -445,7 +433,7 @@ assert.deepEqual(JSON.parse(waitCalls[1].init.body), {});
 const callCalls = [];
 const callClient = createBridgeClient({
   apiBase: "https://api.example.test",
-  productId: "panda-syllo",
+  productId: "acme-chat",
   fetch: async (url, init) => {
     callCalls.push({ url, init });
     const parsed = new URL(url);
@@ -489,9 +477,9 @@ const callResult = await callClient.relay.createCall({
   intervalMs: 1,
   session: {
     encrypt(input) {
-      assert.equal(input.context.productId, "panda-syllo");
+      assert.equal(input.context.productId, "acme-chat");
       assert.equal(input.context.requestKey, "rq_call_1");
-      assert.equal(input.aadText, "product:panda-syllo|device:dev_call_1|channel:chan_call_1|direction:product_to_device|seq:5|authorization:auth_call_1|epoch:9|relay_key:rkx_call_1");
+      assert.equal(input.aadText, "product:acme-chat|device:dev_call_1|channel:chan_call_1|direction:product_to_device|seq:5|authorization:auth_call_1|epoch:9|relay_key:rkx_call_1");
       assert.deepEqual(input.payload, { type: "workspace.list" });
       return {
         ciphertext: "base64:encrypted-request",
@@ -499,7 +487,7 @@ const callResult = await callClient.relay.createCall({
         algorithm: "AES-GCM-256",
         senderKeyId: "product-key-1",
         recipientKeyId: "rkx_call_1",
-        meta: { adapter_id: "panda-syllo" },
+        meta: { adapter_id: "acme-adapter" },
       };
     },
     decrypt(envelope, input) {
@@ -510,10 +498,10 @@ const callResult = await callClient.relay.createCall({
   },
 });
 assert.deepEqual(callResult.payload, { ok: true, envelopeId: "env_call_response" });
-assert.equal(callCalls[0].url, "https://api.example.test/v1/products/panda-syllo/relay/envelopes");
+assert.equal(callCalls[0].url, "https://api.example.test/v1/products/acme-chat/relay/envelopes");
 assert.deepEqual(JSON.parse(callCalls[0].init.body), {
   envelope_version: "relay-envelope-v1",
-  product_id: "panda-syllo",
+  product_id: "acme-chat",
   device_id: "dev_call_1",
   channel_id: "chan_call_1",
   direction: "product_to_device",
@@ -521,7 +509,7 @@ assert.deepEqual(JSON.parse(callCalls[0].init.body), {
   request_key: "rq_call_1",
   ciphertext: "base64:encrypted-request",
   aad: bridgeRelayEnvelopeAadBase64({
-    productId: "panda-syllo",
+    productId: "acme-chat",
     deviceId: "dev_call_1",
     channelId: "chan_call_1",
     direction: "product_to_device",
@@ -536,15 +524,15 @@ assert.deepEqual(JSON.parse(callCalls[0].init.body), {
   recipient_key_id: "rkx_call_1",
   ttl_ms: 300000,
   meta: {
-    adapter_id: "panda-syllo",
+    adapter_id: "acme-adapter",
     authorization_id: "auth_call_1",
     authorization_epoch: "9",
     relay_key_id: "rkx_call_1",
   },
 });
-assert.equal(callCalls[1].url, "https://api.example.test/v1/products/panda-syllo/relay/envelopes?device_id=dev_call_1&channel_id=chan_call_1&after_seq=5");
+assert.equal(callCalls[1].url, "https://api.example.test/v1/products/acme-chat/relay/envelopes?device_id=dev_call_1&channel_id=chan_call_1&after_seq=5");
 await callResult.ack({ processed: true });
-assert.equal(callCalls[2].url, "https://api.example.test/v1/products/panda-syllo/relay/envelopes/env_call_response/ack");
+assert.equal(callCalls[2].url, "https://api.example.test/v1/products/acme-chat/relay/envelopes/env_call_response/ack");
 assert.deepEqual(JSON.parse(callCalls[2].init.body), { processed: true });
 
 const unauthPreflight = mockClient([

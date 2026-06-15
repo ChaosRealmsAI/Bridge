@@ -2,7 +2,6 @@ export const BRIDGE_SDK_VERSION = "0.1.0";
 
 export const BridgeRelayKeyBootstrapAadVersions = Object.freeze({
   bridge: "bridge-relay-key-bootstrap-v1",
-  legacySyllo: "syllo-relay-key-bootstrap-v1",
 });
 
 export const BridgeErrorCodes = Object.freeze({
