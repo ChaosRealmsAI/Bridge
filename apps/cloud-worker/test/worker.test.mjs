@@ -636,6 +636,14 @@ const deviceInbox = await api("GET", "/v1/connectors/relay/envelopes", null, cla
 assert.equal(deviceInbox.items.length, 1);
 assert.equal(deviceInbox.items[0].id, created.envelope.id);
 assert.equal(deviceInbox.items[0].delivery_status, "delivered");
+assert.deepEqual(deviceInbox.cursor, {
+  after_seq: 0,
+  next_after_seq: 1,
+  limit: 100,
+  has_more: false,
+  returned: 1,
+  include_acked: false,
+});
 const redeliveredInbox = await api("GET", "/v1/connectors/relay/envelopes", null, claimed.device_token);
 assert.equal(redeliveredInbox.items.length, 1);
 assert.equal(redeliveredInbox.items[0].id, created.envelope.id);
@@ -659,7 +667,30 @@ const productInbox = await api("GET", `/v1/products/panda-chat/relay/envelopes?d
 assert.equal(productInbox.items.length, 1);
 assert.equal(productInbox.items[0].id, deviceReply.envelope.id);
 assert.equal(productInbox.items[0].ciphertext, "base64:reply");
+assert.equal(productInbox.cursor.next_after_seq, 2);
 await api("POST", `/v1/products/panda-chat/relay/envelopes/${deviceReply.envelope.id}/ack`, {});
+const productAckedInbox = await api("GET", `/v1/products/panda-chat/relay/envelopes?device_id=${encodeURIComponent(claimed.device.id)}&channel_id=chan_1&include_acked=true&limit=1&wait_ms=1`);
+assert.equal(productAckedInbox.items.length, 1);
+assert.equal(productAckedInbox.items[0].id, deviceReply.envelope.id);
+assert.equal(productAckedInbox.items[0].delivery_status, "acked");
+assert.deepEqual(productAckedInbox.cursor, {
+  after_seq: 0,
+  next_after_seq: 2,
+  limit: 1,
+  has_more: false,
+  returned: 1,
+  include_acked: true,
+});
+const normalizedInbox = await api("GET", `/v1/products/panda-chat/relay/envelopes?device_id=${encodeURIComponent(claimed.device.id)}&channel_id=chan_1&include_acked=true&after_seq=not-a-number&limit=9999&wait_ms=-10`);
+assert.equal(normalizedInbox.items.length, 1);
+assert.deepEqual(normalizedInbox.cursor, {
+  after_seq: 0,
+  next_after_seq: 2,
+  limit: 500,
+  has_more: false,
+  returned: 1,
+  include_acked: true,
+});
 
 const snapshot = __bridgeTestMemorySnapshot();
 assert.equal(snapshot.bridge_relay_envelopes.length, 2);

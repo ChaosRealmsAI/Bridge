@@ -120,6 +120,18 @@ await waited.ack();
 assert.equal(waitCalls[1].path, "/v1/products/otherline/delegated/relay/envelopes/env_reply_1/ack");
 assert.equal(waitCalls[1].init.method, "POST");
 
+await waitServer.listRelayEnvelopes({
+  userId: "user_1",
+  deviceId: "dev_1",
+  channelId: "chan_1",
+  afterSeq: 2,
+  limit: 25,
+  waitMs: 5000,
+  includeAcked: true,
+});
+assert.equal(waitCalls[2].path, "/v1/products/otherline/delegated/relay/envelopes?device_id=dev_1&channel_id=chan_1&after_seq=2&limit=25&wait_ms=5000&include_acked=true");
+assert.equal(waitCalls[2].init.method, "GET");
+
 const fallbackCalls = [];
 const fallbackServer = createBridgeServerClient({
   apiBase: "https://api.example.test",

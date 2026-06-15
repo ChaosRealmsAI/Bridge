@@ -127,9 +127,15 @@ export function createBridgeServerClient(options = {}) {
       const deviceId = stringValue(input.deviceId || input.device_id, 200);
       const channelId = stringValue(input.channelId || input.channel_id, 200);
       const afterSeq = input.afterSeq ?? input.after_seq;
+      const limit = input.limit;
+      const waitMs = input.waitMs ?? input.wait_ms;
+      const includeAcked = input.includeAcked ?? input.include_acked;
       if (deviceId) params.set("device_id", deviceId);
       if (channelId) params.set("channel_id", channelId);
       if (afterSeq != null) params.set("after_seq", String(afterSeq));
+      if (limit != null) params.set("limit", String(limit));
+      if (waitMs != null) params.set("wait_ms", String(waitMs));
+      if (includeAcked != null) params.set("include_acked", String(includeAcked));
       const query = params.toString();
       return request("GET", `/v1/products/${encodeURIComponent(productId)}/delegated/relay/envelopes${query ? `?${query}` : ""}`, null, input);
     },
@@ -147,9 +153,15 @@ export function createBridgeServerClient(options = {}) {
         const deviceId = stringValue(nextInput.deviceId || nextInput.device_id, 200);
         const channelId = stringValue(nextInput.channelId || nextInput.channel_id, 200);
         const afterSeq = nextInput.afterSeq ?? nextInput.after_seq;
+        const limit = nextInput.limit;
+        const waitMs = nextInput.waitMs ?? nextInput.wait_ms;
+        const includeAcked = nextInput.includeAcked ?? nextInput.include_acked;
         if (deviceId) params.set("device_id", deviceId);
         if (channelId) params.set("channel_id", channelId);
         if (afterSeq != null) params.set("after_seq", String(afterSeq));
+        if (limit != null) params.set("limit", String(limit));
+        if (waitMs != null) params.set("wait_ms", String(waitMs));
+        if (includeAcked != null) params.set("include_acked", String(includeAcked));
         const query = params.toString();
         return request("GET", `/v1/products/${encodeURIComponent(productId)}/delegated/relay/envelopes${query ? `?${query}` : ""}`, null, nextInput);
       },

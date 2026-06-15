@@ -974,7 +974,7 @@ async function connectorRelayEnvelopes(request, env) {
   const url = new URL(request.url);
   const channelId = clean(url.searchParams.get("channel_id"), 160);
   const productId = clean(url.searchParams.get("product_id"), 80);
-  const afterSeq = Number(url.searchParams.get("after_seq") || 0);
+  const listOptions = relayListOptions(url);
   const filters = {
     user_id: connector.device.user_id,
     device_id: connector.device.id,
@@ -982,27 +982,14 @@ async function connectorRelayEnvelopes(request, env) {
   };
   if (productId) filters.product_id = productId;
   if (channelId) filters.channel_id = channelId;
-  const rows = await storage(env).select("bridge_relay_envelopes", filters, { order: "created_at" });
-  const items = [];
-  for (const row of rows
-    .filter((item) => ["queued", "delivered"].includes(item.delivery_status || "queued"))
-    .filter((item) => Number(item.seq || 0) > afterSeq && !isExpired(item.expires_at))) {
-    const authorization = await authorizationForProduct(env, row.user_id, row.device_id, row.product_id);
-    const denial = authorizationJobDenial(authorization);
-    if (denial) {
-      await expireRelayEnvelope(env, row, denial.reason);
-      continue;
-    }
-    const delivered = row.delivery_status === "queued"
-      ? await storage(env).update("bridge_relay_envelopes", row.id, {
-        delivery_status: "delivered",
-        delivered_at: row.delivered_at || now(),
-        updated_at: now(),
-      })
-      : row;
-    items.push(publicRelayEnvelope(delivered || row));
-  }
-  return json({ items, transport: realtimeEnabled(env) ? "websocket_or_poll" : "poll" }, env);
+  const result = await waitForRelayList(listOptions.waitMs, async () => {
+    const rows = await storage(env).select("bridge_relay_envelopes", filters, { order: "created_at" });
+    return await connectorRelayListResult(env, rows, listOptions);
+  });
+  return json({
+    ...relayListPayload(result, listOptions),
+    transport: realtimeEnabled(env) ? "websocket_or_poll" : "poll",
+  }, env);
 }
 
 async function createConnectorRelayEnvelope(request, env, ctx = {}) {
@@ -1111,7 +1098,7 @@ async function listRelayEnvelopesForProduct(request, env, product, userId, direc
   const url = new URL(request.url);
   const channelId = clean(url.searchParams.get("channel_id"), 160);
   const deviceId = clean(url.searchParams.get("device_id"), 120) || clean(delegatedDeviceId, 120);
-  const afterSeq = Number(url.searchParams.get("after_seq") || 0);
+  const listOptions = relayListOptions(url);
   const filters = {
     user_id: userId,
     product_id: product.id,
@@ -1119,13 +1106,92 @@ async function listRelayEnvelopesForProduct(request, env, product, userId, direc
   };
   if (deviceId) filters.device_id = deviceId;
   if (channelId) filters.channel_id = channelId;
-  const rows = await storage(env).select("bridge_relay_envelopes", filters, { order: "created_at" });
-  const items = rows
-    .filter((item) => ["queued", "delivered"].includes(item.delivery_status || "queued"))
-    .filter((item) => Number(item.seq || 0) > afterSeq)
-    .filter((item) => !isExpired(item.expires_at))
-    .map(publicRelayEnvelope);
-  return json({ items, product: publicStateProduct(product) }, env);
+  const result = await waitForRelayList(listOptions.waitMs, async () => {
+    const rows = await storage(env).select("bridge_relay_envelopes", filters, { order: "created_at" });
+    return relayListResult(rows, listOptions);
+  });
+  return json({ ...relayListPayload(result, listOptions), product: publicStateProduct(product) }, env);
+}
+
+function relayListOptions(url) {
+  const afterSeqRaw = Number(url.searchParams.get("after_seq") || 0);
+  const limitRaw = Number(url.searchParams.get("limit") || 100);
+  const waitRaw = Number(url.searchParams.get("wait_ms") || url.searchParams.get("waitMs") || 0);
+  return {
+    afterSeq: Math.max(0, Number.isFinite(afterSeqRaw) ? Math.floor(afterSeqRaw) : 0),
+    limit: Math.max(1, Math.min(Number.isFinite(limitRaw) ? Math.floor(limitRaw) : 100, 500)),
+    waitMs: Math.max(0, Math.min(Number.isFinite(waitRaw) ? Math.floor(waitRaw) : 0, 30000)),
+    includeAcked: ["1", "true", "yes"].includes(String(url.searchParams.get("include_acked") || url.searchParams.get("includeAcked") || "").toLowerCase()),
+  };
+}
+
+async function waitForRelayList(waitMs, collect) {
+  const deadline = Date.now() + waitMs;
+  for (;;) {
+    const result = await collect();
+    if (result.items.length || waitMs <= 0 || Date.now() >= deadline) return result;
+    await new Promise((resolve) => setTimeout(resolve, Math.min(250, Math.max(25, deadline - Date.now()))));
+  }
+}
+
+function relayListStatuses(options) {
+  return options.includeAcked ? ["queued", "delivered", "acked"] : ["queued", "delivered"];
+}
+
+function relayListCandidateRows(rows, options) {
+  const statuses = relayListStatuses(options);
+  return rows
+    .filter((item) => statuses.includes(item.delivery_status || "queued"))
+    .filter((item) => Number(item.seq || 0) > options.afterSeq)
+    .filter((item) => !isExpired(item.expires_at));
+}
+
+function relayListResult(rows, options) {
+  const candidates = relayListCandidateRows(rows, options);
+  return {
+    items: candidates.slice(0, options.limit).map(publicRelayEnvelope),
+    candidateCount: candidates.length,
+  };
+}
+
+async function connectorRelayListResult(env, rows, options) {
+  const candidates = relayListCandidateRows(rows, options);
+  const items = [];
+  for (const row of candidates) {
+    const authorization = await authorizationForProduct(env, row.user_id, row.device_id, row.product_id);
+    const denial = authorizationJobDenial(authorization);
+    if (denial) {
+      await expireRelayEnvelope(env, row, denial.reason);
+      continue;
+    }
+    const delivered = row.delivery_status === "queued"
+      ? await storage(env).update("bridge_relay_envelopes", row.id, {
+        delivery_status: "delivered",
+        delivered_at: row.delivered_at || now(),
+        updated_at: now(),
+      })
+      : row;
+    items.push(publicRelayEnvelope(delivered || row));
+    if (items.length >= options.limit) break;
+  }
+  return { items, candidateCount: candidates.length };
+}
+
+function relayListPayload(result, options) {
+  const lastSeq = result.items.length
+    ? Math.max(...result.items.map((item) => Number(item.seq || 0)))
+    : options.afterSeq;
+  return {
+    items: result.items,
+    cursor: {
+      after_seq: options.afterSeq,
+      next_after_seq: lastSeq,
+      limit: options.limit,
+      has_more: result.candidateCount > result.items.length,
+      returned: result.items.length,
+      include_acked: options.includeAcked,
+    },
+  };
 }
 
 async function ackRelayEnvelope(env, options = {}) {

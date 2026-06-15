@@ -66,6 +66,11 @@ export type BridgeServerRelayListInput = BridgeServerUserInput & {
   channel_id?: string;
   afterSeq?: number;
   after_seq?: number;
+  limit?: number;
+  waitMs?: number;
+  wait_ms?: number;
+  includeAcked?: boolean;
+  include_acked?: boolean;
 };
 
 export type BridgeServerRelayWaitInput = BridgeServerRelayListInput & {

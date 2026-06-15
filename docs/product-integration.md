@@ -184,6 +184,8 @@ const inbox = await bridge.listRelayEnvelopes({
   deviceId,
   channelId: "my-product-channel",
   afterSeq: 1,
+  limit: 50,
+  waitMs: 30000,
 });
 
 for (const item of inbox.items) {
@@ -191,6 +193,8 @@ for (const item of inbox.items) {
   await bridge.ackRelayEnvelope(item.id, { userId: user.id, deviceId });
 }
 ```
+
+`listRelayEnvelopes` 返回 `cursor.next_after_seq`，下一轮用它作为 `afterSeq`。`limit` 默认 `100`，最大 `500`；`waitMs` 最大 `30000`，用于长轮询。默认不返回已 ACK 的 envelope；只有审计、诊断或恢复场景才传 `includeAcked: true`。
 
 Bridge 只校验 envelope 形状和投递权限，不理解 ciphertext，也不保存 prompt、reply、stdout、stderr、路径、文件内容或产品业务对象。
 

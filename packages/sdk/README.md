@@ -121,6 +121,7 @@ const ready = await bridge.ensureReady({ wait: true, timeoutMs: 120000 });
 高层调用用 `bridge.relay.createCall({ payload, session })`：SDK 负责稳定 AAD、创建 product-to-device envelope、等待 device-to-product envelope，并把 ACK 留给调用方显式执行。`session.encrypt` / `session.decrypt` 由产品提供，里面放 AES-GCM、relay key、压缩和 payload 编解码。
 
 低层调用仍可直接使用 `relay.create/list/ack/waitForResponse`，用于自管 envelope、流式 channel 或迁移期兼容。
+`relay.list` 和 server `listRelayEnvelopes` 支持 `afterSeq`/`after_seq`、`limit`、`waitMs`/`wait_ms`、`includeAcked`/`include_acked`，响应里的 `cursor.next_after_seq` 是下一轮游标；默认不返回已 ACK envelope。
 
 ### server client
 

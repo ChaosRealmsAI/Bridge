@@ -211,6 +211,32 @@ async function callLocalAdapter(command) {
 
 ACK 规则：**调用方成功解密并完成自己的处理后再 ACK**。不要在收到 envelope 时立刻 ACK；否则产品处理失败时 Bridge 会认为响应已消费。
 
+低层 `relay.list` / `listRelayEnvelopes` 可用于自管 channel、流式消费或诊断：
+
+```js
+const inbox = await bridge.relay.list({
+  deviceId,
+  channelId,
+  afterSeq: lastSeenSeq,
+  limit: 50,
+  waitMs: 30000,
+  includeAcked: false,
+});
+
+for (const envelope of inbox.items) {
+  await handleEnvelope(envelope);
+}
+lastSeenSeq = inbox.cursor.next_after_seq;
+```
+
+列表契约：
+
+- `afterSeq` / `after_seq` 是排他游标；非法值按 `0` 处理。
+- `limit` 默认 `100`，范围 `1..500`。
+- `waitMs` / `wait_ms` 默认 `0`，最大 `30000`，用于服务端长轮询，返回前有新 envelope 会立即结束等待。
+- 默认只返回 `queued` / `delivered` 且未过期的 envelope；`includeAcked: true` 只用于审计、诊断或恢复场景。
+- 响应包含 `cursor.after_seq`、`cursor.next_after_seq`、`cursor.limit`、`cursor.returned`、`cursor.has_more` 和 `cursor.include_acked`；下一轮用 `next_after_seq` 继续。
+
 ## 7. 后端委托完整调用
 
 ```js

@@ -430,6 +430,17 @@ assert.equal(waitCalls[1].url, "https://api.example.test/v1/products/panda-chat/
 assert.equal(waitCalls[1].init.method, "POST");
 assert.deepEqual(JSON.parse(waitCalls[1].init.body), {});
 
+await waitClient.relay.list({
+  deviceId: "dev_custom_1",
+  channelId: "chan_custom_1",
+  afterSeq: 2,
+  limit: 25,
+  waitMs: 5000,
+  includeAcked: true,
+});
+assert.equal(waitCalls[2].url, "https://api.example.test/v1/products/panda-chat/relay/envelopes?device_id=dev_custom_1&channel_id=chan_custom_1&after_seq=2&limit=25&wait_ms=5000&include_acked=true");
+assert.equal(waitCalls[2].init.method, "GET");
+
 const callCalls = [];
 const callClient = createBridgeClient({
   apiBase: "https://api.example.test",
