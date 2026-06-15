@@ -11,6 +11,7 @@ import { validateRelayEnvelope } from "../../packages/protocol/src/index.js";
 import { createBridgeClient } from "../../packages/sdk/src/index.js";
 
 const verticalKinds = [
+  "coco.",
   "codex.",
   "claude.",
   "syllo.",
@@ -18,6 +19,13 @@ const verticalKinds = [
   "fs.read",
   "fs.write",
   "data.",
+];
+const publicLegacyJobMarkers = [
+  "cancelled_jobs",
+  "cancelledJobs",
+  "invalid_job",
+  "job_not_found",
+  "unsupported_job_kind",
 ];
 
 assert.deepEqual(BRIDGE_RUNTIME_CAPABILITIES, RELAY_CAPABILITIES);
@@ -113,7 +121,9 @@ const protocolMain = readFileSync(new URL("../../packages/protocol/src/index.js"
 assert.equal(protocolMain.includes("function validateBridgeJob"), false, "protocol source must not keep legacy validateBridgeJob");
 assert.equal(protocolMain.includes("function normalizeBridgeJob"), false, "protocol source must not keep legacy normalizeBridgeJob");
 const sdkSource = readFileSync(new URL("../../packages/sdk/src/index.js", import.meta.url), "utf8");
+const sdkServerSource = readFileSync(new URL("../../packages/sdk/src/server.js", import.meta.url), "utf8");
 const sdkTypes = readFileSync(new URL("../../packages/sdk/src/index.d.ts", import.meta.url), "utf8");
+const sdkServerTypes = readFileSync(new URL("../../packages/sdk/src/server.d.ts", import.meta.url), "utf8");
 const sdkPublicCopy = readFileSync(new URL("../../apps/web-chat/public/sdk/index.js", import.meta.url), "utf8");
 const adapterSdkSource = readFileSync(new URL("../../packages/adapter-sdk/src/index.js", import.meta.url), "utf8");
 const adapterSdkTypes = readFileSync(new URL("../../packages/adapter-sdk/src/index.d.ts", import.meta.url), "utf8");
@@ -144,6 +154,13 @@ for (const marker of verticalKinds) {
   assert.equal(adapterSdkSource.includes(marker), false, `Adapter SDK source must not contain vertical business kind: ${marker}`);
   assert.equal(adapterSdkTypes.includes(marker), false, `Adapter SDK types must not contain vertical business kind: ${marker}`);
 }
+for (const marker of publicLegacyJobMarkers) {
+  assert.equal(sdkSource.includes(marker), false, `SDK source must not expose legacy job marker: ${marker}`);
+  assert.equal(sdkServerSource.includes(marker), false, `server SDK source must not expose legacy job marker: ${marker}`);
+  assert.equal(sdkPublicCopy.includes(marker), false, `public SDK must not expose legacy job marker: ${marker}`);
+  assert.equal(sdkTypes.includes(marker), false, `SDK types must not expose legacy job marker: ${marker}`);
+  assert.equal(sdkServerTypes.includes(marker), false, `server SDK types must not expose legacy job marker: ${marker}`);
+}
 
 const desktopMain = readFileSync(new URL("../../apps/desktop/src/main.rs", import.meta.url), "utf8");
 assert.ok(desktopMain.includes("/v1/connectors/relay/envelopes"), "Desktop must poll relay envelope endpoint");
@@ -173,6 +190,18 @@ assert.ok(desktopUi.includes("product_authorization"), "Desktop UI preview must 
 assert.ok(desktopUi.includes("policy caps"), "Desktop UI preview must render relay policy capability summary");
 
 const workerMain = readFileSync(new URL("../../apps/cloud-worker/src/index.js", import.meta.url), "utf8");
+for (const marker of [
+  ...verticalKinds,
+  ...publicLegacyJobMarkers,
+  "job.kind",
+  "normalizeConnectorBoundaries",
+  "authorizationScopeDenial",
+  "authorizationFsScopeDenial",
+  "authorizationDataScopeDenial",
+  "authorizationShellScopeDenial",
+]) {
+  assert.equal(workerMain.includes(marker), false, `Worker core must not contain vertical runtime marker: ${marker}`);
+}
 assert.equal(workerMain.includes('product?.id !== "panda-syllo"'), false, "Worker must not keep Syllo-specific relay envelope enforcement");
 assert.equal(workerMain.includes('product.id === "panda-syllo"'), false, "Worker must not branch relay envelope behavior on Syllo product identity");
 assert.ok(workerMain.includes("safeAdapterProducts"), "Worker must preserve generic product-scoped adapter state");

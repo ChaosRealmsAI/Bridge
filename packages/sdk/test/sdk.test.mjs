@@ -309,7 +309,7 @@ const authClient = createBridgeClient({
     return new Response(JSON.stringify({
       authorization: { id: "auth_1", device_id: "dev_1", status: body.status || "active", policy: { capabilities: ["relay.envelope"] } },
       device: { id: "dev_1", status: body.status === "paused" ? "online" : "online" },
-      cancelled_jobs: init.method === "DELETE" ? 2 : 0,
+      cancelled_relay_envelopes: init.method === "DELETE" ? 2 : 0,
     }), {
       status: 200,
       headers: { "content-type": "application/json" },
@@ -334,7 +334,7 @@ assert.equal(authCalls[2].init.method, "PATCH");
 assert.deepEqual(JSON.parse(authCalls[2].init.body), { status: "active" });
 
 const removed = await authClient.authorization.remove({ deviceId: "dev_1" });
-assert.equal(removed.cancelled_jobs, 2);
+assert.equal(removed.cancelled_relay_envelopes, 2);
 assert.equal(authCalls[3].init.method, "DELETE");
 
 await authClient.products.revokeAuthorization("dev_1");

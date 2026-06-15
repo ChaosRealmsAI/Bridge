@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, createHmac, randomUUID } from "node:crypto";
-import worker, { BridgeDeviceRoom, __bridgeTestMemorySnapshot, __bridgeTestRelayEnvelopeMatches } from "../src/index.js";
+import worker, { BridgeDeviceRoom, __bridgeTestConnectorRelayListPayload, __bridgeTestMemorySnapshot, __bridgeTestRelayEnvelopeMatches } from "../src/index.js";
 import { RELAY_CAPABILITIES, assertRegistryWellFormed, scopeDangerMetadataFromCapabilities } from "../src/products.js";
 
 const assetRequests = [];
@@ -691,6 +691,59 @@ assert.deepEqual(normalizedInbox.cursor, {
   returned: 1,
   include_acked: true,
 });
+const unscopedProductCursor = await apiRaw("GET", `/v1/products/panda-chat/relay/envelopes?device_id=${encodeURIComponent(claimed.device.id)}&after_seq=1`);
+assert.equal(unscopedProductCursor.response.status, 400);
+assert.equal(unscopedProductCursor.payload.error, "relay_cursor_requires_channel");
+const unscopedConnectorCursor = await apiRaw("GET", "/v1/connectors/relay/envelopes?after_seq=1", null, claimed.device_token);
+assert.equal(unscopedConnectorCursor.response.status, 400);
+assert.equal(unscopedConnectorCursor.payload.error, "relay_cursor_requires_channel");
+const claimedChatAuthorization = __bridgeTestMemorySnapshot().bridge_authorizations.find((row) => {
+  return row.device_id === claimed.device.id && row.product_id === "panda-chat" && row.status === "active";
+});
+assert.ok(claimedChatAuthorization);
+const connectorHasMoreAfterDeniedRows = await __bridgeTestConnectorRelayListPayload(env, [
+  {
+    id: "relay_has_more_deliverable",
+    user_id: claimedChatAuthorization.user_id,
+    device_id: claimed.device.id,
+    product_id: "panda-chat",
+    channel_id: "chan_has_more_active",
+    direction: "product_to_device",
+    seq: 3,
+    request_key: "rq_has_more_active",
+    ciphertext: "base64:active",
+    aad: "base64:aad",
+    nonce: "base64:nonce",
+    algorithm: "Noise_XX_25519_ChaChaPoly_BLAKE2s",
+    sender_key_id: "product-key-1",
+    recipient_key_id: "device-key-1",
+    expires_at: new Date(Date.now() + 300000).toISOString(),
+    delivery_status: "queued",
+    meta: {},
+  },
+  {
+    id: "relay_has_more_denied",
+    user_id: claimedChatAuthorization.user_id,
+    device_id: claimed.device.id,
+    product_id: "panda-dev",
+    channel_id: "chan_has_more_denied",
+    direction: "product_to_device",
+    seq: 4,
+    request_key: "rq_has_more_denied",
+    ciphertext: "base64:denied",
+    aad: "base64:aad",
+    nonce: "base64:nonce",
+    algorithm: "Noise_XX_25519_ChaChaPoly_BLAKE2s",
+    sender_key_id: "product-key-1",
+    recipient_key_id: "device-key-1",
+    expires_at: new Date(Date.now() + 300000).toISOString(),
+    delivery_status: "queued",
+    meta: {},
+  },
+], { limit: 1 });
+assert.equal(connectorHasMoreAfterDeniedRows.items.length, 1);
+assert.equal(connectorHasMoreAfterDeniedRows.items[0].id, "relay_has_more_deliverable");
+assert.equal(connectorHasMoreAfterDeniedRows.cursor.has_more, false);
 
 const snapshot = __bridgeTestMemorySnapshot();
 assert.equal(snapshot.bridge_relay_envelopes.length, 2);

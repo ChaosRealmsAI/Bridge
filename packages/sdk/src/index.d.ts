@@ -23,11 +23,9 @@ export type BridgeErrorCode =
   | "invalid_authorization_status"
   | "invalid_connect_intent"
   | "invalid_content_type"
-  | "invalid_job"
   | "invalid_json"
   | "invalid_origin"
   | "invalid_relay_envelope"
-  | "job_not_found"
   | "legacy_runtime_api_removed"
   | "local_policy_denied"
   | "not_found"
@@ -49,7 +47,6 @@ export type BridgeErrorCode =
   | "request_body_too_large"
   | "scope_insufficient"
   | "unauthorized"
-  | "unsupported_job_kind"
   | "bridge_error"
   | "bridge_ready_timeout";
 
@@ -307,7 +304,7 @@ export type BridgeAuthorizationResponse = {
   connected: boolean;
   current_device: BridgeStateDevice | null;
   accounts: BridgeStateAccount[];
-  cancelled_jobs?: number;
+  cancelled_relay_envelopes?: number;
 };
 
 export type BridgeRelayEnvelopeInput = {

@@ -31,7 +31,7 @@ const server = createBridgeServerClient({
     return jsonResponse({
       authorization: { id: "auth_1", device_id: "dev_1", status: body.status || "active" },
       device: { id: "dev_1", status: "online" },
-      cancelled_jobs: init.method === "DELETE" ? 1 : 0,
+      cancelled_relay_envelopes: init.method === "DELETE" ? 1 : 0,
     });
   },
 });
@@ -59,7 +59,7 @@ assert.equal(calls[3].init.method, "PATCH");
 assert.deepEqual(JSON.parse(calls[3].init.body), { status: "active" });
 
 const removed = await server.authorization.remove({ userId: "user_1", deviceId: "dev_1" });
-assert.equal(removed.cancelled_jobs, 1);
+assert.equal(removed.cancelled_relay_envelopes, 1);
 assert.equal(calls[4].path, "/v1/products/otherline/delegated/authorization?device_id=dev_1");
 assert.equal(calls[4].init.method, "DELETE");
 
@@ -177,7 +177,7 @@ const accountLevelServer = createBridgeServerClient({
     const parsed = new URL(url);
     accountLevelCalls.push({ path: `${parsed.pathname}${parsed.search}`, method: init.method, deviceHeader: new Headers(init.headers).get("x-panda-bridge-device-id") });
     if (init.method === "DELETE") {
-      return jsonResponse({ authorization: { id: "auth_1", device_id: "dev_1", status: "revoked" }, device: { id: "dev_1", status: "online" }, cancelled_jobs: 2 });
+      return jsonResponse({ authorization: { id: "auth_1", device_id: "dev_1", status: "revoked" }, device: { id: "dev_1", status: "online" }, cancelled_relay_envelopes: 2 });
     }
     const body = init.body ? JSON.parse(init.body) : {};
     return jsonResponse({ authorization: { id: "auth_1", device_id: "dev_1", status: body.status || "active" }, device: { id: "dev_1", status: "online" } });
@@ -188,7 +188,7 @@ assert.equal(acctPaused.authorization.status, "paused");
 const acctResumed = await accountLevelServer.authorization.resume({ userId: "user_1" });
 assert.equal(acctResumed.authorization.status, "active");
 const acctRemoved = await accountLevelServer.authorization.remove({ userId: "user_1" });
-assert.equal(acctRemoved.cancelled_jobs, 2);
+assert.equal(acctRemoved.cancelled_relay_envelopes, 2);
 // No concrete device_id in the path; the "account" placeholder rides in the signed header only.
 assert.deepEqual(accountLevelCalls.map((c) => [c.method, c.path]), [
   ["PATCH", "/v1/products/otherline/delegated/authorization"],

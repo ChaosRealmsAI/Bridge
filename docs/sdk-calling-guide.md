@@ -231,11 +231,11 @@ lastSeenSeq = inbox.cursor.next_after_seq;
 
 列表契约：
 
-- `afterSeq` / `after_seq` 是排他游标；非法值按 `0` 处理。
+- `afterSeq` / `after_seq` 是单一 `channelId` / `channel_id` 内的排他游标；非法值按 `0` 处理，`afterSeq > 0` 但未传 `channelId` 会返回 `relay_cursor_requires_channel`。
 - `limit` 默认 `100`，范围 `1..500`。
 - `waitMs` / `wait_ms` 默认 `0`，最大 `30000`，用于服务端长轮询，返回前有新 envelope 会立即结束等待。
 - 默认只返回 `queued` / `delivered` 且未过期的 envelope；`includeAcked: true` 只用于审计、诊断或恢复场景。
-- 响应包含 `cursor.after_seq`、`cursor.next_after_seq`、`cursor.limit`、`cursor.returned`、`cursor.has_more` 和 `cursor.include_acked`；下一轮用 `next_after_seq` 继续。
+- 响应包含 `cursor.after_seq`、`cursor.next_after_seq`、`cursor.limit`、`cursor.returned`、`cursor.has_more` 和 `cursor.include_acked`；同一 channel 的下一轮用 `next_after_seq` 继续。
 
 ## 7. 后端委托完整调用
 

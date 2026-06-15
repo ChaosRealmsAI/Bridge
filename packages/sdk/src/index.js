@@ -26,11 +26,9 @@ export const BridgeErrorCodes = Object.freeze({
   invalid_authorization_status: "invalid_authorization_status",
   invalid_connect_intent: "invalid_connect_intent",
   invalid_content_type: "invalid_content_type",
-  invalid_job: "invalid_job",
   invalid_json: "invalid_json",
   invalid_origin: "invalid_origin",
   invalid_relay_envelope: "invalid_relay_envelope",
-  job_not_found: "job_not_found",
   legacy_runtime_api_removed: "legacy_runtime_api_removed",
   local_policy_denied: "local_policy_denied",
   not_found: "not_found",
@@ -52,7 +50,6 @@ export const BridgeErrorCodes = Object.freeze({
   request_body_too_large: "request_body_too_large",
   scope_insufficient: "scope_insufficient",
   unauthorized: "unauthorized",
-  unsupported_job_kind: "unsupported_job_kind",
 });
 
 // Human-readable fallback messages, keyed by error code. Used when the worker
@@ -80,11 +77,9 @@ export const BRIDGE_ERROR_MESSAGES = Object.freeze({
   invalid_authorization_status: "授权状态值不合法（只能是 active 或 paused）",
   invalid_connect_intent: "连接意图不存在、已消费或已过期，请重新创建",
   invalid_content_type: "写请求必须使用 application/json",
-  invalid_job: "任务参数不合法",
   invalid_json: "请求体不是合法 JSON",
   invalid_origin: "请求来源不在该产品的 origin 白名单内",
   invalid_relay_envelope: "加密 envelope 参数不合法",
-  job_not_found: "找不到该任务",
   legacy_runtime_api_removed: "旧任务接口已迁出，请改用 relay envelope 接口",
   local_policy_denied: "桌面端本地策略拒绝了该越权任务",
   not_found: "请求的资源不存在",
@@ -105,7 +100,6 @@ export const BRIDGE_ERROR_MESSAGES = Object.freeze({
   relay_response_timeout: "等待 relay 响应超时",
   request_body_too_large: "请求体超出大小限制",
   scope_insufficient: "该任务类型不在产品能力范围内",
-  unsupported_job_kind: "不支持的任务类型（kind）",
   unauthorized: "未登录或会话无效",
 });
 
@@ -715,8 +709,8 @@ function normalizeAuthorizationResponse(payload = {}, productId = "") {
     connected,
     current_device: currentDevice,
     accounts,
-    ...(Number.isFinite(Number(data.cancelled_jobs ?? data.cancelledJobs))
-      ? { cancelled_jobs: Number(data.cancelled_jobs ?? data.cancelledJobs) }
+    ...(Number.isFinite(Number(data.cancelled_relay_envelopes ?? data.cancelledRelayEnvelopes))
+      ? { cancelled_relay_envelopes: Number(data.cancelled_relay_envelopes ?? data.cancelledRelayEnvelopes) }
       : {}),
   };
 }

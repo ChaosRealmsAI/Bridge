@@ -263,8 +263,8 @@ function normalizeAuthorizationResponse(payload = {}, productId = "") {
     account,
     connected,
     current_device: device,
-    ...(Number.isFinite(Number(data.cancelled_jobs ?? data.cancelledJobs))
-      ? { cancelled_jobs: Number(data.cancelled_jobs ?? data.cancelledJobs) }
+    ...(Number.isFinite(Number(data.cancelled_relay_envelopes ?? data.cancelledRelayEnvelopes))
+      ? { cancelled_relay_envelopes: Number(data.cancelled_relay_envelopes ?? data.cancelledRelayEnvelopes) }
       : {}),
   };
 }

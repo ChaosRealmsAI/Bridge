@@ -8,8 +8,6 @@ import {
 import {
   BRIDGE_RUNTIME_CAPABILITY_REGISTRY,
   allProducts,
-  capabilityDanger,
-  capabilityDomain,
   officialProductOrigins,
   productById,
   scopeDangerMetadataFromCapabilities,
@@ -61,6 +59,16 @@ export function __bridgeTestMemorySnapshot() {
 export function __bridgeTestRelayEnvelopeMatches(row, input, maxTtlMs = RELAY_ENVELOPE_TTL_MS) {
   const validation = validateRelayEnvelope(input);
   return validation.ok ? sameRelayEnvelope(row, validation.envelope, row?.idempotency_hash || "", maxTtlMs) : false;
+}
+
+export async function __bridgeTestConnectorRelayListPayload(env, rows, options = {}) {
+  const listOptions = {
+    afterSeq: Math.max(0, Number(options.afterSeq || 0)),
+    limit: Math.max(1, Number(options.limit || 100)),
+    waitMs: 0,
+    includeAcked: options.includeAcked === true,
+  };
+  return relayListPayload(await connectorRelayListResult(env, rows, listOptions), listOptions);
 }
 
 export default {
@@ -975,6 +983,8 @@ async function connectorRelayEnvelopes(request, env) {
   const channelId = clean(url.searchParams.get("channel_id"), 160);
   const productId = clean(url.searchParams.get("product_id"), 80);
   const listOptions = relayListOptions(url);
+  const cursorError = rejectUnscopedRelayCursor(env, listOptions, channelId);
+  if (cursorError) return cursorError;
   const filters = {
     user_id: connector.device.user_id,
     device_id: connector.device.id,
@@ -1099,6 +1109,8 @@ async function listRelayEnvelopesForProduct(request, env, product, userId, direc
   const channelId = clean(url.searchParams.get("channel_id"), 160);
   const deviceId = clean(url.searchParams.get("device_id"), 120) || clean(delegatedDeviceId, 120);
   const listOptions = relayListOptions(url);
+  const cursorError = rejectUnscopedRelayCursor(env, listOptions, channelId);
+  if (cursorError) return cursorError;
   const filters = {
     user_id: userId,
     product_id: product.id,
@@ -1123,6 +1135,15 @@ function relayListOptions(url) {
     waitMs: Math.max(0, Math.min(Number.isFinite(waitRaw) ? Math.floor(waitRaw) : 0, 30000)),
     includeAcked: ["1", "true", "yes"].includes(String(url.searchParams.get("include_acked") || url.searchParams.get("includeAcked") || "").toLowerCase()),
   };
+}
+
+function rejectUnscopedRelayCursor(env, options, channelId) {
+  if (options.afterSeq <= 0 || clean(channelId, 160)) return null;
+  return json({
+    error: "relay_cursor_requires_channel",
+    message: "after_seq pagination requires channel_id because seq cursors are scoped to one relay channel",
+    cursor: { after_seq: options.afterSeq },
+  }, env, 400);
 }
 
 async function waitForRelayList(waitMs, collect) {
@@ -1157,6 +1178,7 @@ function relayListResult(rows, options) {
 async function connectorRelayListResult(env, rows, options) {
   const candidates = relayListCandidateRows(rows, options);
   const items = [];
+  let deliverableCount = 0;
   for (const row of candidates) {
     const authorization = await authorizationForProduct(env, row.user_id, row.device_id, row.product_id);
     const denial = authorizationJobDenial(authorization);
@@ -1164,6 +1186,8 @@ async function connectorRelayListResult(env, rows, options) {
       await expireRelayEnvelope(env, row, denial.reason);
       continue;
     }
+    deliverableCount += 1;
+    if (items.length >= options.limit) break;
     const delivered = row.delivery_status === "queued"
       ? await storage(env).update("bridge_relay_envelopes", row.id, {
         delivery_status: "delivered",
@@ -1172,9 +1196,8 @@ async function connectorRelayListResult(env, rows, options) {
       })
       : row;
     items.push(publicRelayEnvelope(delivered || row));
-    if (items.length >= options.limit) break;
   }
-  return { items, candidateCount: candidates.length };
+  return { items, candidateCount: deliverableCount };
 }
 
 function relayListPayload(result, options) {
@@ -1460,7 +1483,6 @@ async function updateAuthorization(request, env, productId) {
   return json({
     authorization: publicAuthorization(result.authorization),
     product: publicStateProduct(product),
-    cancelled_jobs: result.cancelledJobs,
     cancelled_relay_envelopes: result.cancelledRelayEnvelopes || 0,
   }, env);
 }
@@ -1487,10 +1509,9 @@ async function revokeAuthorization(request, env, productId) {
     cancelDenial: { error: "authorization_revoked", reason: "authorization_revoked" },
   });
   const revoked = revokedResult.authorization;
-  const cancelled_jobs = revokedResult.cancelledJobs;
   const cancelled_relay_envelopes = revokedResult.cancelledRelayEnvelopes || 0;
   await audit(env, session.user.id, device.id, product.id, "authorization.revoke", authorization.id, { source_origin: sourceOrigin(env) });
-  return json({ authorization: publicAuthorization(revoked), product: publicStateProduct(product), cancelled_jobs, cancelled_relay_envelopes }, env);
+  return json({ authorization: publicAuthorization(revoked), product: publicStateProduct(product), cancelled_relay_envelopes }, env);
 }
 
 async function createProductRelayKeyBootstrap(request, env, productId) {
@@ -1607,7 +1628,6 @@ async function updateConnectorAuthorization(request, env, productId) {
   return json({
     authorization: publicAuthorization(result.authorization),
     product: publicStateProduct(product),
-    cancelled_jobs: result.cancelledJobs,
     cancelled_relay_envelopes: result.cancelledRelayEnvelopes || 0,
   }, env);
 }
@@ -1620,7 +1640,7 @@ async function revokeConnectorAuthorization(request, env, productId) {
     device_id: connector.device.id,
     product_id: product.id,
   }))[0];
-  if (!authorization) return json({ authorization: null, product: publicStateProduct(product), cancelled_jobs: 0 }, env);
+  if (!authorization) return json({ authorization: null, product: publicStateProduct(product), cancelled_relay_envelopes: 0 }, env);
   const revokedResult = await updateAuthorizationWithEpoch(env, authorization, {
     status: "revoked",
     updated_at: now(),
@@ -1629,12 +1649,11 @@ async function revokeConnectorAuthorization(request, env, productId) {
     cancelDenial: { error: "authorization_revoked", reason: "authorization_revoked" },
   });
   const revoked = revokedResult.authorization;
-  const cancelled_jobs = revokedResult.cancelledJobs;
   const cancelled_relay_envelopes = revokedResult.cancelledRelayEnvelopes || 0;
   await audit(env, connector.device.user_id, connector.device.id, product.id, "authorization.revoke.connector", authorization.id, {
     source_origin: sourceOrigin(env),
   });
-  return json({ authorization: publicAuthorization(revoked), product: publicStateProduct(product), cancelled_jobs, cancelled_relay_envelopes }, env);
+  return json({ authorization: publicAuthorization(revoked), product: publicStateProduct(product), cancelled_relay_envelopes }, env);
 }
 
 async function connectorRelayKeyBootstrap(request, env, productId) {
@@ -1830,7 +1849,6 @@ async function updateDelegatedProductAuthorization(request, env, productId) {
     authorization: publicAuthorization(result.authorization),
     device: publicDevice(device, env),
     product: publicStateProduct(product),
-    cancelled_jobs: result.cancelledJobs,
     cancelled_relay_envelopes: result.cancelledRelayEnvelopes || 0,
   }, env);
 }
@@ -1847,7 +1865,7 @@ async function revokeDelegatedProductAuthorization(request, env, productId) {
     device_id: device.id,
     product_id: product.id,
   }))[0];
-  if (!authorization) return json({ authorization: null, device: publicDevice(device, env), product: publicStateProduct(product), cancelled_jobs: 0 }, env);
+  if (!authorization) return json({ authorization: null, device: publicDevice(device, env), product: publicStateProduct(product), cancelled_relay_envelopes: 0 }, env);
   const revokedResult = await updateAuthorizationWithEpoch(env, authorization, {
     status: "revoked",
     updated_at: now(),
@@ -1856,12 +1874,11 @@ async function revokeDelegatedProductAuthorization(request, env, productId) {
     cancelDenial: { error: "authorization_revoked", reason: "authorization_revoked" },
   });
   const revoked = revokedResult.authorization;
-  const cancelled_jobs = revokedResult.cancelledJobs;
   const cancelled_relay_envelopes = revokedResult.cancelledRelayEnvelopes || 0;
   await audit(env, delegation.bridgeUserId, device.id, product.id, "authorization.revoke.delegated", authorization.id, {
     source_origin: delegation.sourceOrigin,
   });
-  return json({ authorization: publicAuthorization(revoked), device: publicDevice(device, env), product: publicStateProduct(product), cancelled_jobs, cancelled_relay_envelopes }, env);
+  return json({ authorization: publicAuthorization(revoked), device: publicDevice(device, env), product: publicStateProduct(product), cancelled_relay_envelopes }, env);
 }
 
 async function realtimeDevice(request, env, deviceId) {
@@ -2250,7 +2267,7 @@ async function updateAuthorizationStatus(env, { userId, deviceId, product, statu
   const authorization = await authorizationForProduct(env, userId, deviceId, product.id);
   if (!authorization) return { error: "product_not_authorized", status: 403 };
   if (authorization.status === "revoked") return { error: "authorization_revoked", status: 409 };
-  if (authorization.status === status) return { authorization, cancelledJobs: 0 };
+  if (authorization.status === status) return { authorization, cancelledRelayEnvelopes: 0 };
 
   const denial = status === "paused"
     ? { error: "authorization_paused", reason: "authorization_paused" }
@@ -2263,14 +2280,14 @@ async function updateAuthorizationStatus(env, { userId, deviceId, product, statu
     cancelDenial: status === "paused" ? denial : null,
   });
   const updated = updatedResult.authorization;
-  const cancelledJobs = updatedResult.cancelledJobs;
+  const cancelledRelayEnvelopes = updatedResult.cancelledRelayEnvelopes || 0;
   await audit(env, userId, deviceId, product.id, `${auditActionPrefix}.${status === "paused" ? "pause" : "resume"}`, authorization.id, {
     source_origin: sourceOrigin || null,
     previous_status: authorization.status,
     next_status: status,
-    cancelled_jobs: cancelledJobs,
+    cancelled_relay_envelopes: cancelledRelayEnvelopes,
   });
-  return { authorization: updated, cancelledJobs };
+  return { authorization: updated, cancelledRelayEnvelopes };
 }
 
 async function requireProductDelegation(request, env, product, rawBody) {
@@ -2757,6 +2774,8 @@ async function deviceMatchesInstallId(device, installId) {
 }
 
 function authorizationPolicyCoversRequest(grantPolicy, requestedPolicy) {
+  const grant = object(grantPolicy);
+  if (!["AUTH-SCOPE-v1", "AUTH-SCOPE-v2"].includes(grant.version)) return false;
   const requested = object(requestedPolicy);
   const capabilities = Array.isArray(requested.capabilities) ? requested.capabilities : [];
   const roots = Array.isArray(requested.workspace_roots) && requested.workspace_roots.length
@@ -2764,21 +2783,22 @@ function authorizationPolicyCoversRequest(grantPolicy, requestedPolicy) {
     : [{ id: "default" }];
   const sandbox = clean(requested.sandbox_floor, 80) || "workspace-write";
   const approval = clean(requested.approval_policy_floor, 80) || "on-request";
-  const developerInstructions = requested.allow_developer_instructions === true ? "requires_developer_instructions" : "";
+  const grantedCapabilities = Array.isArray(grant.capabilities) ? grant.capabilities : [];
+  if (capabilities.some((capability) => !grantedCapabilities.includes(capability))) return false;
   for (const capability of capabilities) {
+    if (!RELAY_CAPABILITY_KINDS.includes(capability)) return false;
     for (const root of roots) {
       const workspaceRef = root?.allow_all === true || root?.allowAll === true || root?.id === "all" || root?.id === "*"
         ? "*"
         : clean(root?.id, 80) || "default";
-      const job = {
-        kind: capability,
-        workspace_ref: workspaceRef,
-        policy: { sandbox, approvalPolicy: approval, developerInstructions },
-      };
-      if (authorizationScopeDenial(grantPolicy, job)) return false;
-      if (workspaceRef === "*" && !authorizationScopeAllowsWorkspace(object(grantPolicy), "*")) return false;
+      if (!authorizationScopeAllowsWorkspace(grant, workspaceRef)) return false;
     }
   }
+  if (!authorizationScopeAllowsSandbox(clean(grant.sandbox_floor, 80) || "workspace-write", sandbox)) return false;
+  const approvalFloor = clean(grant.approval_policy_floor, 80) || "on-request";
+  const allowNever = grant.allow_approval_never === true || approvalFloor === "never";
+  if (!authorizationScopeAllowsApproval(approvalFloor, approval, allowNever)) return false;
+  if (requested.allow_developer_instructions === true && grant.allow_developer_instructions !== true) return false;
   return true;
 }
 
@@ -2835,11 +2855,11 @@ async function replaceOtherBridgeDevices(env, userId, activeDeviceId, reason) {
   const devices = await store.select("bridge_devices", { user_id: userId });
   const activeDevice = devices.find((item) => item.id === activeDeviceId) || null;
   const installHash = activeDevice?.install_id_hash || "";
-  if (!installHash) return { devicesRevoked: 0, tokensRevoked: 0, authorizationsRevoked: 0, cancelledJobs: 0 };
+  if (!installHash) return { devicesRevoked: 0, tokensRevoked: 0, authorizationsRevoked: 0, cancelledRelayEnvelopes: 0 };
   let devicesRevoked = 0;
   let tokensRevoked = 0;
   let authorizationsRevoked = 0;
-  let cancelledJobs = 0;
+  let cancelledRelayEnvelopes = 0;
   for (const device of devices.filter((item) => item.id !== activeDeviceId && item.status !== "revoked" && item.install_id_hash === installHash)) {
     await store.update("bridge_devices", device.id, {
       status: "revoked",
@@ -2869,7 +2889,7 @@ async function replaceOtherBridgeDevices(env, userId, activeDeviceId, reason) {
         cancelDenial: { error: "product_not_authorized", reason: "device_replaced" },
       });
       authorizationsRevoked += 1;
-      cancelledJobs += revokedResult.cancelledJobs;
+      cancelledRelayEnvelopes += revokedResult.cancelledRelayEnvelopes || 0;
     }
     await notifyDeviceRoom(env, device.id, {
       type: "device.replaced",
@@ -2884,10 +2904,10 @@ async function replaceOtherBridgeDevices(env, userId, activeDeviceId, reason) {
       revoked_devices: devicesRevoked,
       revoked_tokens: tokensRevoked,
       revoked_authorizations: authorizationsRevoked,
-      cancelled_jobs: cancelledJobs,
+      cancelled_relay_envelopes: cancelledRelayEnvelopes,
     });
   }
-  return { devicesRevoked, tokensRevoked, authorizationsRevoked, cancelledJobs };
+  return { devicesRevoked, tokensRevoked, authorizationsRevoked, cancelledRelayEnvelopes };
 }
 
 async function createDeviceToken(env, deviceId) {
@@ -2949,7 +2969,7 @@ function normalizeAuthorizationPolicy(input, product, source_origin) {
         };
       })
     : [{ id: "default", path_display: "[local]/default" }];
-  const capabilities = normalizedPolicyCapabilities(requested, product, policy, !hasExplicitInput);
+  const capabilities = normalizedPolicyCapabilities(requested, product, !hasExplicitInput);
   const productAuthorization = normalizeProductAuthorization(requested.product_authorization ?? requested.productAuthorization);
   const sandboxFloor = clean(requested.sandbox_floor || requested.sandboxFloor, 80);
   const approvalFloor = clean(requested.approval_policy_floor || requested.approvalPolicyFloor, 80);
@@ -2957,7 +2977,6 @@ function normalizeAuthorizationPolicy(input, product, source_origin) {
   const normalizedApprovalFloor = ["never", "on-request", "on-failure", "untrusted"].includes(approvalFloor) ? approvalFloor : "on-request";
   const allowDeveloperInstructions = requested.allow_developer_instructions === true || requested.allowDeveloperInstructions === true;
   const tierMetadata = scopeDangerMetadataFromCapabilities(capabilities);
-  const boundaries = normalizeConnectorBoundaries(requested.boundaries, product, capabilities);
   const normalized = {
     version: "AUTH-SCOPE-v2",
     preset: clean(requested.preset || requested.permission_preset, 80) || (hasExplicitInput ? "custom" : "workspace-default"),
@@ -2970,11 +2989,10 @@ function normalizeAuthorizationPolicy(input, product, source_origin) {
     approval_policy_floor: normalizedApprovalFloor,
     allow_approval_never: requested.allow_approval_never === true || requested.allowApprovalNever === true || normalizedApprovalFloor === "never",
     allow_developer_instructions: allowDeveloperInstructions,
-    display: authorizationPolicyDisplay(workspaceRoots, normalizedSandboxFloor, normalizedApprovalFloor, allowDeveloperInstructions, boundaries),
+    display: authorizationPolicyDisplay(workspaceRoots, normalizedSandboxFloor, normalizedApprovalFloor, allowDeveloperInstructions),
     ...tierMetadata,
   };
   if (Object.keys(productAuthorization).length) normalized.product_authorization = productAuthorization;
-  if (Object.keys(boundaries).length) normalized.boundaries = boundaries;
   return normalized;
 }
 
@@ -3005,95 +3023,7 @@ function normalizeProductAuthorizationRoots(input) {
   });
 }
 
-function normalizeConnectorBoundaries(input, product, capabilities) {
-  const boundaries = {};
-  const requested = object(input);
-  if (capabilities.some((kind) => kind.startsWith("data."))) {
-    const data = object(requested.data);
-    boundaries.data = {
-      type: "namespace_kv",
-      owner_product_id: clean(data.owner_product_id || data.ownerProductId, 120) || product.id,
-      namespace: clean(data.namespace, 200) || `product:${product.id}`,
-      max_key_bytes: boundedInteger(data.max_key_bytes ?? data.maxKeyBytes, 512, 1, 4096),
-      max_value_bytes: boundedInteger(data.max_value_bytes ?? data.maxValueBytes, 262144, 1, 1048576),
-      allow_query: data.allow_query !== false && data.allowQuery !== false,
-      allow_delete: data.allow_delete !== false && data.allowDelete !== false,
-    };
-  }
-  if (capabilities.includes("fs.read") || capabilities.includes("fs.write")) {
-    const fs = object(requested.fs);
-    const rawRoots = capabilities.includes("fs.read") && Array.isArray(fs.allowed_roots || fs.allowedRoots)
-      ? (fs.allowed_roots || fs.allowedRoots)
-      : [];
-    const allowedRoots = dedupeByCanonical(rawRoots.map((item, index) => {
-      const root = object(item);
-      const id = cleanKeepSlash(root.id, 120);
-      return {
-        id: id || `root-${index + 1}`,
-        path_display: cleanKeepSlash(root.path_display || root.pathDisplay || root.label, 300),
-      };
-    }));
-    allowedRoots.sort((left, right) => codePointCompare(canonicalJson(left), canonicalJson(right)));
-    const rawWriteRoots = capabilities.includes("fs.write") && Array.isArray(fs.write_roots || fs.writeRoots)
-      ? (fs.write_roots || fs.writeRoots)
-      : [];
-    const writeRoots = dedupeByCanonical(rawWriteRoots.map((item, index) => {
-      const root = object(item);
-      const id = cleanKeepSlash(root.id, 120);
-      return {
-        id: id || `root-${index + 1}`,
-        path_display: cleanKeepSlash(root.path_display || root.pathDisplay || root.label, 300),
-      };
-    }));
-    writeRoots.sort((left, right) => codePointCompare(canonicalJson(left), canonicalJson(right)));
-    boundaries.fs = {
-      type: "directory_whitelist",
-      allowed_roots: allowedRoots,
-      write_roots: writeRoots,
-      writable: capabilities.includes("fs.write"),
-      max_bytes: boundedInteger(fs.max_bytes ?? fs.maxBytes, 8388608, 1, 67108864),
-      follow_symlinks: fs.follow_symlinks === true || fs.followSymlinks === true,
-    };
-  }
-  if (capabilities.includes("shell.run")) {
-    const shell = object(requested.shell);
-    const cmdAllowlist = Array.isArray(shell.cmd_allowlist || shell.cmdAllowlist)
-      ? (shell.cmd_allowlist || shell.cmdAllowlist)
-          .map((item) => cleanKeepSlash(item, 400))
-          .filter(Boolean)
-      : [];
-    cmdAllowlist.sort(codePointCompare);
-    boundaries.shell = {
-      type: "command_sandbox",
-      cwd_root_id: cleanKeepSlash(shell.cwd_root_id || shell.cwdRootId, 120),
-      net: normalizeShellNet(shell.net),
-      allow_exec_subtree: shell.allow_exec_subtree === true || shell.allowExecSubtree === true,
-      cmd_allowlist: [...new Set(cmdAllowlist)],
-      max_output_bytes: boundedInteger(shell.max_output_bytes ?? shell.maxOutputBytes, 1048576, 1, 16777216),
-      deadline_ms: boundedInteger(shell.deadline_ms ?? shell.deadlineMs, 30000, 1, 600000),
-      limits: normalizeShellLimits(shell.limits),
-    };
-  }
-  return boundaries;
-}
-
-function normalizeShellNet(value) {
-  const net = clean(value, 80) || "deny";
-  return ["allow_outbound", "allow-outbound", "outbound"].includes(net) ? "allow_outbound" : "deny";
-}
-
-function normalizeShellLimits(input) {
-  const limits = object(input);
-  return {
-    cpu_seconds: boundedInteger(limits.cpu_seconds ?? limits.cpuSeconds, 30, 1, 300),
-    address_space: boundedInteger(limits.address_space ?? limits.addressSpace, 1073741824, 67108864, 8589934592),
-    open_files: boundedInteger(limits.open_files ?? limits.openFiles, 128, 3, 1024),
-    processes: boundedInteger(limits.processes, 16, 1, 128),
-    file_size: boundedInteger(limits.file_size ?? limits.fileSize, 67108864, 1, 1073741824),
-  };
-}
-
-function normalizedPolicyCapabilities(requested, product, originalPolicy = {}, defaultLowTier = false) {
+function normalizedPolicyCapabilities(requested, product, defaultLowTier = false) {
   if (defaultLowTier || !Object.hasOwn(requested, "capabilities")) return lowTierCapabilities().filter((kind) => product.capabilities.includes(kind));
   if (!Array.isArray(requested.capabilities)) throw httpError("invalid_authorization_policy", 400);
   let capabilities = [...new Set(requested.capabilities.map((item) => clean(item, 120)).filter(Boolean))];
@@ -3112,8 +3042,8 @@ function normalizedPolicyCapabilities(requested, product, originalPolicy = {}, d
   return capabilities;
 }
 
-function authorizationPolicyDisplay(workspaceRoots, sandboxFloor, approvalFloor, allowDeveloperInstructions, boundaries = {}) {
-  const display = {
+function authorizationPolicyDisplay(workspaceRoots, sandboxFloor, approvalFloor, allowDeveloperInstructions) {
+  return {
     workspace: workspaceRoots.some((item) => item.allow_all === true)
       ? "All local files"
       : workspaceRoots.map((item) => item.path_display || item.id).join(", "),
@@ -3121,127 +3051,6 @@ function authorizationPolicyDisplay(workspaceRoots, sandboxFloor, approvalFloor,
     approval: approvalFloor,
     developer_instructions: allowDeveloperInstructions ? "allowed" : "denied",
   };
-  if (boundaries.fs) {
-    display.fs_read = (boundaries.fs.allowed_roots || [])
-      .map((item) => item.path_display || item.id)
-      .filter(Boolean)
-      .join(", ");
-    display.fs_write = (boundaries.fs.write_roots || [])
-      .map((item) => item.path_display || item.id)
-      .filter(Boolean)
-      .join(", ");
-  }
-  if (boundaries.shell) {
-    display.shell = boundaries.shell.cwd_root_id || "[missing]";
-    display.shell_network = boundaries.shell.net;
-  }
-  return display;
-}
-
-export function authorizationScopeDenial(scopeInput, job) {
-  const scope = object(scopeInput);
-  if (!["AUTH-SCOPE-v1", "AUTH-SCOPE-v2"].includes(scope.version)) {
-    return { denied: "authorization", reason: "authorization_scope_missing" };
-  }
-  if (scope.version === "AUTH-SCOPE-v1" && ["fs", "shell"].includes(capabilityDomain(job.kind))) {
-    return { denied: "tier", reason: "tier_not_granted" };
-  }
-  if (scope.version === "AUTH-SCOPE-v2" && ["high", "critical"].includes(capabilityDanger(job.kind)) && (!scope.danger_tiers || !scope.domain_boundaries)) {
-    return { denied: "tier", reason: "tier_not_granted" };
-  }
-  if (scope.version === "AUTH-SCOPE-v2" && scope.danger_tiers && scope.domain_boundaries) {
-    const tierDenial = authorizationScopeTierDenial(scope, job.kind);
-    if (tierDenial) return tierDenial;
-  }
-  if (!Array.isArray(scope.capabilities) || !scope.capabilities.includes(job.kind)) {
-    return { denied: "capability", reason: "capability_not_authorized" };
-  }
-  const domain = capabilityDomain(job.kind);
-  if (domain === "data") {
-    return authorizationDataScopeDenial(scope, job);
-  }
-  if (domain === "fs") {
-    return authorizationFsScopeDenial(scope, job);
-  }
-  if (domain === "shell") {
-    return authorizationShellScopeDenial(scope);
-  }
-  const workspaceRef = job.workspace_ref || "default";
-  if (!authorizationScopeAllowsWorkspace(scope, workspaceRef)) {
-    return { denied: "workspace_ref", reason: "workspace_not_authorized" };
-  }
-  const requestedSandbox = clean(job.policy?.sandbox, 80) || "workspace-write";
-  if (!authorizationScopeAllowsSandbox(clean(scope.sandbox_floor, 80) || "workspace-write", requestedSandbox)) {
-    return { denied: "sandbox", reason: "sandbox_not_authorized" };
-  }
-  const requestedApproval = clean(job.policy?.approvalPolicy, 80) || "on-request";
-  const approvalFloor = clean(scope.approval_policy_floor, 80) || "on-request";
-  const allowNever = scope.allow_approval_never === true || approvalFloor === "never";
-  if (!authorizationScopeAllowsApproval(approvalFloor, requestedApproval, allowNever)) {
-    return { denied: "approvalPolicy", reason: "approval_policy_not_authorized" };
-  }
-  if (clean(job.policy?.developerInstructions, 1000) && scope.allow_developer_instructions !== true) {
-    return { denied: "developerInstructions", reason: "developer_instructions_not_authorized" };
-  }
-  return null;
-}
-
-function authorizationShellScopeDenial(scope) {
-  const shell = object(scope.boundaries?.shell);
-  const boundaryType = clean(shell.type || shell.boundary_type || shell.boundaryType, 80);
-  if (boundaryType && boundaryType !== "command_sandbox") {
-    return { denied: "command", reason: "boundary_type_mismatch" };
-  }
-  if (!cleanKeepSlash(shell.cwd_root_id || shell.cwdRootId, 120)) {
-    return { denied: "cwd_root", reason: "cwd_root_not_granted" };
-  }
-  return null;
-}
-
-function authorizationFsScopeDenial(scope, job = {}) {
-  const fs = object(scope.boundaries?.fs);
-  const boundaryType = clean(fs.type || fs.boundary_type || fs.boundaryType, 80);
-  if (boundaryType && boundaryType !== "directory_whitelist") {
-    return { denied: "path", reason: "boundary_type_mismatch" };
-  }
-  if (job.kind === "fs.write") {
-    const writeRoots = Array.isArray(fs.write_roots || fs.writeRoots)
-      ? (fs.write_roots || fs.writeRoots)
-      : [];
-    if (fs.writable !== true || writeRoots.length === 0) {
-      return { denied: "path", reason: "write_boundary_not_granted" };
-    }
-  }
-  return null;
-}
-
-function authorizationDataScopeDenial(scope, job) {
-  const data = object(scope.boundaries?.data);
-  const boundaryType = clean(data.type || data.boundary_type || data.boundaryType, 80);
-  if (boundaryType && boundaryType !== "namespace_kv") {
-    return { denied: "namespace", reason: "boundary_type_mismatch" };
-  }
-  const owner = clean(data.owner_product_id || data.ownerProductId, 120);
-  if (owner && owner !== job.product_id) {
-    return { denied: "namespace", reason: "namespace_owner_mismatch" };
-  }
-  return null;
-}
-
-function authorizationScopeTierDenial(scope, kind) {
-  const danger = capabilityDanger(kind);
-  const domain = capabilityDomain(kind);
-  if (!danger || !domain) return null;
-  const tier = object(scope.danger_tiers?.[danger]);
-  const boundary = object(scope.domain_boundaries?.[domain]);
-  const tierDomains = Array.isArray(tier.domains) ? tier.domains : [];
-  if (tier.granted !== true || !tierDomains.includes(domain) || boundary.granted !== true) {
-    return { denied: "tier", reason: "tier_not_granted" };
-  }
-  if (boundary.danger && boundary.danger !== danger) {
-    return { denied: "tier", reason: "tier_not_granted" };
-  }
-  return null;
 }
 
 function authorizationScopeAllowsWorkspace(scope, workspaceRef) {
@@ -3307,7 +3116,7 @@ function defaultLowTierAuthorizationPolicy() {
 }
 
 function lowTierCapabilities() {
-  return RELAY_CAPABILITY_KINDS.filter((kind) => capabilityDanger(kind) === "low");
+  return [...RELAY_CAPABILITY_KINDS];
 }
 
 async function upsertAuthorization(env, userId, deviceId, productId, policy, sourceOrigin = "", options = {}) {
@@ -4104,22 +3913,6 @@ function clean(value, max = 1000) {
 function normalizeStringList(input, max = 120) {
   const values = Array.isArray(input) ? input : typeof input === "string" ? input.split(/[\s,]+/) : [];
   return [...new Set(values.map((item) => clean(item, max)).filter(Boolean))];
-}
-
-function cleanKeepSlash(value, max = 1000) {
-  return typeof value === "string" ? value.trim().normalize("NFC").slice(0, max) : "";
-}
-
-function dedupeByCanonical(items) {
-  const seen = new Set();
-  const result = [];
-  for (const item of items) {
-    const key = canonicalJson(item);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    result.push(item);
-  }
-  return result;
 }
 
 function codePointCompare(left, right) {
