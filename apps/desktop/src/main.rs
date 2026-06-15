@@ -206,7 +206,6 @@ struct DesktopStatus {
     settings: DesktopSettings,
     worker_running: bool,
     realtime_connected: bool,
-    codex_available: bool,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -1341,20 +1340,12 @@ fn write_builtin_screenshot(path: &Path, snapshot: &Value) -> Result<(), String>
         .get("realtime_connected")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let codex = status
-        .get("codex_available")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-
     let rows = vec![
         format!("CAPTURED: {}", now_string()),
         "METHOD: BUILTIN_APP_PNG".to_string(),
         format!("DEVICE: {}", device_name),
         format!("DEVICE ID: {}", device_id),
-        format!(
-            "WORKER: {}  REALTIME: {}  CODEX: {}",
-            worker, realtime, codex
-        ),
+        format!("WORKER: {}  REALTIME: {}", worker, realtime),
         format!("AUTHORIZED PRODUCTS: {}", product_count),
     ];
     let mut y = 154;
@@ -2003,7 +1994,6 @@ fn status(state: &AppState) -> DesktopStatus {
         settings,
         worker_running: state.worker_running.load(Ordering::SeqCst),
         realtime_connected: state.realtime_connected.load(Ordering::SeqCst),
-        codex_available: command_exists(&codex_bin()),
     }
 }
 
@@ -6111,42 +6101,6 @@ fn policy_string(policy: &Value, key: &str) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
-fn command_exists(command: &str) -> bool {
-    if command.contains('/') || command.contains('\\') {
-        return executable_exists(Path::new(command));
-    }
-    let paths = env::var("PATH").unwrap_or_default();
-    #[cfg(windows)]
-    {
-        paths
-            .split(';')
-            .any(|path| windows_command_candidate_exists(Path::new(path), command))
-    }
-    #[cfg(not(windows))]
-    {
-        paths
-            .split(':')
-            .any(|path| executable_exists(&Path::new(path).join(command)))
-    }
-}
-
-fn executable_exists(path: &Path) -> bool {
-    let Ok(metadata) = fs::metadata(path) else {
-        return false;
-    };
-    if !metadata.is_file() {
-        return false;
-    }
-    #[cfg(unix)]
-    {
-        metadata.permissions().mode() & 0o111 != 0
-    }
-    #[cfg(not(unix))]
-    {
-        true
-    }
-}
-
 #[cfg(windows)]
 fn windows_command_candidate_exists(dir: &Path, command: &str) -> bool {
     if executable_exists(&dir.join(command)) {
@@ -6161,48 +6115,6 @@ fn windows_command_candidate_exists(dir: &Path, command: &str) -> bool {
         .map(str::trim)
         .filter(|ext| !ext.is_empty())
         .any(|ext| executable_exists(&dir.join(format!("{command}{ext}"))))
-}
-
-fn codex_bin() -> String {
-    if let Ok(explicit) = env::var("PANDA_BRIDGE_CODEX_BIN") {
-        let trimmed = explicit.trim();
-        if !trimmed.is_empty() {
-            return trimmed.to_string();
-        }
-    }
-    resolve_codex_bin().unwrap_or_else(|| "codex".to_string())
-}
-
-fn resolve_codex_bin() -> Option<String> {
-    resolve_command_on_path("codex").or_else(|| {
-        common_codex_paths()
-            .into_iter()
-            .find(|path| executable_exists(path))
-            .map(|path| path.to_string_lossy().to_string())
-    })
-}
-
-fn resolve_command_on_path(command: &str) -> Option<String> {
-    if command.contains('/') || command.contains('\\') {
-        let path = Path::new(command);
-        return executable_exists(path).then(|| path.to_string_lossy().to_string());
-    }
-    #[cfg(windows)]
-    {
-        env::var("PATH")
-            .unwrap_or_default()
-            .split(';')
-            .find_map(|path| windows_command_candidate_path(Path::new(path), command))
-    }
-    #[cfg(not(windows))]
-    {
-        env::var("PATH")
-            .unwrap_or_default()
-            .split(':')
-            .map(|path| Path::new(path).join(command))
-            .find(|path| executable_exists(path))
-            .map(|path| path.to_string_lossy().to_string())
-    }
 }
 
 #[cfg(windows)]
@@ -6222,19 +6134,6 @@ fn windows_command_candidate_path(dir: &Path, command: &str) -> Option<String> {
         .map(|ext| dir.join(format!("{command}{ext}")))
         .find(|path| executable_exists(path))
         .map(|path| path.to_string_lossy().to_string())
-}
-
-fn common_codex_paths() -> Vec<PathBuf> {
-    let mut paths = vec![
-        PathBuf::from("/opt/homebrew/bin/codex"),
-        PathBuf::from("/usr/local/bin/codex"),
-    ];
-    if let Ok(home) = home_dir() {
-        paths.push(home.join(".local/bin/codex"));
-        paths.push(home.join(".cargo/bin/codex"));
-        paths.push(home.join(".npm-global/bin/codex"));
-    }
-    paths
 }
 
 fn open_web_url(params: &Value) -> String {

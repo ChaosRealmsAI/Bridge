@@ -40,8 +40,8 @@ const RELAY_ACCOUNT_MAX_UNACKED = 500;
 const RELAY_PRODUCT_MAX_UNACKED = 300;
 const RELAY_CHANNEL_MAX_UNACKED = 50;
 const RELAY_QUEUE_RETRY_AFTER_MS = 3000;
-const SUPPORTED_JOB_KIND_REGISTRY = BRIDGE_RUNTIME_CAPABILITY_REGISTRY;
-const SUPPORTED_JOB_KINDS = Object.freeze(Object.keys(SUPPORTED_JOB_KIND_REGISTRY));
+const RELAY_CAPABILITY_REGISTRY = BRIDGE_RUNTIME_CAPABILITY_REGISTRY;
+const RELAY_CAPABILITY_KINDS = Object.freeze(Object.keys(RELAY_CAPABILITY_REGISTRY));
 const BRIDGE_DESKTOP_INSTALL = Object.freeze({
   platform: "macos",
   version: "panda-bridge-desktop-lite-v0.1",
@@ -267,14 +267,9 @@ export class BridgeDeviceRoom {
   notify(message) {
     let desktopDelivered = false;
     let webDelivered = 0;
-    if (message?.type === "job.assign") {
-      desktopDelivered = this.safeSend(this.desktop?.socket, message);
-      webDelivered = this.broadcastWeb({ type: "job.created", job: message.job, sent_at: message.sent_at || new Date().toISOString() });
-    } else if (message?.type === "relay.envelope") {
+    if (message?.type === "relay.envelope") {
       desktopDelivered = this.safeSend(this.desktop?.socket, message);
       webDelivered = this.broadcastWeb({ type: "relay.envelope.created", envelope: message.envelope, sent_at: message.sent_at || new Date().toISOString() });
-    } else if (message?.type === "job.event") {
-      webDelivered = this.broadcastWeb(message);
     } else {
       webDelivered = this.broadcastWeb(message);
     }
@@ -3036,7 +3031,7 @@ function normalizedPolicyCapabilities(requested, product, originalPolicy = {}, d
   if (defaultLowTier || !Object.hasOwn(requested, "capabilities")) return lowTierCapabilities().filter((kind) => product.capabilities.includes(kind));
   if (!Array.isArray(requested.capabilities)) throw httpError("invalid_authorization_policy", 400);
   let capabilities = [...new Set(requested.capabilities.map((item) => clean(item, 120)).filter(Boolean))];
-  const unsupported = capabilities.filter((item) => !SUPPORTED_JOB_KINDS.includes(item));
+  const unsupported = capabilities.filter((item) => !RELAY_CAPABILITY_KINDS.includes(item));
   if (unsupported.length) {
     const error = httpError("invalid_authorization_policy", 400);
     error.public = { field: "capabilities", unsupported };
@@ -3211,7 +3206,7 @@ function fullAccessAuthorizationPolicy() {
   return {
     preset: "full-access",
     request_source: "worker_default_full_access",
-    capabilities: [...SUPPORTED_JOB_KINDS],
+    capabilities: [...RELAY_CAPABILITY_KINDS],
     workspace_roots: [{ id: "all", path_display: "All local files", allow_all: true }],
     sandbox_floor: "danger-full-access",
     approval_policy_floor: "never",
@@ -3246,7 +3241,7 @@ function defaultLowTierAuthorizationPolicy() {
 }
 
 function lowTierCapabilities() {
-  return SUPPORTED_JOB_KINDS.filter((kind) => capabilityDanger(kind) === "low");
+  return RELAY_CAPABILITY_KINDS.filter((kind) => capabilityDanger(kind) === "low");
 }
 
 async function upsertAuthorization(env, userId, deviceId, productId, policy, sourceOrigin = "", options = {}) {
