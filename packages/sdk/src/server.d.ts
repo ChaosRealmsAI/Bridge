@@ -31,10 +31,24 @@ export type BridgeServerAuthorizationInput = BridgeServerUserInput & BridgeAutho
 export type BridgeServerConnectIntentInput = BridgeServerUserInput & {
   deviceName?: string;
   device_name?: string;
+  installId?: string;
+  install_id?: string;
   account?: JsonObject;
   user?: JsonObject;
   policy?: BridgeAuthorizationPolicy;
   permissions?: BridgeAuthorizationPolicy;
+};
+
+export type BridgeServerRelayKeyBootstrapInput = BridgeServerUserInput & {
+  deviceId: string;
+  device_id?: string;
+  relayKeyBootstrap?: JsonObject;
+  relay_key_bootstrap?: JsonObject;
+  wrappedKey?: JsonObject;
+  wrapped_key?: JsonObject;
+  keyId?: string;
+  key_id?: string;
+  algorithm?: string;
 };
 
 export type BridgeServerRelayEnvelopeInput = BridgeServerUserInput & {
@@ -100,6 +114,7 @@ export type BridgeServerClient = {
   pause(input: BridgeServerAuthorizationInput): Promise<BridgeAuthorizationResponse>;
   resume(input: BridgeServerAuthorizationInput): Promise<BridgeAuthorizationResponse>;
   revoke(input: BridgeServerAuthorizationInput): Promise<BridgeAuthorizationResponse>;
+  bootstrapRelayKey(input: BridgeServerRelayKeyBootstrapInput): Promise<JsonObject>;
   createRelayEnvelope(input: BridgeServerRelayEnvelopeInput): Promise<JsonObject>;
   listRelayEnvelopes(input: BridgeServerRelayListInput): Promise<JsonObject>;
   ackRelayEnvelope(envelopeId: string, input: BridgeServerUserInput): Promise<JsonObject>;

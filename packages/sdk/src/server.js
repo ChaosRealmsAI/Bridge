@@ -102,6 +102,7 @@ export function createBridgeServerClient(options = {}) {
       {
         ...(input.account || input.user ? { account: input.account || input.user } : {}),
         device_name: input.deviceName || input.device_name || "Panda Bridge Desktop",
+        ...(input.installId || input.install_id ? { install_id: input.installId || input.install_id } : {}),
         policy: input.policy || input.permissions || {},
       },
       { userId: input.userId || input.user_id, deviceId: input.deviceId || input.device_id || "pending" },
@@ -116,6 +117,12 @@ export function createBridgeServerClient(options = {}) {
     pause: authorization.pause,
     resume: authorization.resume,
     revoke: authorization.remove,
+    bootstrapRelayKey: (input = {}) => request(
+      "POST",
+      `/v1/products/${encodeURIComponent(productId)}/delegated/relay-key-bootstrap`,
+      normalizeRelayKeyBootstrapInput(input),
+      input,
+    ),
     createRelayEnvelope: (input = {}) => request(
       "POST",
       `/v1/products/${encodeURIComponent(productId)}/delegated/relay/envelopes`,
@@ -217,6 +224,21 @@ function normalizeDelegatedRelayEnvelope(input = {}, productId = "") {
     recipient_key_id: input.recipientKeyId || input.recipient_key_id || "",
     ttl_ms: input.ttlMs || input.ttl_ms || undefined,
     meta: objectValue(input.meta),
+  };
+}
+
+function normalizeRelayKeyBootstrapInput(input = {}) {
+  const value = objectValue(input);
+  return {
+    ...(value.device_id || value.deviceId ? { device_id: value.device_id || value.deviceId } : {}),
+    ...(value.relay_key_bootstrap || value.relayKeyBootstrap
+      ? { relay_key_bootstrap: value.relay_key_bootstrap || value.relayKeyBootstrap }
+      : {}),
+    ...(value.wrapped_key || value.wrappedKey
+      ? { wrapped_key: value.wrapped_key || value.wrappedKey }
+      : {}),
+    ...(value.key_id || value.keyId ? { key_id: value.key_id || value.keyId } : {}),
+    ...(value.algorithm ? { algorithm: value.algorithm } : {}),
   };
 }
 

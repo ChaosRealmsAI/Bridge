@@ -79,6 +79,42 @@ assert.equal(calls[5].init.method, "POST");
 assert.equal(new Headers(calls[5].init.headers).get("x-panda-bridge-device-id"), "dev_1");
 assert.equal(JSON.parse(calls[5].init.body).direction, "product_to_device");
 
+await server.createConnectIntent({
+  userId: "user_1",
+  deviceId: "pending",
+  deviceName: "Mac Studio",
+  installId: "install_1",
+  account: { id: "acct_1" },
+  policy: { capabilities: ["relay.envelope"] },
+});
+assert.equal(calls[6].path, "/v1/products/otherline/delegated/connect-intents");
+assert.equal(calls[6].init.method, "POST");
+assert.deepEqual(JSON.parse(calls[6].init.body), {
+  account: { id: "acct_1" },
+  device_name: "Mac Studio",
+  install_id: "install_1",
+  policy: { capabilities: ["relay.envelope"] },
+});
+
+await server.bootstrapRelayKey({
+  userId: "user_1",
+  deviceId: "dev_1",
+  relayKeyBootstrap: {
+    key_id: "rkx_1",
+    wrapped_key: { key_id: "rkx_1" },
+  },
+});
+assert.equal(calls[7].path, "/v1/products/otherline/delegated/relay-key-bootstrap");
+assert.equal(calls[7].init.method, "POST");
+assert.equal(new Headers(calls[7].init.headers).get("x-panda-bridge-device-id"), "dev_1");
+assert.deepEqual(JSON.parse(calls[7].init.body), {
+  device_id: "dev_1",
+  relay_key_bootstrap: {
+    key_id: "rkx_1",
+    wrapped_key: { key_id: "rkx_1" },
+  },
+});
+
 const waitCalls = [];
 const waitServer = createBridgeServerClient({
   apiBase: "https://api.example.test",
