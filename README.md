@@ -35,6 +35,26 @@ examples/relay-local-control
 supabase/migrations    Bridge Cloud 表结构
 ```
 
+## 桌面端打包
+
+macOS 打包仍走现有 `.app` / `.dmg` 路线：
+
+```bash
+npm run desktop:package:mac
+```
+
+Windows 桌面端沿用同一套 Rust + wry + HTML UI，依赖 Microsoft Edge WebView2 Evergreen Runtime。Windows 包是当前用户级 portable zip，安装脚本会复制到 `%LOCALAPPDATA%\Panda Bridge`，注册 `panda-bridge://`，并写入 HKCU Run 开机启动；如果 WebView2 runtime 缺失，安装脚本会打印下载提示：
+
+```bash
+npm run desktop:package:windows
+```
+
+没有 Windows runtime 时，使用交叉目标和安装契约检查：
+
+```bash
+npm run verify:desktop-windows
+```
+
 ## 服务器选择
 
 默认给用户使用我们提供的 Bridge Cloud，用户不需要自建服务器。
@@ -86,6 +106,7 @@ npm run check:e2ee
 npm run verify:relay-local-control
 npm run verify:relay-local-control:blackbox
 npm run verify:selfhost-profile
+npm run verify:desktop-windows
 bash spec/check-template.sh --no-smoke
 ```
 

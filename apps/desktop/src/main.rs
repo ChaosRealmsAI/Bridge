@@ -37,14 +37,12 @@ use window_vibrancy::{apply_acrylic, apply_mica};
 use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial, NSVisualEffectState};
 use wry::WebViewBuilder;
 
-
 // Single process-wide lock serializing every test that mutates process-global
 // env vars. Tests in different modules (main.rs, connector::fs, ...) share ONE
 // lock so they never run concurrently and clobber each other's env (e.g.
 // PANDA_BRIDGE_FS_ALLOWED_ROOTS / PANDA_BRIDGE_CAPTOKEN_*).
 #[cfg(test)]
 pub(crate) static TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
 
 const VERSION: &str = "panda-bridge-desktop-lite-v0.1";
 const BRIDGE_PROTOCOL_VERSION: &str = "panda-bridge-protocol-v0.2";
@@ -699,8 +697,10 @@ fn run_window() -> Result<(), String> {
     #[cfg(windows)]
     {
         windows_single_instance.start(proxy.clone());
-        if let Err(error) = register_windows_url_scheme() {
-            eprintln!("[windows] failed to register panda-bridge URL scheme: {error}");
+        if should_register_windows_url_scheme_on_startup() {
+            if let Err(error) = register_windows_url_scheme() {
+                eprintln!("[windows] failed to register panda-bridge URL scheme: {error}");
+            }
         }
     }
     if verify_control_enabled() {
@@ -764,7 +764,7 @@ fn run_window() -> Result<(), String> {
         match event {
             Event::NewEvents(StartCause::Init) if !sent_initial_links => {
                 sent_initial_links = true;
-                if running_from_app_bundle() {
+                if should_apply_launch_at_login_on_startup() {
                     let settings = load_settings_with_api(DEFAULT_API);
                     if let Err(error) = apply_launch_at_login(settings.launch_at_login) {
                         eprintln!("[launch-at-login] {error}");
@@ -3268,8 +3268,8 @@ fn bind_local_root_path(params: &Value, selected_path: &Path) -> Result<Value, S
         .ok_or_else(|| "unknown_root_domain".to_string())?;
     let root_id = normalize_local_root_id(domain, &required_param(params, "root_id")?);
     let requested_path_display = string_param(params, "path_display").unwrap_or_default();
-    let canonical = canonical_existing_path(selected_path)
-        .map_err(|_| "path_not_found_locally".to_string())?;
+    let canonical =
+        canonical_existing_path(selected_path).map_err(|_| "path_not_found_locally".to_string())?;
     if !canonical.is_dir() {
         return Err("path_not_directory".to_string());
     }
@@ -4838,7 +4838,8 @@ fn sync_relay_key_bootstrap(credentials: &Credentials) -> Result<usize, String> 
         {
             continue;
         }
-        let adapter_payload = adapter_relay_key_bootstrap_payload(&bootstrap, &product, credentials);
+        let adapter_payload =
+            adapter_relay_key_bootstrap_payload(&bootstrap, &product, credentials);
         let response = Client::new()
             .post(&bootstrap_endpoint)
             .json(&adapter_payload)
@@ -6120,7 +6121,7 @@ fn launch_agent_plist(executable: &str) -> String {
     )
 }
 
-/// 开机自启（契约 §1 连接全自动）：macOS 写入/移除用户级 LaunchAgent，其余平台仅持久化开关。
+/// 开机自启（契约 §1 连接全自动）：macOS 写入 LaunchAgent，Windows 写入 HKCU Run。
 fn apply_launch_at_login(enabled: bool) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
@@ -6134,11 +6135,49 @@ fn apply_launch_at_login(enabled: bool) -> Result<(), String> {
         let exe = env::current_exe().map_err(|error| error.to_string())?;
         return write_external_state_file(&path, &launch_agent_plist(&exe.to_string_lossy()));
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    {
+        return apply_windows_launch_at_login(enabled);
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         let _ = enabled;
         Ok(())
     }
+}
+
+#[cfg(windows)]
+fn apply_windows_launch_at_login(enabled: bool) -> Result<(), String> {
+    let run_key = windows_registry::CURRENT_USER
+        .create(r"Software\Microsoft\Windows\CurrentVersion\Run")
+        .map_err(|error| error.to_string())?;
+    if !enabled {
+        let _ = run_key.remove_value("Panda Bridge");
+        return Ok(());
+    }
+    let exe = env::current_exe().map_err(|error| error.to_string())?;
+    run_key
+        .set_string("Panda Bridge", windows_registry_command_for_exe(&exe))
+        .map_err(|error| error.to_string())
+}
+
+fn windows_registry_command_for_exe(exe: &Path) -> String {
+    format!("\"{}\"", exe.to_string_lossy())
+}
+
+fn should_apply_launch_at_login_on_startup() -> bool {
+    if cfg!(target_os = "macos") {
+        return running_from_app_bundle();
+    }
+    if cfg!(target_os = "windows") {
+        return !cfg!(debug_assertions) && !env_flag("PANDA_BRIDGE_DISABLE_STARTUP_APPLY");
+    }
+    false
+}
+
+#[cfg(windows)]
+fn should_register_windows_url_scheme_on_startup() -> bool {
+    !cfg!(debug_assertions) || env_flag("PANDA_BRIDGE_REGISTER_URL_SCHEME")
 }
 
 fn running_from_app_bundle() -> bool {
@@ -6256,6 +6295,8 @@ fn write_file_with_parent_permissions(
     text: &str,
     private_parent: bool,
 ) -> Result<(), String> {
+    #[cfg(windows)]
+    let _ = private_parent;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|error| error.to_string())?;
         #[cfg(unix)]
@@ -6310,41 +6351,6 @@ fn policy_string(policy: &Value, key: &str) -> Option<String> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
-}
-
-#[cfg(windows)]
-fn windows_command_candidate_exists(dir: &Path, command: &str) -> bool {
-    if executable_exists(&dir.join(command)) {
-        return true;
-    }
-    if Path::new(command).extension().is_some() {
-        return false;
-    }
-    env::var("PATHEXT")
-        .unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string())
-        .split(';')
-        .map(str::trim)
-        .filter(|ext| !ext.is_empty())
-        .any(|ext| executable_exists(&dir.join(format!("{command}{ext}"))))
-}
-
-#[cfg(windows)]
-fn windows_command_candidate_path(dir: &Path, command: &str) -> Option<String> {
-    let direct = dir.join(command);
-    if executable_exists(&direct) {
-        return Some(direct.to_string_lossy().to_string());
-    }
-    if Path::new(command).extension().is_some() {
-        return None;
-    }
-    env::var("PATHEXT")
-        .unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string())
-        .split(';')
-        .map(str::trim)
-        .filter(|ext| !ext.is_empty())
-        .map(|ext| dir.join(format!("{command}{ext}")))
-        .find(|path| executable_exists(path))
-        .map(|path| path.to_string_lossy().to_string())
 }
 
 fn open_web_url(params: &Value) -> String {
@@ -6863,7 +6869,10 @@ mod tests {
             "default keychain state should follow build profile"
         );
         env::set_var("PANDA_BRIDGE_USE_KEYCHAIN", "1");
-        assert!(keychain_enabled(), "USE_KEYCHAIN should opt into the keychain");
+        assert!(
+            keychain_enabled(),
+            "USE_KEYCHAIN should opt into the keychain"
+        );
         env::set_var("PANDA_BRIDGE_SKIP_KEYCHAIN", "1");
         assert!(!keychain_enabled(), "SKIP_KEYCHAIN should take precedence");
         env::remove_var("PANDA_BRIDGE_USE_KEYCHAIN");
@@ -7562,6 +7571,12 @@ mod tests {
         assert!(update_settings(&json!({ "appearance": "neon" })).is_err());
         assert!(update_settings(&json!({ "language": "fr" })).is_err());
         assert!(launch_agent_plist("/Apps/A&B.app/Contents/MacOS/pb").contains("A&amp;B.app"));
+        assert_eq!(
+            windows_registry_command_for_exe(Path::new(
+                r"C:\Users\Ada Lovelace\AppData\Local\Panda Bridge\PandaBridge.exe"
+            )),
+            r#""C:\Users\Ada Lovelace\AppData\Local\Panda Bridge\PandaBridge.exe""#
+        );
 
         if let Some(value) = old_home {
             env::set_var("HOME", value);
