@@ -360,13 +360,11 @@ function modalHtml(){
 function authSummaryHtml(p){
   const pa=p.product_authorization||{};
   const caps=(p.policy_caps||[]).join(", ")||"none";
-  const productCaps=(pa.capabilities||[]).slice(0,5).join(", ")||"none";
-  const roots=(pa.roots||[]).map(r=>r.path_display||r.id).filter(Boolean).slice(0,3).join(", ")||"none";
+  const control=pa.control||pa.mode||pa.enforcement||"product-controlled";
   return `<div class="dsum">
     <div class="dsum-row"><span class="dsum-k">source_origin</span><span class="dsum-v">${esc(p.source_origin||p.domain||"unknown")}</span></div>
     <div class="dsum-row"><span class="dsum-k">policy caps</span><span class="dsum-v">${esc(caps)}</span></div>
-    <div class="dsum-row"><span class="dsum-k">product auth</span><span class="dsum-v">${esc(pa.owner||"none")} · ${esc(productCaps)}</span></div>
-    <div class="dsum-row"><span class="dsum-k">roots</span><span class="dsum-v">${esc(roots)}</span></div>
+    <div class="dsum-row"><span class="dsum-k">product auth</span><span class="dsum-v">${esc(pa.owner||"none")} · ${esc(control)}</span></div>
   </div>`;
 }
 function dangerReady(d){return !d}
@@ -538,7 +536,7 @@ function installFallback(){
     if(req.command==="toggle_authorization"){const p=mock.products.find(x=>x.id===req.params.product_id);const a=p?.accounts.find(x=>x.id===req.params.account||x.email===req.params.account);if(a){a.authorized=a.authorized==="paused"?"active":"paused";a.connected=a.authorized==="active";a.connection=a.connected?"connected":"disabled"}return reply(true,{ok:true})}
     if(req.command==="remove_authorization"){const p=mock.products.find(x=>x.id===req.params.product_id);if(p)p.accounts=p.accounts.filter(x=>x.id!==req.params.account_id&&x.email!==req.params.account_id);return reply(true,{ok:true})}
     if(req.command==="preview_intent"){
-      const base={product_id:"bridge-demo",product_name:"Bridge Demo",cloud_origin:"bridge.otherline.cc",user_display_name:"demo@example.test",user_id:"demo_user",capabilities:["relay.envelope","relay.ack"],local_policy:{version:"BRIDGE-RELAY-AUTH-v1",source_origin:"bridge.otherline.cc",capabilities:["relay.envelope","relay.ack"],product_authorization:{owner:"product-adapter",capabilities:["demo.message"],roots:[{id:"project",path_display:"Product-managed project"}]}}};
+      const base={product_id:"bridge-demo",product_name:"Bridge Demo",cloud_origin:"bridge.otherline.cc",user_display_name:"demo@example.test",user_id:"demo_user",capabilities:["relay.envelope","relay.ack"],local_policy:{version:"BRIDGE-RELAY-AUTH-v1",source_origin:"bridge.otherline.cc",capabilities:["relay.envelope","relay.ack"],product_authorization:{owner:"product-adapter",enforcement:"product-adapter",control:"computer-control"}}};
       return reply(true,base);
     }
     if(req.command==="pick_local_root")return reply(true,{root_id:req.params.root_id,path_display:req.params.path_display,redacted_path:"[local]/"+(req.params.root_id||"chosen")});

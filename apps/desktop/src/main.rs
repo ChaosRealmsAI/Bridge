@@ -1519,24 +1519,20 @@ fn pending_authorization_screenshot_rows(pending: &Value) -> Vec<String> {
         .get("owner")
         .and_then(Value::as_str)
         .unwrap_or("none");
-    let product_auth_capabilities = product_authorization
-        .get("capabilities")
-        .and_then(Value::as_array)
-        .map(Vec::len)
-        .unwrap_or(0);
-    let product_auth_roots = product_authorization
-        .get("roots")
-        .and_then(Value::as_array)
-        .map(Vec::len)
-        .unwrap_or(0);
+    let product_auth_control = product_authorization
+        .get("control")
+        .or_else(|| product_authorization.get("mode"))
+        .or_else(|| product_authorization.get("enforcement"))
+        .and_then(Value::as_str)
+        .unwrap_or("product-controlled");
     vec![
         format!("STATUS: {}  CONFIRM ACTION: confirm_pending_intent", status),
         format!("PRODUCT: {} ({})", product_name, product_id),
         format!("SOURCE ORIGIN: {}", source_origin),
         format!("POLICY CAPS: {}", capabilities),
         format!(
-            "PRODUCT AUTH: OWNER {}  CAPS {}  ROOTS {}",
-            product_auth_owner, product_auth_capabilities, product_auth_roots
+            "PRODUCT AUTH: OWNER {}  CONTROL {}",
+            product_auth_owner, product_auth_control
         ),
     ]
 }
@@ -6196,8 +6192,8 @@ mod tests {
         let mut product = credentials.authorized_products[0].clone();
         product.policy["product_authorization"] = json!({
             "owner": "bridge-demo",
-            "capabilities": ["acme.chat"],
-            "roots": [{ "id": "default", "path_display": "[local]/default" }]
+            "enforcement": "acme-product-adapter",
+            "control": "computer-control"
         });
         product.local_roots.fs_roots.insert(
             "default".to_string(),
@@ -6237,14 +6233,9 @@ mod tests {
                 "relay_key_id": "rkx_1"
             })
         );
-        assert_eq!(
-            mirror["product_authorization"]["capabilities"],
-            json!(["acme.chat"])
-        );
-        assert_eq!(
-            mirror["product_authorization"]["roots"][0]["path"],
-            Value::Null
-        );
+        assert_eq!(mirror["product_authorization"]["control"], "computer-control");
+        assert!(mirror["product_authorization"].get("capabilities").is_none());
+        assert!(mirror["product_authorization"].get("roots").is_none());
         let text = serde_json::to_string(&payload).unwrap();
         assert!(!text.contains("pbd_test"));
     }
@@ -6386,8 +6377,8 @@ mod tests {
             "capabilities": ["relay.envelope", "relay.ack"],
             "product_authorization": {
                 "owner": "product-adapter",
-                "capabilities": ["demo.message"],
-                "roots": [{ "id": "project", "path_display": "Product-managed project" }]
+                "enforcement": "product-adapter",
+                "control": "computer-control"
             }
         })
     }
@@ -6657,8 +6648,8 @@ mod tests {
             "capabilities": ["relay.envelope", "relay.ack"],
             "product_authorization": {
                 "owner": "acme-product-adapter",
-                "capabilities": ["acme.chat"],
-                "roots": [{ "id": "project", "path_display": "[local]/project" }]
+                "enforcement": "acme-product-adapter",
+                "control": "computer-control"
             }
         });
         PendingIntentClaim {
@@ -6722,9 +6713,11 @@ mod tests {
             "acme-product-adapter"
         );
         assert_eq!(
-            public["product_authorization"]["capabilities"],
-            json!(["acme.chat"])
+            public["product_authorization"]["control"],
+            "computer-control"
         );
+        assert!(public["product_authorization"].get("capabilities").is_none());
+        assert!(public["product_authorization"].get("roots").is_none());
         assert_eq!(
             public["authorization"]["source_origin"],
             "https://acme.example"

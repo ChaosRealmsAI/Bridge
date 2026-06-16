@@ -2954,25 +2954,13 @@ function normalizeProductAuthorization(input) {
   const out = {};
   const owner = clean(value.owner, 120);
   const enforcement = clean(value.enforcement, 160);
-  const capabilities = normalizeStringList(value.capabilities || value.permissions, 120);
-  const roots = normalizeProductAuthorizationRoots(value.roots);
+  const control = clean(value.control || value.mode || value.grant || value.kind, 120);
+  const label = clean(value.label || value.summary || value.description, 300);
   if (owner) out.owner = owner;
   if (enforcement) out.enforcement = enforcement;
-  if (capabilities.length) out.capabilities = capabilities;
-  if (roots.length) out.roots = roots;
+  if (control) out.control = control;
+  if (label) out.label = label;
   return out;
-}
-
-function normalizeProductAuthorizationRoots(input) {
-  if (!Array.isArray(input)) return [];
-  return input.map((item, index) => {
-    const root = object(item);
-    const id = clean(root.id, 80) || `root-${index + 1}`;
-    const pathDisplay = clean(root.path_display || root.pathDisplay || root.label, 300);
-    const out = { id };
-    if (pathDisplay) out.path_display = pathDisplay;
-    return out;
-  });
 }
 
 function normalizedPolicyCapabilities(requested, product, defaultLowTier = false) {

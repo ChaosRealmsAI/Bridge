@@ -174,8 +174,9 @@ function authorizationPolicy(capabilities, root = "[local]/default") {
     source_origin: env.BRIDGE_WEB_ORIGIN,
     product_authorization: {
       owner: "test-product-adapter",
-      capabilities: ["test.message"],
-      roots: [{ id: "default", path_display: root }],
+      enforcement: "test-product-adapter",
+      control: "computer-control",
+      label: `Authorized local control for ${root}`,
     },
   };
 }
@@ -807,8 +808,8 @@ const sylloIntent = await api("POST", "/v1/connect-intents", {
     product_authorization: {
       owner: "panda-syllo",
       enforcement: "syllo-product-adapter",
-      capabilities: ["syllo.sessions", "syllo.chat", "syllo.issue", "syllo.highlight", "syllo.doc"],
-      roots: [{ id: "default", path_display: "[local]/syllo" }],
+      control: "computer-control",
+      label: "Coco authorized local adapter control",
     },
   },
 });
@@ -885,7 +886,12 @@ const sylloRelayMeta = {
   relay_key_id: "rkx_test_syllo",
 };
 assert.deepEqual(sylloConfirmed.authorization.policy.capabilities, RELAY_CAPABILITIES);
-assert.deepEqual(sylloConfirmed.authorization.policy.product_authorization.capabilities, ["syllo.sessions", "syllo.chat", "syllo.issue", "syllo.highlight", "syllo.doc"]);
+assert.deepEqual(sylloConfirmed.authorization.policy.product_authorization, {
+  owner: "panda-syllo",
+  enforcement: "syllo-product-adapter",
+  control: "computer-control",
+  label: "Coco authorized local adapter control",
+});
 const sylloChatEnvelope = await api("POST", "/v1/products/panda-syllo/relay/envelopes", relayEnvelope({
   product_id: "panda-syllo",
   device_id: sylloClaim.device.id,
