@@ -30,7 +30,7 @@
 import { createBridgeClient, BridgeErrorCodes } from "@panda-bridge/sdk";
 
 const bridge = createBridgeClient({
-  apiBase: "https://api.bridge.test.example",
+  apiBase: "https://api.bridge.otherline.cc",
   productId: "example-product",
 });
 ```
@@ -41,13 +41,13 @@ const bridge = createBridgeClient({
 import { createBridgeServerClient } from "@panda-bridge/sdk/server";
 
 const bridge = createBridgeServerClient({
-  apiBase: "https://api.bridge.test.example",
+  apiBase: "https://api.bridge.otherline.cc",
   productId: "example-product",
   secret: process.env.PANDA_BRIDGE_DELEGATION_SECRET,
 });
 ```
 
-生产域只在明确发布时切换到 `https://api.bridge.otherline.cc`。默认开发、联调、黑盒都用 test 域。
+自托管或本地联调时，把 `apiBase` 换成自己的 Bridge Cloud API。
 
 ## 3. 状态模型
 

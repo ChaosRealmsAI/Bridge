@@ -9,7 +9,6 @@ const sdkReadme = read("packages/sdk/README.md");
 const callingGuide = read("docs/sdk-calling-guide.md");
 const productIntegration = read("docs/product-integration.md");
 const desktopUserGuide = read("docs/desktop-user-guide.md");
-const operationsGuide = read("docs/operations.md");
 const sdkSource = read("packages/sdk/src/index.js");
 const sdkTypes = read("packages/sdk/src/index.d.ts");
 const serverSource = read("packages/sdk/src/server.js");
@@ -118,7 +117,6 @@ assert.ok(packageJson.scripts["check:sdk-docs"]?.includes("scripts/verify/sdk-do
 
 for (const [name, text] of [
   ["docs/desktop-user-guide.md", desktopUserGuide],
-  ["docs/operations.md", operationsGuide],
 ]) {
   for (const marker of [
     "AI runtime",
@@ -140,7 +138,7 @@ for (const [name, text] of [
 console.log(JSON.stringify({
   ok: true,
   check: "bridge-sdk-docs",
-  docs: ["packages/sdk/README.md", "docs/sdk-calling-guide.md", "docs/product-integration.md", "examples/minimal-caller/README.md", "docs/desktop-user-guide.md", "docs/operations.md"],
+  docs: ["packages/sdk/README.md", "docs/sdk-calling-guide.md", "docs/product-integration.md", "examples/minimal-caller/README.md", "docs/desktop-user-guide.md"],
   packages: [sdkPackage.name, adapterPackage.name],
 }));
 

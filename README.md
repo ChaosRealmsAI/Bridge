@@ -70,15 +70,7 @@ npm run desktop:package:windows:xwin
 
 桌面端也支持用户自己维护 Bridge Cloud。用户可以在设置里添加自托管 API，Desktop 会通过 `/v1/health` 和 `/v1/diagnostics` 验证服务器，并把 diagnostics 返回的产品列表显示为左侧产品 tab。自托管部署、产品 registry 和本机 Adapter 配置见 [`docs/self-hosting.md`](docs/self-hosting.md)。
 
-当前收尾和接入验证优先使用公司 test 资源：
-
-```text
-API:    https://api.bridge.test.example
-Web:    https://bridge.test.example
-Assets: https://assets-bridge.test.example
-```
-
-生产资源只在明确发布时使用：
+官方托管资源：
 
 ```text
 API:    https://api.bridge.otherline.cc
@@ -117,7 +109,6 @@ npm run verify:relay-local-control:blackbox
 npm run verify:selfhost-profile
 npm run verify:desktop-windows
 npm run verify:desktop-windows:xwin
-bash spec/check-template.sh --no-smoke
 ```
 
 常用开发入口：
@@ -128,16 +119,7 @@ npm run desktop:dev
 npm run verify:minimal-caller
 ```
 
-部署 test Worker 使用 `apps/cloud-worker/wrangler.test.toml`；生产部署需要单独确认。
-
-## Spec
-
-本仓库使用 v2 spec：
-
-- `spec/bdd/*.json` 是产品行为真相。
-- `spec/js/技术文档.js` 记录长期架构和接口契约。
-- `spec/js/工程护栏.js` 记录可执行防回退检查。
-- `spec/js/versions/v0-3/*` 是 relay 硬化、QoS 和窄 SDK 版本事实。
+公开仓只保留通用源码、示例和脱敏文档。内部 spec、验证证据、PandaCode 运行记录和真实部署配置不进入 Git；部署前从私有配置复制 `apps/cloud-worker/wrangler.toml`。
 - `spec/js/versions/v0-4/*` 是自托管 Bridge Cloud Profile 版本事实。
 
 先读：

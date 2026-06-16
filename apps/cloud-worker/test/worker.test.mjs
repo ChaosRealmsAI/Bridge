@@ -209,7 +209,7 @@ const bridgeTestCspResponse = await worker.fetch(new Request("http://local.test/
   headers: { origin: "https://bridge.test.example" },
 }), env);
 assert.equal(bridgeTestCspResponse.headers.get("access-control-allow-origin"), "https://bridge.test.example");
-assert.match(bridgeTestCspResponse.headers.get("content-security-policy") || "", /https:\/\/api-bridge-test\.otherline\.cc/);
+assert.match(bridgeTestCspResponse.headers.get("content-security-policy") || "", /https:\/\/api\.bridge\.test\.example/);
 
 const diagnostics = await api("GET", "/v1/diagnostics");
 assert.equal(diagnostics.protocol, "panda-bridge-protocol-v0.2");

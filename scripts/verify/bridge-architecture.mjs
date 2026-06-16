@@ -64,8 +64,6 @@ for (const file of walk("examples/relay-local-control")) assertRelayLocalControl
 for (const file of activeDocFiles()) assertNoDocRuntimeDrift(file, read(file));
 
 assert.equal(exists("examples/bridge-notes"), false, "legacy bridge-notes example must not remain under active examples/");
-assert.ok(exists("spec/_archive_v17/legacy-runtime/bridge-notes"), "legacy bridge-notes example must be archived");
-
 assert.ok(packageJson.scripts["check:sdk-types"], "package.json missing check:sdk-types");
 assert.ok(packageJson.scripts["check:sdk-release"], "package.json missing check:sdk-release");
 assert.ok(packageJson.scripts["check:bridge-architecture"], "package.json missing check:bridge-architecture");
@@ -215,17 +213,11 @@ function activeDocFiles() {
   return [
     "README.md",
     "docs/desktop-user-guide.md",
-    "docs/operations.md",
     "docs/sdk-calling-guide.md",
     "docs/product-integration.md",
     "packages/sdk/README.md",
     "examples/sdk-call-examples/README.md",
     "examples/minimal-caller/README.md",
-    "spec/js/验证接口.js",
-    "spec/js/工程护栏.js",
-    "spec/js/质量标准.js",
-    "spec/js/资源.js",
-    "spec/js/长期蓝图.js",
   ].filter(exists);
 }
 
@@ -251,6 +243,7 @@ function activePackageScriptTargets() {
 function guardVerifierTargets() {
   return new Set([
     "scripts/verify/bridge-architecture.mjs",
+    "scripts/verify/open-source-hygiene.mjs",
     "scripts/verify/sdk-docs.mjs",
     "scripts/verify/sdk-types.mjs",
     "scripts/verify/relay-boundary.mjs",

@@ -96,7 +96,7 @@ assert.equal(
 assert.equal(bridgeDesktopInstallDefaults.macos.fileName, "panda-bridge-macos.dmg");
 assert.equal(
   bridgeDesktopInstallTarget({ channel: "test" }).downloadUrl,
-  "https://assets-bridge.test.example/downloads/panda-bridge-macos.dmg",
+  "https://assets.bridge.test.example/downloads/panda-bridge-macos.dmg",
 );
 assert.equal(
   bridgeDesktopInstallTarget({ assetBaseUrl: "https://cdn.example.test/" }).downloadUrl,

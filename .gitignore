@@ -7,7 +7,15 @@ dist/
 target/
 apps/desktop/target/
 .tmp/
-spec/evidence/
+spec/
 apps/web-chat/public/sdk/
 *.log
 .pandacode/
+apps/cloud-worker/wrangler.toml
+apps/cloud-worker/wrangler.test.toml
+scripts/cloud/
+docs/operations.md
+安全评审报告.md
+/*.png
+/*.jpg
+/*.jpeg
