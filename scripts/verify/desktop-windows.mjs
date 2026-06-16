@@ -48,6 +48,41 @@ if (process.platform === "win32") {
     "--skip-build",
   ]));
   checks.push(windowsPackageArtifactCheck());
+  checks.push(runCheck("Windows installer writes current-user registry", "powershell.exe", [
+    "-NoProfile",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-File",
+    installScriptPath(),
+    "-NoLaunch",
+  ]));
+  checks.push(runCheck("Windows URL protocol registry query", "reg.exe", [
+    "query",
+    "HKCU\\Software\\Classes\\panda-bridge\\shell\\open\\command",
+  ], {
+    expectStdout: "PandaBridge.exe",
+  }));
+  checks.push(runCheck("Windows startup registry query", "reg.exe", [
+    "query",
+    "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+    "/v",
+    "Panda Bridge",
+  ], {
+    expectStdout: "PandaBridge.exe",
+  }));
+  checks.push(runCheck("Windows uninstaller removes current-user registration", "powershell.exe", [
+    "-NoProfile",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-File",
+    uninstallScriptPath(),
+  ]));
+  checks.push(runCheck("Windows URL protocol removed after uninstall", "reg.exe", [
+    "query",
+    "HKCU\\Software\\Classes\\panda-bridge",
+  ], {
+    expectFailure: true,
+  }));
 } else if (xwinEnabled) {
   checks.push(runCheck("cargo-xwin installed", "cargo", [
     "xwin",
@@ -80,7 +115,7 @@ const summary = {
   platform: process.platform,
   xwin_enabled: xwinEnabled,
   limitation: process.platform === "win32"
-    ? "Windows runner available; this verifier proves Windows compilation, release headless startup, portable packaging, and install/package contracts, but not full visible WebView2 UI interaction."
+    ? "Windows runner available; this verifier proves Windows compilation, release headless startup, portable packaging, Install.ps1 HKCU registry writes, and uninstall cleanup, but not full visible WebView2 UI interaction."
     : xwinEnabled
       ? "No Windows runtime is available in this environment; this verifier proves cross-target cargo check, MSVC-linked Windows release build through cargo-xwin, portable zip packaging, and Windows install/package contracts, not live WebView2 rendering."
     : "No Windows runtime is available in this environment; this verifier proves cross-target compilation and Windows install/package contracts, not live WebView2 rendering.",
@@ -94,7 +129,9 @@ function runCheck(name, command, args, options = {}) {
   const result = spawnSync(command, args, { encoding: "utf8", env: options.env ?? process.env });
   const stdout = result.stdout || "";
   const stderr = result.stderr || result.error?.message || "";
-  const ok = result.status === 0 && (!options.expectStdout || stdout.includes(options.expectStdout));
+  const exited = typeof result.status === "number";
+  const statusOk = options.expectFailure ? exited && result.status !== 0 : result.status === 0;
+  const ok = statusOk && (!options.expectStdout || stdout.includes(options.expectStdout));
   return {
     name,
     command: [command, ...args].join(" "),
@@ -158,4 +195,12 @@ function tail(text) {
 
 function releaseBinaryPath() {
   return resolve("apps/desktop/target/release/panda-bridge-desktop.exe");
+}
+
+function installScriptPath() {
+  return resolve("dist/desktop/windows/Panda Bridge/Install.ps1");
+}
+
+function uninstallScriptPath() {
+  return resolve("dist/desktop/windows/Panda Bridge/Uninstall.ps1");
 }

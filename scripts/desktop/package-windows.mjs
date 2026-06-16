@@ -106,7 +106,11 @@ function manifest() {
 }
 
 function installScript() {
-  return String.raw`$ErrorActionPreference = "Stop"
+  return String.raw`param(
+  [switch]$NoLaunch
+)
+
+$ErrorActionPreference = "Stop"
 $AppName = "Panda Bridge"
 $InstallDir = Join-Path $env:LOCALAPPDATA "Panda Bridge"
 $SourceDir = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -144,7 +148,9 @@ $RunKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
 New-ItemProperty -Path $RunKey -Name $AppName -Value ('"{0}"' -f $Exe) -PropertyType String -Force | Out-Null
 
 Write-Host "Panda Bridge installed to $InstallDir"
-Start-Process -FilePath $Exe
+if (-not $NoLaunch) {
+  Start-Process -FilePath $Exe
+}
 `;
 }
 
@@ -186,6 +192,7 @@ function assertTemplateContracts() {
     "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run",
     "PandaBridge.exe",
     "Start-Process",
+    "NoLaunch",
     "URL Protocol",
     "WebView2 Evergreen Runtime",
     "F3017226-FE2A-4295-8BDF-00C3A9A7E4C5",

@@ -62,7 +62,7 @@ npm run verify:desktop-windows:xwin
 npm run desktop:package:windows:xwin
 ```
 
-仓库接入 GitHub Actions 后，`.github/workflows/windows-desktop.yml` 会在 `windows-latest` 上运行同一验证、构建 portable zip，并上传 Windows 桌面 artifact。
+仓库接入 GitHub Actions 后，`.github/workflows/windows-desktop.yml` 会在 `windows-latest` 上运行同一验证、构建 portable zip，执行 `Install.ps1 -NoLaunch` 检查 HKCU deep link/自启注册和卸载清理，并上传 Windows 桌面 artifact。
 
 ## 服务器选择
 
