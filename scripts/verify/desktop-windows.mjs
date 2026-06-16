@@ -5,6 +5,8 @@ import { spawnSync } from "node:child_process";
 
 const evidenceDir = resolve("spec/verification/evidence/desktop-windows");
 const summaryPath = resolve(evidenceDir, "summary.json");
+const args = new Set(process.argv.slice(2));
+const xwinEnabled = args.has("--xwin") || process.env.PANDA_BRIDGE_WINDOWS_XWIN === "1";
 mkdirSync(evidenceDir, { recursive: true });
 
 const checks = [];
@@ -43,6 +45,29 @@ if (process.platform === "win32") {
   }));
   checks.push(runCheck("Windows portable package build", "node", [
     "scripts/desktop/package-windows.mjs",
+    "--skip-build",
+  ]));
+  checks.push(windowsPackageArtifactCheck());
+} else if (xwinEnabled) {
+  checks.push(runCheck("cargo-xwin installed", "cargo", [
+    "xwin",
+    "--version",
+  ], {
+    expectStdout: "cargo-xwin",
+  }));
+  checks.push(runCheck("desktop release build with cargo-xwin", "cargo", [
+    "xwin",
+    "build",
+    "--release",
+    "--manifest-path",
+    "apps/desktop/Cargo.toml",
+    "--target",
+    "x86_64-pc-windows-msvc",
+  ]));
+  checks.push(runCheck("Windows portable package build from cargo-xwin artifact", "node", [
+    "scripts/desktop/package-windows.mjs",
+    "--xwin",
+    "--skip-build",
   ]));
   checks.push(windowsPackageArtifactCheck());
 }
@@ -53,8 +78,11 @@ const summary = {
   started_at: startedAt,
   finished_at: new Date().toISOString(),
   platform: process.platform,
+  xwin_enabled: xwinEnabled,
   limitation: process.platform === "win32"
     ? "Windows runner available; this verifier proves Windows compilation, release headless startup, portable packaging, and install/package contracts, but not full visible WebView2 UI interaction."
+    : xwinEnabled
+      ? "No Windows runtime is available in this environment; this verifier proves cross-target cargo check, MSVC-linked Windows release build through cargo-xwin, portable zip packaging, and Windows install/package contracts, not live WebView2 rendering."
     : "No Windows runtime is available in this environment; this verifier proves cross-target compilation and Windows install/package contracts, not live WebView2 rendering.",
   checks,
 };

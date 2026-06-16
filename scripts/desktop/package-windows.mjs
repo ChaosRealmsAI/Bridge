@@ -15,11 +15,16 @@ import { spawnSync } from "node:child_process";
 const appName = "Panda Bridge";
 const exeName = "PandaBridge.exe";
 const binaryName = "panda-bridge-desktop.exe";
-const releaseBinary = resolve("apps/desktop/target/release", binaryName);
+const args = new Set(process.argv.slice(2));
+const nativeReleaseBinary = resolve("apps/desktop/target/release", binaryName);
+const xwinReleaseBinary = resolve("apps/desktop/target/x86_64-pc-windows-msvc/release", binaryName);
+const xwinMode = args.has("--xwin");
+const skipBuild = args.has("--skip-build");
+const releaseBinary = xwinMode ? xwinReleaseBinary : nativeReleaseBinary;
 const outDir = resolve("dist/desktop/windows");
 const appDir = resolve(outDir, appName);
 const zipPath = resolve(outDir, "panda-bridge-windows-x64.zip");
-const checkOnly = process.argv.includes("--check");
+const checkOnly = args.has("--check");
 
 if (checkOnly) {
   assertTemplateContracts();
@@ -37,35 +42,51 @@ if (checkOnly) {
   process.exit(0);
 }
 
-if (process.platform !== "win32") {
-  console.error("[desktop:package:windows] Windows only. Use --check for static validation on this OS.");
+if (process.platform !== "win32" && !xwinMode) {
+  console.error("[desktop:package:windows] Windows only. Use --check for static validation or --xwin for cross packaging on this OS.");
   process.exit(1);
 }
 
 rmSync(outDir, { recursive: true, force: true });
 mkdirSync(appDir, { recursive: true });
 
-run("cargo", ["build", "--release", "--manifest-path", "apps/desktop/Cargo.toml"]);
+if (!skipBuild) {
+  if (xwinMode) {
+    run("cargo", ["xwin", "build", "--release", "--manifest-path", "apps/desktop/Cargo.toml", "--target", "x86_64-pc-windows-msvc"]);
+  } else {
+    run("cargo", ["build", "--release", "--manifest-path", "apps/desktop/Cargo.toml"]);
+  }
+}
+if (!existsSync(releaseBinary)) {
+  console.error(`[desktop:package:windows] release binary not found: ${releaseBinary}`);
+  process.exit(1);
+}
 copyFileSync(releaseBinary, resolve(appDir, exeName));
 writeFileSync(resolve(appDir, "Install.ps1"), installScript());
 writeFileSync(resolve(appDir, "Uninstall.ps1"), uninstallScript());
 writeFileSync(resolve(appDir, "README.txt"), readmeText());
 writeFileSync(resolve(appDir, "manifest.json"), JSON.stringify(manifest(), null, 2));
 
-run("powershell.exe", [
-  "-NoProfile",
-  "-ExecutionPolicy",
-  "Bypass",
-  "-Command",
-  `Compress-Archive -Path ${psQuote(resolve(appDir, "*"))} -DestinationPath ${psQuote(zipPath)} -Force`,
-]);
+if (process.platform === "win32" && !xwinMode) {
+  run("powershell.exe", [
+    "-NoProfile",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-Command",
+    `Compress-Archive -Path ${psQuote(resolve(appDir, "*"))} -DestinationPath ${psQuote(zipPath)} -Force`,
+  ]);
+} else {
+  run("zip", ["-qr", zipPath, "."], { cwd: appDir });
+}
 
 const bytes = statSync(zipPath).size;
 const sha256 = createHash("sha256").update(readFileSync(zipPath)).digest("hex");
 console.log(JSON.stringify({
   ok: true,
+  mode: xwinMode ? "xwin-cross" : "windows-native",
   app_dir: appDir,
   zip_path: zipPath,
+  binary_source: releaseBinary,
   bytes,
   sha256,
   install: resolve(appDir, "Install.ps1"),
@@ -187,7 +208,10 @@ function psQuote(value) {
   return `'${String(value).replace(/'/g, "''")}'`;
 }
 
-function run(command, args) {
-  const result = spawnSync(command, args, { stdio: "inherit" });
+function run(command, args, options = {}) {
+  const result = spawnSync(command, args, { stdio: "inherit", cwd: options.cwd });
+  if (result.error) {
+    console.error(`[desktop:package:windows] failed to run ${command}: ${result.error.message}`);
+  }
   if (result.status !== 0) process.exit(result.status || 1);
 }

@@ -55,6 +55,13 @@ npm run desktop:package:windows
 npm run verify:desktop-windows
 ```
 
+需要在 macOS/Linux 上进一步生成真实 Windows MSVC exe 和 portable zip 时，先安装 `cargo-xwin`，并确保系统有 `zip` CLI，再运行：
+
+```bash
+npm run verify:desktop-windows:xwin
+npm run desktop:package:windows:xwin
+```
+
 仓库接入 GitHub Actions 后，`.github/workflows/windows-desktop.yml` 会在 `windows-latest` 上运行同一验证、构建 portable zip，并上传 Windows 桌面 artifact。
 
 ## 服务器选择
@@ -109,6 +116,7 @@ npm run verify:relay-local-control
 npm run verify:relay-local-control:blackbox
 npm run verify:selfhost-profile
 npm run verify:desktop-windows
+npm run verify:desktop-windows:xwin
 bash spec/check-template.sh --no-smoke
 ```
 
