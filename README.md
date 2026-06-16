@@ -55,6 +55,8 @@ npm run desktop:package:windows
 npm run verify:desktop-windows
 ```
 
+仓库接入 GitHub Actions 后，`.github/workflows/windows-desktop.yml` 会在 `windows-latest` 上运行同一验证、构建 portable zip，并上传 Windows 桌面 artifact。
+
 ## 服务器选择
 
 默认给用户使用我们提供的 Bridge Cloud，用户不需要自建服务器。

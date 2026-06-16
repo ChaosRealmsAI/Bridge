@@ -1,0 +1,60 @@
+name: Windows Desktop
+
+on:
+  push:
+    paths:
+      - ".github/workflows/windows-desktop.yml"
+      - "apps/desktop/**"
+      - "scripts/desktop/package-windows.mjs"
+      - "scripts/verify/desktop-windows.mjs"
+      - "spec/**"
+      - "package.json"
+      - "package-lock.json"
+  pull_request:
+    paths:
+      - ".github/workflows/windows-desktop.yml"
+      - "apps/desktop/**"
+      - "scripts/desktop/package-windows.mjs"
+      - "scripts/verify/desktop-windows.mjs"
+      - "spec/**"
+      - "package.json"
+      - "package-lock.json"
+  workflow_dispatch:
+
+jobs:
+  desktop-windows:
+    name: Windows Desktop verifier
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "23"
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install JS dependencies
+        run: npm ci
+
+      - name: Verify Windows Desktop
+        run: npm run verify:desktop-windows
+
+      - name: Check spec
+        shell: bash
+        run: bash spec/check-template.sh --no-smoke
+
+      - name: Upload Windows desktop artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: panda-bridge-windows-desktop
+          path: |
+            dist/desktop/windows/**
+            spec/verification/evidence/desktop-windows/summary.json
+          if-no-files-found: warn

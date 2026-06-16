@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
@@ -25,6 +25,27 @@ checks.push(runCheck("Windows package script static contract", "node", [
   "--check",
 ]));
 checks.push(staticSourceCheck());
+if (process.platform === "win32") {
+  checks.push(runCheck("desktop release build on Windows runner", "cargo", [
+    "build",
+    "--release",
+    "--manifest-path",
+    "apps/desktop/Cargo.toml",
+  ]));
+  checks.push(runCheck("desktop release binary starts in headless mode", releaseBinaryPath(), [
+    "headless-status",
+  ], {
+    env: {
+      ...process.env,
+      PANDA_BRIDGE_SKIP_KEYCHAIN: "1",
+    },
+    expectStdout: "\"version\"",
+  }));
+  checks.push(runCheck("Windows portable package build", "node", [
+    "scripts/desktop/package-windows.mjs",
+  ]));
+  checks.push(windowsPackageArtifactCheck());
+}
 
 const ok = checks.every((check) => check.ok);
 const summary = {
@@ -32,7 +53,9 @@ const summary = {
   started_at: startedAt,
   finished_at: new Date().toISOString(),
   platform: process.platform,
-  limitation: "No Windows runtime is available in this environment; this verifier proves cross-target compilation and Windows install/package contracts, not live WebView2 rendering.",
+  limitation: process.platform === "win32"
+    ? "Windows runner available; this verifier proves Windows compilation, release headless startup, portable packaging, and install/package contracts, but not full visible WebView2 UI interaction."
+    : "No Windows runtime is available in this environment; this verifier proves cross-target compilation and Windows install/package contracts, not live WebView2 rendering.",
   checks,
 };
 writeFileSync(summaryPath, `${JSON.stringify(summary, null, 2)}\n`);
@@ -40,9 +63,9 @@ console.log(JSON.stringify({ ok, summary: summaryPath }, null, 2));
 if (!ok) process.exit(1);
 
 function runCheck(name, command, args, options = {}) {
-  const result = spawnSync(command, args, { encoding: "utf8" });
+  const result = spawnSync(command, args, { encoding: "utf8", env: options.env ?? process.env });
   const stdout = result.stdout || "";
-  const stderr = result.stderr || "";
+  const stderr = result.stderr || result.error?.message || "";
   const ok = result.status === 0 && (!options.expectStdout || stdout.includes(options.expectStdout));
   return {
     name,
@@ -51,6 +74,29 @@ function runCheck(name, command, args, options = {}) {
     status: result.status,
     stdout_tail: tail(stdout),
     stderr_tail: tail(stderr),
+  };
+}
+
+function windowsPackageArtifactCheck() {
+  const zip = resolve("dist/desktop/windows/panda-bridge-windows-x64.zip");
+  const manifest = resolve("dist/desktop/windows/Panda Bridge/manifest.json");
+  const exe = resolve("dist/desktop/windows/Panda Bridge/PandaBridge.exe");
+  const install = resolve("dist/desktop/windows/Panda Bridge/Install.ps1");
+  const ok = [zip, manifest, exe, install].every((file) => existsSync(file))
+    && statSync(zip).size > 0
+    && statSync(exe).size > 0;
+  return {
+    name: "Windows portable package artifact",
+    command: "artifact scan dist/desktop/windows",
+    ok,
+    artifacts: {
+      zip,
+      manifest,
+      exe,
+      install,
+      zip_bytes: existsSync(zip) ? statSync(zip).size : 0,
+      exe_bytes: existsSync(exe) ? statSync(exe).size : 0,
+    },
   };
 }
 
@@ -80,4 +126,8 @@ function staticSourceCheck() {
 
 function tail(text) {
   return text.split(/\r?\n/).filter(Boolean).slice(-30).join("\n");
+}
+
+function releaseBinaryPath() {
+  return resolve("apps/desktop/target/release/panda-bridge-desktop.exe");
 }
