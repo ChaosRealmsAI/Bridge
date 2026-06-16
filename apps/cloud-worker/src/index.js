@@ -365,11 +365,14 @@ export class BridgeTestStore {
   }
 
   async applyOperation(input) {
-    const tables = await this.state.storage.get("tables") || {};
     const tableName = String(input.table || "");
     if (!tableName) return { error: "missing_table", status: 400 };
-    const rows = Array.isArray(tables[tableName]) ? tables[tableName] : [];
-    tables[tableName] = rows;
+    const tableKey = bridgeTestStoreTableKey(tableName);
+    const storedRows = await this.state.storage.get(tableKey);
+    const rows = Array.isArray(storedRows) ? storedRows : [];
+    const saveRows = async (nextRows) => {
+      await this.state.storage.put(tableKey, nextRows);
+    };
 
     if (input.op === "select") {
       return { rows: selectRows(rows, object(input.filters), object(input.options)) };
@@ -380,7 +383,7 @@ export class BridgeTestStore {
       if (duplicate) return { error: duplicate, status: 409 };
       const next = { id: crypto.randomUUID(), ...structuredClone(row) };
       rows.push(next);
-      await this.state.storage.put("tables", tables);
+      await saveRows(rows);
       return { row: next };
     }
     if (input.op === "upsert") {
@@ -389,12 +392,12 @@ export class BridgeTestStore {
       const index = rows.findIndex((item) => item[conflictKey] === row[conflictKey]);
       if (index >= 0) {
         rows[index] = { ...rows[index], ...structuredClone(row) };
-        await this.state.storage.put("tables", tables);
+        await saveRows(rows);
         return { row: rows[index] };
       }
       const next = { id: crypto.randomUUID(), ...structuredClone(row) };
       rows.push(next);
-      await this.state.storage.put("tables", tables);
+      await saveRows(rows);
       return { row: next };
     }
     if (input.op === "update") {
@@ -402,28 +405,32 @@ export class BridgeTestStore {
       const index = rows.findIndex((row) => row.id === id);
       if (index < 0) return { row: null };
       rows[index] = { ...rows[index], ...structuredClone(object(input.patch)) };
-      await this.state.storage.put("tables", tables);
+      await saveRows(rows);
       return { row: rows[index] };
     }
     if (input.op === "deleteExpired") {
       const column = String(input.column || "expires_at");
       const before = rows.length;
-      tables[tableName] = rows.filter((row) => {
+      const keep = rows.filter((row) => {
         const expiresAt = Date.parse(row[column] || "");
         return !Number.isFinite(expiresAt) || expiresAt > Date.now();
       });
-      await this.state.storage.put("tables", tables);
-      return { count: before - tables[tableName].length };
+      await saveRows(keep);
+      return { count: before - keep.length };
     }
     if (input.op === "deleteWhere") {
       const filters = object(input.filters);
       const before = rows.length;
-      tables[tableName] = rows.filter((row) => !Object.entries(filters).every(([key, value]) => row[key] === value));
-      await this.state.storage.put("tables", tables);
-      return { count: before - tables[tableName].length };
+      const keep = rows.filter((row) => !Object.entries(filters).every(([key, value]) => row[key] === value));
+      await saveRows(keep);
+      return { count: before - keep.length };
     }
     return { error: "unknown_operation", status: 400 };
   }
+}
+
+function bridgeTestStoreTableKey(tableName) {
+  return `table:${String(tableName).replace(/[^a-zA-Z0-9_:-]/g, "_")}`;
 }
 
 async function createPasswordSession(request, env) {
@@ -2362,8 +2369,12 @@ function productDelegationSkewMs(env) {
 
 async function reserveProductDelegationNonce(env, productId, nonce, timestamp) {
   const nonceHash = await sha256Hex(`${productId}:${nonce}`);
+  const store = storage(env);
+  if (typeof store.deleteExpired === "function") {
+    await store.deleteExpired("bridge_product_delegation_nonces", "expires_at");
+  }
   try {
-    await storage(env).insert("bridge_product_delegation_nonces", {
+    await store.insert("bridge_product_delegation_nonces", {
       product_id: productId,
       nonce_hash: nonceHash,
       request_timestamp: timestamp,
@@ -2371,8 +2382,9 @@ async function reserveProductDelegationNonce(env, productId, nonce, timestamp) {
       created_at: now(),
     });
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    if (error?.code === "product_delegation_replay") return false;
+    throw httpError("product_delegation_nonce_store_failed", 503);
   }
 }
 
