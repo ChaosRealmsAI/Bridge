@@ -129,14 +129,17 @@ const ready = await bridge.ensureReady({ wait: true, timeoutMs: 120000 });
 const bridge = createBridgeServerClient({ apiBase, productId, secret });
 
 await bridge.state({ userId });
-await bridge.createConnectIntent({ userId, deviceName, account });
+await bridge.createConnectIntent({ userId, deviceName, installId, account });
 await bridge.intentStatus(token, { userId });
 await bridge.authorization.pause/resume/remove({ userId, accountId });
+await bridge.bootstrapRelayKey({ userId, deviceId, relayKeyBootstrap });
 await bridge.createRelayEnvelope({ userId, deviceId, channelId, seq, ciphertext, aad, nonce, algorithm, senderKeyId, recipientKeyId, requestKey });
 const { envelope, ack } = await bridge.waitForResponse({ userId, deviceId, channelId, afterSeq });
 await decryptInProduct(envelope);
 await ack();
 ```
+
+`createConnectIntent` accepts both camelCase and snake_case fields such as `deviceName` / `device_name` and `installId` / `install_id`. `bootstrapRelayKey` posts the product-scoped relay key bootstrap payload to Bridge; the SDK owns the delegated HMAC headers, while the product owns key material wrapping and later payload encryption.
 
 签名 payload（server client 内部自动生成）：
 

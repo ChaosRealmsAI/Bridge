@@ -276,6 +276,30 @@ async function callFromBackend({ userId, deviceId, command }) {
 }
 ```
 
+授权或设备切换后，产品后端可以用同一个 server client 发起 relay key bootstrap。Bridge SDK 只负责 delegated 路径和 HMAC；`relayKeyBootstrap` / `wrappedKey` 的生成、密钥保存和后续 payload 加解密仍属于产品。
+
+```js
+await bridge.bootstrapRelayKey({
+  userId,
+  deviceId,
+  relayKeyBootstrap: {
+    key_id: relayKeyId,
+    wrapped_key: wrappedRelayKey,
+  },
+});
+```
+
+创建授权意图时，如果产品已知道 Desktop install identity，可透传 `installId` / `install_id`；SDK 会把它写成 Cloud API 的 `install_id` 字段。
+
+```js
+const intent = await bridge.createConnectIntent({
+  userId,
+  deviceName: "User Mac",
+  installId,
+  account: { id: userId, email: user.email },
+});
+```
+
 server client 自动签名所有委托请求。签名 payload 是：
 
 ```text

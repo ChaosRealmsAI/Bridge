@@ -9,9 +9,10 @@
   ],
   "scripts": {
     "build:web": "node scripts/build-web.mjs",
-    "check": "npm run check:protocol && npm run check:sdk && npm run check:adapter-sdk && npm run check:worker && npm run check:connector && npm run check:relay-boundary && npm run check:relay-backpressure && npm run check:e2ee && npm run check:desktop",
+    "check": "npm run check:protocol && npm run check:sdk && npm run check:sdk-docs && npm run check:adapter-sdk && npm run check:worker && npm run check:connector && npm run check:relay-boundary && npm run check:relay-backpressure && npm run check:e2ee && npm run check:desktop",
     "check:protocol": "node packages/protocol/test/protocol.test.mjs",
     "check:sdk": "node --test packages/sdk/test/",
+    "check:sdk-docs": "node scripts/verify/sdk-docs.mjs",
     "check:adapter-sdk": "node --test packages/adapter-sdk/test/*.mjs",
     "check:worker": "node apps/cloud-worker/test/worker.test.mjs",
     "check:connector": "node apps/connector-cli/test/connector.test.mjs",

@@ -109,6 +109,19 @@ await bridge.authorization.resume({ userId: user.id });
 await bridge.authorization.remove({ userId: user.id });
 ```
 
+常用后端调用面：
+
+```js
+await bridge.createConnectIntent({ userId: user.id, deviceName: "User Mac", installId, account: { id: user.id } });
+await bridge.intentStatus(token, { userId: user.id });
+await bridge.bootstrapRelayKey({ userId: user.id, deviceId, relayKeyBootstrap });
+await bridge.createRelayEnvelope({ userId: user.id, deviceId, channelId, seq, ciphertext, aad, nonce, algorithm, senderKeyId, recipientKeyId, requestKey });
+const { envelope, ack } = await bridge.waitForResponse({ userId: user.id, deviceId, channelId, afterSeq: seq });
+await ack();
+```
+
+`installId` / `install_id` 只用于设备身份复用；`bootstrapRelayKey` 只包装 Bridge relay-key-bootstrap 委托请求。产品仍然自己生成/包裹 relay key、保存会话密钥并解密业务 payload。
+
 委托签名 payload 是 8 行：
 
 ```text
@@ -133,6 +146,7 @@ const intent = await bridge.createConnectIntent({
   userId: user.id,
   account: { display_name: user.name },
   deviceName: "User Mac",
+  installId,
 });
 ```
 
