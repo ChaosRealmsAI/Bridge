@@ -7,7 +7,10 @@ import {
   bridgeAuthorizationContextFromMirror,
   bridgeProductAuthorizationCapabilities,
   bridgeRelayContextFromEnvelope,
+  bridgeRelayKeyForEnvelope,
+  bridgeRelayKeyScope,
   createBridgeAdapterResponseCache,
+  createBridgeProductAdapterRuntime,
   decryptBridgeRelayEnvelope,
   encryptBridgeRelayEnvelope,
   encryptBridgeRelayResponseEnvelope,
@@ -168,3 +171,71 @@ test("keyBytesFromBase64 validates 32 byte relay keys", () => {
   assert.equal(keyBytesFromBase64(key.toString("base64")).length, 32);
   assert.throws(() => keyBytesFromBase64(Buffer.alloc(16).toString("base64")), /relay_key_must_be_32_bytes/);
 });
+
+test("product adapter runtime handles envelope dispatch, progress, and replay without product business", async () => {
+  const key = webcrypto.getRandomValues(new Uint8Array(32));
+  let dispatchCount = 0;
+  const runtime = await createBridgeProductAdapterRuntime({
+    productId: "product-a",
+    schemaId: "product-relay-v1",
+    keyBytes: key,
+    async dispatch(command, context) {
+      dispatchCount += 1;
+      await context.emitProgress({ ok: true, progress: true, step: "seen" });
+      return { ok: true, echo: command };
+    },
+  });
+
+  try {
+    const request = await encryptBridgeRelayEnvelope({ type: "product.echo", input: { value: 1 } }, key, {
+      product_id: "product-a",
+      device_id: "dev_1",
+      channel_id: "chan_runtime",
+      seq: 1,
+      request_key: "runtime_req_1",
+      adapter_id: "product-a",
+      schema_id: "product-relay-v1",
+    });
+    const response = await postJson(runtime.url, request);
+    assert.equal(response.ok, true);
+    assert.equal(response.progress_envelopes.length, 1);
+    assert.equal((await decryptBridgeRelayEnvelope(response.progress_envelopes[0], key)).step, "seen");
+    assert.deepEqual(await decryptBridgeRelayEnvelope(response.response_envelope, key), {
+      ok: true,
+      echo: { type: "product.echo", input: { value: 1 } },
+    });
+    assert.equal(dispatchCount, 1);
+
+    const replay = await postJson(runtime.url, request);
+    assert.equal(replay.replay, true);
+    assert.equal(dispatchCount, 1);
+    assert.equal(runtime.executions.length, 1);
+    assert.equal(runtime.calls.length, 2);
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("relay key lookup supports scoped and default adapter keys", () => {
+  const key = Buffer.alloc(32, 4);
+  const relayKeys = new Map();
+  relayKeys.set(bridgeRelayKeyScope("product-a", "dev_1", "auth_1", "2", "rk_1"), key);
+  const envelope = {
+    product_id: "product-a",
+    device_id: "dev_1",
+    meta: { authorization_id: "auth_1", authorization_epoch: "2", relay_key_id: "rk_1" },
+  };
+  assert.equal(bridgeRelayKeyForEnvelope(envelope, relayKeys), key);
+  assert.equal(bridgeRelayKeyForEnvelope({ product_id: "product-b", device_id: "dev_2" }, new Map(), key), key);
+});
+
+async function postJson(url, body) {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const payload = await response.json();
+  assert.equal(response.status, 200, JSON.stringify(payload));
+  return payload;
+}

@@ -78,6 +78,14 @@ Web:    https://bridge.otherline.cc
 Assets: https://assets.bridge.otherline.cc
 ```
 
+测试托管资源：
+
+```text
+API:    https://api-bridge-test.otherline.cc
+Web:    https://bridge-test.otherline.cc
+Assets: https://assets-bridge-test.otherline.cc
+```
+
 ## 本机控制样板
 
 `examples/relay-local-control` 是当前最小可运行证明：
