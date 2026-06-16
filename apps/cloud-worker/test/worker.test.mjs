@@ -10,12 +10,35 @@ const env = {
   BRIDGE_WEB_ORIGIN: "http://local.test",
   BRIDGE_ALLOWED_ORIGINS: "http://local.test https://bridge.test.example https://syllo.test.example",
   BRIDGE_RELAY_ENVELOPE_TTL_MS: "300000",
+  BRIDGE_PRODUCT_REGISTRY_MODE: "extend",
+  BRIDGE_PRODUCT_REGISTRY_JSON: JSON.stringify({
+    products: [
+      {
+        id: "panda-chat",
+        name: "Test Chat Product",
+        official_origin: "http://local.test",
+        official_origins: ["http://local.test", "http://chat.local.test"],
+      },
+      {
+        id: "panda-syllo",
+        name: "Test Syllo Product",
+        official_origin: "http://local.test",
+        official_origins: ["http://local.test", "http://localhost:8790", "https://syllo.test.example"],
+      },
+      {
+        id: "delegated-demo",
+        name: "Delegated Test Product",
+        official_origin: "https://delegated.example",
+        official_origins: ["https://delegated.example", "http://local.test"],
+      },
+    ],
+  }),
   BRIDGE_PRODUCT_ALLOWED_ORIGINS: JSON.stringify({
     "panda-chat": ["http://local.test", "http://chat.local.test"],
     "panda-syllo": ["http://local.test", "http://localhost:8790", "https://syllo.test.example"],
-    otherline: ["https://otherline.cc", "http://local.test"],
+    "delegated-demo": ["https://delegated.example", "http://local.test"],
   }),
-  BRIDGE_OTHERLINE_DELEGATION_SECRET: "otherline-delegation-test-secret",
+  BRIDGE_DELEGATED_DEMO_DELEGATION_SECRET: "delegated-demo-delegation-test-secret",
   ASSETS: {
     fetch: async (request) => {
       const url = new URL(request.url);
@@ -101,16 +124,16 @@ async function delegatedApiRaw(method, path, body, userId, deviceId, nonce = ran
   const signingPayload = [
     method.toUpperCase(),
     path,
-    "otherline",
+    "delegated-demo",
     userId,
     deviceId,
     timestamp,
     nonce,
     bodyHash,
   ].join("\n");
-  const signature = createHmac("sha256", env.BRIDGE_OTHERLINE_DELEGATION_SECRET).update(signingPayload).digest("hex");
+  const signature = createHmac("sha256", env.BRIDGE_DELEGATED_DEMO_DELEGATION_SECRET).update(signingPayload).digest("hex");
   return apiRaw(method, path, body, "", {
-    "x-panda-bridge-product-id": "otherline",
+    "x-panda-bridge-product-id": "delegated-demo",
     "x-panda-bridge-user-id": userId,
     "x-panda-bridge-device-id": deviceId,
     "x-panda-bridge-request-timestamp": timestamp,
@@ -146,10 +169,14 @@ function relayEnvelope(overrides = {}) {
 
 function authorizationPolicy(capabilities, root = "[local]/default") {
   return {
-    version: "AUTH-SCOPE-v2",
+    version: "BRIDGE-RELAY-AUTH-v1",
     capabilities,
-    workspace_roots: [{ id: "default", path_display: root }],
     source_origin: env.BRIDGE_WEB_ORIGIN,
+    product_authorization: {
+      owner: "test-product-adapter",
+      capabilities: ["test.message"],
+      roots: [{ id: "default", path_display: root }],
+    },
   };
 }
 
@@ -280,6 +307,26 @@ assert.equal(expiredTokenClaim.response.status, 400);
 assert.equal(expiredTokenClaim.payload.error, "token_expired");
 delete env.BRIDGE_CONNECT_INTENT_TTL_MS;
 
+const legacyPolicyRejected = await apiRaw("POST", "/v1/connect-intents", {
+  product_id: "panda-chat",
+  device_name: "Legacy Policy Device",
+  install_id: "install-legacy-policy",
+  policy: {
+    version: "AUTH-SCOPE-v2",
+    capabilities: ["relay.envelope"],
+    workspace_roots: [{ id: "default", path_display: "[local]/default" }],
+    sandbox_floor: "danger-full-access",
+    allow_developer_instructions: true,
+  },
+});
+assert.equal(legacyPolicyRejected.response.status, 400);
+assert.equal(legacyPolicyRejected.payload.error, "legacy_authorization_policy_forbidden");
+assert.deepEqual(legacyPolicyRejected.payload.fields, [
+  "workspace_roots",
+  "sandbox_floor",
+  "allow_developer_instructions",
+]);
+
 const customRegistryEnv = {
   ...env,
   BRIDGE_PRODUCT_REGISTRY_MODE: "replace",
@@ -345,7 +392,7 @@ const extendOverrideRegistryResponse = await worker.fetch(new Request("http://lo
   BRIDGE_PRODUCT_REGISTRY_MODE: "extend",
   BRIDGE_PRODUCT_REGISTRY_JSON: JSON.stringify({
     products: [{
-      id: "panda-chat",
+      id: "bridge-demo",
       name: "Fake Panda",
       official_origin: "https://evil.example",
     }],
@@ -372,7 +419,7 @@ const claimed = await nativeClaimIntent(intent.token, {
 });
 assert.deepEqual(claimed.authorization.policy.capabilities, ["relay.envelope", "relay.ack"]);
 assert.equal(claimed.authorization.status, "pending");
-assert.equal(claimed.authorization.policy.domain_boundaries.relay.boundary_type, "relay_channel");
+assert.equal(claimed.authorization.policy.version, "BRIDGE-RELAY-AUTH-v1");
 assert.equal(claimed.device.status, "online");
 assert.deepEqual(claimed.device.capabilities, {
   relay: ["relay.envelope", "relay.ack"],
@@ -826,7 +873,6 @@ const sylloBootstrap = await api("POST", "/v1/products/panda-syllo/relay-key-boo
         sylloConfirmed.authorization.id,
         sylloConfirmed.authorization.epoch,
         "rkx_test_syllo",
-        "syllo-relay-key-bootstrap-v1",
       )),
     },
   },
@@ -925,24 +971,24 @@ const sylloNoProductAuth = await apiRaw("POST", "/v1/products/panda-syllo/relay/
 assert.equal(sylloNoProductAuth.response.status, 201);
 assert.equal(sylloNoProductAuth.payload.envelope.delivery_status, "queued");
 
-const otherlineIntent = await api("POST", "/v1/connect-intents", {
-  product_id: "otherline",
-  device_name: "Otherline Relay Device",
-  install_id: "install-otherline",
+const delegatedIntent = await api("POST", "/v1/connect-intents", {
+  product_id: "delegated-demo",
+  device_name: "Delegated Relay Device",
+  install_id: "install-delegated-demo",
 });
-const otherlineClaim = await nativeClaimIntent(otherlineIntent.token, {
-  device_name: "Otherline Relay Device",
-  install_id: "install-otherline",
+const delegatedClaim = await nativeClaimIntent(delegatedIntent.token, {
+  device_name: "Delegated Relay Device",
+  install_id: "install-delegated-demo",
   capabilities: { relay: ["relay.envelope", "relay.ack"] },
 }, claimed.device_token);
-assert.equal(otherlineClaim.authorization.status, "pending");
-const otherlineConfirmed = await nativeConfirmIntent(otherlineIntent.token, otherlineClaim.device_token, {
-  "x-panda-bridge-install-id": "install-otherline",
+assert.equal(delegatedClaim.authorization.status, "pending");
+const delegatedConfirmed = await nativeConfirmIntent(delegatedIntent.token, delegatedClaim.device_token, {
+  "x-panda-bridge-install-id": "install-delegated-demo",
 });
-assert.equal(otherlineConfirmed.authorization.status, "active");
-const otherlineRelayKeyExchange = {
+assert.equal(delegatedConfirmed.authorization.status, "active");
+const delegatedRelayKeyExchange = {
   algorithm: "ECDH-P256+A256GCM",
-  key_id: "rkx_test_otherline",
+  key_id: "rkx_test_delegated_demo",
   public_jwk: {
     kty: "EC",
     crv: "P-256",
@@ -951,29 +997,29 @@ const otherlineRelayKeyExchange = {
   },
 };
 await api("POST", "/v1/connectors/heartbeat", {
-  install_id: "install-otherline",
+  install_id: "install-delegated-demo",
   capabilities: { relay: ["relay.envelope", "relay.ack"] },
   local_state: {
     relay: { envelopes: true, ack: true },
     adapter_router: {
       configured: true,
       products: {
-        otherline: {
+        "delegated-demo": {
           configured: true,
-          relay_key_exchange: otherlineRelayKeyExchange,
+          relay_key_exchange: delegatedRelayKeyExchange,
         },
       },
     },
   },
-}, otherlineConfirmed.device_token || otherlineClaim.device_token);
-const delegatedBootstrap = await delegatedApi("POST", "/v1/products/otherline/delegated/relay-key-bootstrap", {
-  device_id: otherlineClaim.device.id,
+}, delegatedConfirmed.device_token || delegatedClaim.device_token);
+const delegatedBootstrap = await delegatedApi("POST", "/v1/products/delegated-demo/delegated/relay-key-bootstrap", {
+  device_id: delegatedClaim.device.id,
   relay_key_bootstrap: {
     algorithm: "ECDH-P256+A256GCM",
-    key_id: "rkx_test_otherline",
+    key_id: "rkx_test_delegated_demo",
     wrapped_key: {
       algorithm: "ECDH-P256+A256GCM",
-      key_id: "rkx_test_otherline",
+      key_id: "rkx_test_delegated_demo",
       app_public_jwk: {
         kty: "EC",
         crv: "P-256",
@@ -983,29 +1029,29 @@ const delegatedBootstrap = await delegatedApi("POST", "/v1/products/otherline/de
       nonce_b64: "AAAAAAAAAAAAAAAA",
       ciphertext_b64: "ZmFrZS13cmFwcGVkLWtleQ==",
       aad_b64: b64Text(relayKeyBootstrapAadText(
-        "otherline",
-        otherlineClaim.device.id,
-        otherlineConfirmed.authorization.id,
-        otherlineConfirmed.authorization.epoch,
-        "rkx_test_otherline",
+        "delegated-demo",
+        delegatedClaim.device.id,
+        delegatedConfirmed.authorization.id,
+        delegatedConfirmed.authorization.epoch,
+        "rkx_test_delegated_demo",
       )),
     },
   },
-}, otherlineClaim.account.id, otherlineClaim.device.id);
+}, delegatedClaim.account.id, delegatedClaim.device.id);
 assert.equal(delegatedBootstrap.relay_key_bootstrap.status, "ready");
-assert.equal(delegatedBootstrap.relay_key_bootstrap.key_id, "rkx_test_otherline");
+assert.equal(delegatedBootstrap.relay_key_bootstrap.key_id, "rkx_test_delegated_demo");
 assert.doesNotMatch(JSON.stringify(delegatedBootstrap), /relay_key_b64|relayKeyB64|key_b64|keyB64/);
-const delegatedCreated = await delegatedApi("POST", "/v1/products/otherline/delegated/relay/envelopes", relayEnvelope({
-  product_id: "otherline",
-  device_id: otherlineClaim.device.id,
+const delegatedCreated = await delegatedApi("POST", "/v1/products/delegated-demo/delegated/relay/envelopes", relayEnvelope({
+  product_id: "delegated-demo",
+  device_id: delegatedClaim.device.id,
   channel_id: "delegated_chan",
   request_key: "rq_delegated",
-}), otherlineClaim.account.id, otherlineClaim.device.id);
-assert.equal(delegatedCreated.envelope.product_id, "otherline");
-const badDelegated = await delegatedApiRaw("POST", "/v1/products/otherline/delegated/relay/envelopes", {
-  ...relayEnvelope({ product_id: "otherline", device_id: otherlineClaim.device.id, channel_id: "bad_delegated" }),
+}), delegatedClaim.account.id, delegatedClaim.device.id);
+assert.equal(delegatedCreated.envelope.product_id, "delegated-demo");
+const badDelegated = await delegatedApiRaw("POST", "/v1/products/delegated-demo/delegated/relay/envelopes", {
+  ...relayEnvelope({ product_id: "delegated-demo", device_id: delegatedClaim.device.id, channel_id: "bad_delegated" }),
   payload: { text: "plaintext" },
-}, otherlineClaim.account.id, otherlineClaim.device.id);
+}, delegatedClaim.account.id, delegatedClaim.device.id);
 assert.equal(badDelegated.response.status, 400);
 assert.equal(badDelegated.payload.error, "plaintext_fields_forbidden");
 

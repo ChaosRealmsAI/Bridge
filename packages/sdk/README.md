@@ -19,7 +19,7 @@ import { createBridgeClient } from "@panda-bridge/sdk";
 
 const bridge = createBridgeClient({
   apiBase: "https://api.bridge.otherline.cc",
-  productId: "panda-chat",
+  productId: "bridge-demo",
 });
 
 // 1. 读账号级状态并渲染
@@ -58,7 +58,7 @@ import { createBridgeServerClient } from "@panda-bridge/sdk/server";
 
 const bridge = createBridgeServerClient({
   apiBase: "https://api.bridge.otherline.cc",
-  productId: "otherline",
+  productId: "example-product",
   secret: process.env.PANDA_BRIDGE_DELEGATION_SECRET,
 });
 

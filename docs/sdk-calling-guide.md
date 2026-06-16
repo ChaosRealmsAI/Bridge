@@ -31,7 +31,7 @@ import { createBridgeClient, BridgeErrorCodes } from "@panda-bridge/sdk";
 
 const bridge = createBridgeClient({
   apiBase: "https://api.bridge.test.example",
-  productId: "otherline",
+  productId: "example-product",
 });
 ```
 
@@ -42,7 +42,7 @@ import { createBridgeServerClient } from "@panda-bridge/sdk/server";
 
 const bridge = createBridgeServerClient({
   apiBase: "https://api.bridge.test.example",
-  productId: "otherline",
+  productId: "example-product",
   secret: process.env.PANDA_BRIDGE_DELEGATION_SECRET,
 });
 ```
@@ -167,13 +167,13 @@ async function callLocalAdapter(command) {
 
   const account = state.current_account;
   const deviceId = account.current_device.id;
-  const channelId = `otherline:${crypto.randomUUID()}`;
+  const channelId = `example-product:${crypto.randomUUID()}`;
   const seq = 1;
   const requestKey = crypto.randomUUID();
 
   const encrypted = await encryptForAdapter({
     command,
-    aad: { productId: "otherline", deviceId, channelId, seq, requestKey },
+    aad: { productId: "example-product", deviceId, channelId, seq, requestKey },
   });
 
   const created = await bridge.relay.create({
@@ -187,7 +187,7 @@ async function callLocalAdapter(command) {
     algorithm: encrypted.algorithm,
     senderKeyId: encrypted.senderKeyId,
     recipientKeyId: encrypted.recipientKeyId,
-    meta: { adapter_id: "otherline-adapter", trace_id: requestKey },
+    meta: { adapter_id: "example-adapter", trace_id: requestKey },
   });
 
   if (created.reused) {
@@ -241,7 +241,7 @@ lastSeenSeq = inbox.cursor.next_after_seq;
 
 ```js
 async function callFromBackend({ userId, deviceId, command }) {
-  const channelId = `otherline:${crypto.randomUUID()}`;
+  const channelId = `example-product:${crypto.randomUUID()}`;
   const seq = 1;
   const requestKey = crypto.randomUUID();
   const encrypted = await encryptForAdapter({ command, aad: { userId, deviceId, channelId, seq, requestKey } });
@@ -258,7 +258,7 @@ async function callFromBackend({ userId, deviceId, command }) {
     algorithm: encrypted.algorithm,
     senderKeyId: encrypted.senderKeyId,
     recipientKeyId: encrypted.recipientKeyId,
-    meta: { adapter_id: "otherline-adapter", trace_id: requestKey },
+    meta: { adapter_id: "example-adapter", trace_id: requestKey },
   });
 
   const { envelope, ack } = await bridge.waitForResponse({

@@ -8,6 +8,8 @@ const root = resolve(new URL("../..", import.meta.url).pathname);
 const sdkReadme = read("packages/sdk/README.md");
 const callingGuide = read("docs/sdk-calling-guide.md");
 const productIntegration = read("docs/product-integration.md");
+const desktopUserGuide = read("docs/desktop-user-guide.md");
+const operationsGuide = read("docs/operations.md");
 const sdkSource = read("packages/sdk/src/index.js");
 const sdkTypes = read("packages/sdk/src/index.d.ts");
 const serverSource = read("packages/sdk/src/server.js");
@@ -114,10 +116,31 @@ assert.equal(sdkPackage.exports["./server"].default, "./src/server.js");
 assert.equal(adapterPackage.exports["."].default, "./src/index.js");
 assert.ok(packageJson.scripts["check:sdk-docs"]?.includes("scripts/verify/sdk-docs.mjs"), "root package must expose check:sdk-docs");
 
+for (const [name, text] of [
+  ["docs/desktop-user-guide.md", desktopUserGuide],
+  ["docs/operations.md", operationsGuide],
+]) {
+  for (const marker of [
+    "AI runtime",
+    "local Agent",
+    "before executing jobs",
+    "allow jobs",
+    "`codex.chat`",
+    "`codex.run`",
+    "`codex.rpc`",
+    "codex login",
+    "bridge_jobs",
+    "bridge_job_events",
+    "verify:cloud",
+  ]) {
+    assert.equal(text.includes(marker), false, `${name} contains stale runtime docs marker: ${marker}`);
+  }
+}
+
 console.log(JSON.stringify({
   ok: true,
   check: "bridge-sdk-docs",
-  docs: ["packages/sdk/README.md", "docs/sdk-calling-guide.md", "docs/product-integration.md", "examples/minimal-caller/README.md"],
+  docs: ["packages/sdk/README.md", "docs/sdk-calling-guide.md", "docs/product-integration.md", "examples/minimal-caller/README.md", "docs/desktop-user-guide.md", "docs/operations.md"],
   packages: [sdkPackage.name, adapterPackage.name],
 }));
 

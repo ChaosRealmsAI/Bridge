@@ -4,6 +4,10 @@
   "type": "module",
   "main": "src/index.js",
   "types": "src/index.d.ts",
+  "files": [
+    "README.md",
+    "src"
+  ],
   "exports": {
     ".": {
       "types": "./src/index.d.ts",

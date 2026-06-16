@@ -7,7 +7,7 @@ assert.ok(crypto?.subtle, "WebCrypto subtle API is required");
 
 const encoder = new TextEncoder();
 const plaintext = encoder.encode(JSON.stringify({ prompt: "never leaves endpoint before encryption" }));
-const aad = encoder.encode("product:panda-syllo|device:dev_1|channel:chan_1|seq:1");
+const aad = encoder.encode("product:acme-demo|device:dev_1|channel:chan_1|seq:1");
 const iv = crypto.getRandomValues(new Uint8Array(12));
 const key = await crypto.subtle.generateKey(
   { name: "AES-GCM", length: 256 },
@@ -20,7 +20,7 @@ const packedAad = Buffer.from(aad).toString("base64");
 const packedIv = Buffer.from(iv).toString("base64");
 
 const envelope = validateRelayEnvelope({
-  productId: "panda-syllo",
+  productId: "acme-demo",
   deviceId: "dev_1",
   channelId: "chan_1",
   direction: "product_to_device",

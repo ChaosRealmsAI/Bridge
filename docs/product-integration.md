@@ -55,7 +55,7 @@ SDK 级最终调用细节见 [`docs/sdk-calling-guide.md`](./sdk-calling-guide.m
 ```js
 const bridge = createBridgeClient({
   apiBase: "https://api.bridge.test.example",
-  productId: "otherline",
+  productId: "example-product",
 });
 
 const state = await bridge.state();
@@ -98,7 +98,7 @@ if (!ready.ready) {
 ```js
 const bridge = createBridgeServerClient({
   apiBase: "https://api.bridge.test.example",
-  productId: "otherline",
+  productId: "example-product",
   secret: process.env.PANDA_BRIDGE_DELEGATION_SECRET,
 });
 

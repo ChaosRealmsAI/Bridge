@@ -125,7 +125,7 @@ bash spec/check-template.sh --no-smoke
 ```bash
 npm run cloud:dev
 npm run desktop:dev
-npm run pandart:local
+npm run verify:minimal-caller
 ```
 
 部署 test Worker 使用 `apps/cloud-worker/wrangler.test.toml`；生产部署需要单独确认。

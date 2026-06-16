@@ -19,7 +19,7 @@ import {
 const calls = [];
 const client = createBridgeClient({
   apiBase: "https://api.example.test",
-  productId: "panda-chat",
+  productId: "bridge-demo",
   fetch: async (url, init) => {
     calls.push({ url, init });
     return new Response(JSON.stringify({ envelope: { id: "env_1", delivery_status: "queued" } }), {
@@ -42,10 +42,10 @@ const envelope = await client.relay.create({
   meta: { adapter_id: "acme-adapter" },
 });
 assert.equal(envelope.envelope.id, "env_1");
-assert.equal(calls[0].url, "https://api.example.test/v1/products/panda-chat/relay/envelopes");
+assert.equal(calls[0].url, "https://api.example.test/v1/products/bridge-demo/relay/envelopes");
 assert.deepEqual(JSON.parse(calls[0].init.body), {
   envelope_version: "relay-envelope-v1",
-  product_id: "panda-chat",
+  product_id: "bridge-demo",
   device_id: "dev_1",
   channel_id: "chan_1",
   direction: "product_to_device",
@@ -132,7 +132,7 @@ assert.equal(pausedModel.connection.connected, false);
 assert.equal(pausedModel.nextAction, "resume_authorization");
 
 const directState = bridgeStateModel({
-  product: { id: "panda-chat" },
+  product: { id: "bridge-demo" },
   install: stateInstall(),
   accounts: [{
     account: { id: "acct_1", email: "panda@example.test" },
@@ -141,7 +141,7 @@ const directState = bridgeStateModel({
     current_device: { id: "dev_1", device_name: "Mac Studio", status: "online" },
   }],
 });
-assert.equal(directState.product_id, "panda-chat");
+assert.equal(directState.product_id, "bridge-demo");
 assert.equal(directState.ready, true);
 assert.equal(directState.accounts[0].authorization.status, "active");
 assert.deepEqual(directState.accounts[0].authorization.policy, { capabilities: ["relay.envelope"] });
@@ -150,7 +150,7 @@ assert.equal(directState.accounts[0].current_device.id, "dev_1");
 assert.equal(directState.bridge_state, "ready");
 
 const deviceAuthorizationState = bridgeStateModel({
-  product: { id: "panda-chat" },
+  product: { id: "bridge-demo" },
   install: stateInstall(),
   accounts: [{
     account: { id: "acct_1", email: "panda@example.test" },
@@ -167,7 +167,7 @@ const deviceAuthorizationState = bridgeStateModel({
         id: "auth_1",
         device_id: "dev_1",
         status: "active",
-        policy: { capabilities: ["relay.envelope"], workspace_roots: [{ path_display: "[local]/default" }] },
+        policy: { capabilities: ["relay.envelope"], product_authorization: { roots: [{ path_display: "Product scope" }] } },
         source_origin: "http://local.test",
       },
     },
@@ -179,7 +179,7 @@ const deviceAuthorizationState = bridgeStateModel({
         id: "auth_2",
         device_id: "dev_2",
         status: "paused",
-        policy: { capabilities: ["relay.envelope"], workspace_roots: [{ path_display: "[local]/secondary" }] },
+        policy: { capabilities: ["relay.envelope"], product_authorization: { roots: [{ path_display: "Secondary product scope" }] } },
         source_origin: "http://chat.local.test",
       },
     },
@@ -187,14 +187,14 @@ const deviceAuthorizationState = bridgeStateModel({
 });
 assert.equal(deviceAuthorizationState.devices[0].authorization.origin, "http://local.test");
 assert.equal(deviceAuthorizationState.devices[1].authorization.status, "paused");
-assert.deepEqual(deviceAuthorizationState.devices[1].authorization.policy.workspace_roots, [{ path_display: "[local]/secondary" }]);
+assert.deepEqual(deviceAuthorizationState.devices[1].authorization.policy.product_authorization.roots, [{ path_display: "Secondary product scope" }]);
 
 const legacyOffline = bridgeStateModel({
   bridge_state: "authorized_offline",
-  product_id: "panda-chat",
+  product_id: "bridge-demo",
   install: stateInstall(),
   devices: [{ id: "dev_1", device_name: "Mac Studio", status: "offline", current: true }],
-  authorization: { id: "auth_1", status: "active", policy: { workspace_roots: [] } },
+  authorization: { id: "auth_1", status: "active", policy: { capabilities: ["relay.envelope"] } },
 });
 assert.equal(legacyOffline.accounts[0].authorization.status, "active");
 assert.equal(legacyOffline.accounts[0].connected, false);
@@ -244,41 +244,49 @@ assert.equal(bridgeSnapshotStatusForDevice({ status: "offline" }), "reconnecting
 
 await client.connect.createIntent({ deviceName: "Mac" });
 assert.equal(calls[1].url, "https://api.example.test/v1/connect-intents");
-assert.equal(JSON.parse(calls[1].init.body).product_id, "panda-chat");
+assert.equal(JSON.parse(calls[1].init.body).product_id, "bridge-demo");
 const defaultIntentPolicy = JSON.parse(calls[1].init.body).policy;
-assert.equal(defaultIntentPolicy.version, "AUTH-SCOPE-v2");
-assert.equal(defaultIntentPolicy.preset, "workspace-default");
-assert.equal(defaultIntentPolicy.request_source, "sdk_default_low_tier");
+assert.equal(defaultIntentPolicy.version, "BRIDGE-RELAY-AUTH-v1");
+assert.equal(defaultIntentPolicy.request_source, "sdk_default_relay");
 assert.deepEqual(defaultIntentPolicy.capabilities, ["relay.envelope", "relay.ack"]);
-assert.deepEqual(defaultIntentPolicy.workspace_roots, [{ id: "default", path_display: "[local]/default" }]);
-assert.equal(defaultIntentPolicy.sandbox_floor, "workspace-write");
-assert.equal(defaultIntentPolicy.approval_policy_floor, "on-request");
-assert.equal(defaultIntentPolicy.allow_approval_never, false);
-assert.equal(defaultIntentPolicy.allow_developer_instructions, false);
+assert.equal(defaultIntentPolicy.workspace_roots, undefined);
+assert.equal(defaultIntentPolicy.sandbox_floor, undefined);
+assert.equal(defaultIntentPolicy.approval_policy_floor, undefined);
+assert.equal(defaultIntentPolicy.allow_approval_never, undefined);
+assert.equal(defaultIntentPolicy.allow_developer_instructions, undefined);
 assert.equal(defaultIntentPolicy.display, undefined);
 
-const fullAccessCalls = [];
-const fullAccessClient = createBridgeClient({
+const productAuthorizationCalls = [];
+const productAuthorizationClient = createBridgeClient({
   apiBase: "https://api.example.test",
-  productId: "panda-chat",
+  productId: "bridge-demo",
   fetch: async (url, init) => {
-    fullAccessCalls.push({ url, init });
-    return new Response(JSON.stringify({ token: "pbi_full_access" }), {
+    productAuthorizationCalls.push({ url, init });
+    return new Response(JSON.stringify({ token: "pbi_product_auth" }), {
       status: 201,
       headers: { "content-type": "application/json" },
     });
   },
 });
-await fullAccessClient.connect.createIntent({ permissions: { fullAccess: true } });
-const explicitFullAccessPolicy = JSON.parse(fullAccessCalls[0].init.body).policy;
-assert.equal(explicitFullAccessPolicy.version, "AUTH-SCOPE-v2");
-assert.equal(explicitFullAccessPolicy.preset, "full-access");
-assert.deepEqual(explicitFullAccessPolicy.capabilities, ["relay.envelope", "relay.ack"]);
-assert.equal(explicitFullAccessPolicy.workspace_roots[0].allow_all, true);
-assert.equal(explicitFullAccessPolicy.sandbox_floor, "danger-full-access");
-assert.equal(explicitFullAccessPolicy.approval_policy_floor, "never");
-assert.equal(explicitFullAccessPolicy.allow_approval_never, true);
-assert.equal(explicitFullAccessPolicy.allow_developer_instructions, true);
+await productAuthorizationClient.connect.createIntent({
+  permissions: {
+    capabilities: ["relay.envelope"],
+    product_authorization: {
+      owner: "product-adapter",
+      capabilities: ["example.message"],
+      roots: [{ id: "project", path_display: "Product-managed project" }],
+    },
+  },
+});
+const explicitProductPolicy = JSON.parse(productAuthorizationCalls[0].init.body).policy;
+assert.deepEqual(explicitProductPolicy, {
+  capabilities: ["relay.envelope"],
+  product_authorization: {
+    owner: "product-adapter",
+    capabilities: ["example.message"],
+    roots: [{ id: "project", path_display: "Product-managed project" }],
+  },
+});
 
 await client.auth.share();
 assert.equal(calls[2].url, "https://api.example.test/v1/sessions/share");
@@ -302,7 +310,7 @@ assert.equal(calls[6].url, "https://api.example.test/v1/products");
 const authCalls = [];
 const authClient = createBridgeClient({
   apiBase: "https://api.example.test",
-  productId: "panda-chat",
+  productId: "bridge-demo",
   fetch: async (url, init) => {
     authCalls.push({ url, init });
     const body = init.body ? JSON.parse(init.body) : {};
@@ -319,13 +327,13 @@ const authClient = createBridgeClient({
 const listed = await authClient.authorization.list({ deviceId: "dev_1" });
 assert.equal(listed.authorization.status, "active");
 assert.deepEqual(listed.authorization.policy, { capabilities: ["relay.envelope"] });
-assert.equal(authCalls[0].url, "https://api.example.test/v1/products/panda-chat/authorization?device_id=dev_1");
+assert.equal(authCalls[0].url, "https://api.example.test/v1/products/bridge-demo/authorization?device_id=dev_1");
 assert.equal(authCalls[0].init.method, "GET");
 
 const paused = await authClient.authorization.pause({ deviceId: "dev_1" });
 assert.equal(paused.authorization.status, "paused");
 assert.equal(paused.connected, false);
-assert.equal(authCalls[1].url, "https://api.example.test/v1/products/panda-chat/authorization?device_id=dev_1");
+assert.equal(authCalls[1].url, "https://api.example.test/v1/products/bridge-demo/authorization?device_id=dev_1");
 assert.equal(authCalls[1].init.method, "PATCH");
 assert.deepEqual(JSON.parse(authCalls[1].init.body), { status: "paused" });
 
@@ -338,7 +346,7 @@ assert.equal(removed.cancelled_relay_envelopes, 2);
 assert.equal(authCalls[3].init.method, "DELETE");
 
 await authClient.products.revokeAuthorization("dev_1");
-assert.equal(authCalls[4].url, "https://api.example.test/v1/products/panda-chat/authorization?device_id=dev_1");
+assert.equal(authCalls[4].url, "https://api.example.test/v1/products/bridge-demo/authorization?device_id=dev_1");
 assert.equal(authCalls[4].init.method, "DELETE");
 
 await client.diagnostics();
@@ -348,7 +356,7 @@ assert.equal(calls[7].init.method, "GET");
 const customCalls = [];
 const customClient = createBridgeClient({
   apiBase: "https://api.example.test",
-  productId: "panda-chat",
+  productId: "bridge-demo",
   fetch: async (url, init) => {
     customCalls.push({ url, init });
     return new Response(JSON.stringify({ envelope: { id: "env_custom_1", delivery_status: "queued" } }), {
@@ -368,10 +376,10 @@ await customClient.relay.create({
   senderKeyId: "product-key-1",
   recipientKeyId: "device-key-1",
 });
-assert.equal(customCalls[0].url, "https://api.example.test/v1/products/panda-chat/relay/envelopes");
+assert.equal(customCalls[0].url, "https://api.example.test/v1/products/bridge-demo/relay/envelopes");
 assert.deepEqual(JSON.parse(customCalls[0].init.body), {
   envelope_version: "relay-envelope-v1",
-  product_id: "panda-chat",
+  product_id: "bridge-demo",
   device_id: "dev_custom_1",
   channel_id: "chan_custom_1",
   direction: "product_to_device",
@@ -390,7 +398,7 @@ assert.deepEqual(JSON.parse(customCalls[0].init.body), {
 const waitCalls = [];
 const waitClient = createBridgeClient({
   apiBase: "https://api.example.test",
-  productId: "panda-chat",
+  productId: "bridge-demo",
   fetch: async (url, init) => {
     waitCalls.push({ url, init });
     const parsed = new URL(url);
@@ -423,10 +431,10 @@ const waited = await waitClient.relay.waitForResponse({
   timeoutMs: 20,
 });
 assert.equal(waited.envelope.id, "env_reply_1");
-assert.equal(waitCalls[0].url, "https://api.example.test/v1/products/panda-chat/relay/envelopes?device_id=dev_custom_1&channel_id=chan_custom_1&after_seq=1");
+assert.equal(waitCalls[0].url, "https://api.example.test/v1/products/bridge-demo/relay/envelopes?device_id=dev_custom_1&channel_id=chan_custom_1&after_seq=1");
 assert.equal(waitCalls[0].init.method, "GET");
 await waited.ack();
-assert.equal(waitCalls[1].url, "https://api.example.test/v1/products/panda-chat/relay/envelopes/env_reply_1/ack");
+assert.equal(waitCalls[1].url, "https://api.example.test/v1/products/bridge-demo/relay/envelopes/env_reply_1/ack");
 assert.equal(waitCalls[1].init.method, "POST");
 assert.deepEqual(JSON.parse(waitCalls[1].init.body), {});
 
@@ -438,7 +446,7 @@ await waitClient.relay.list({
   waitMs: 5000,
   includeAcked: true,
 });
-assert.equal(waitCalls[2].url, "https://api.example.test/v1/products/panda-chat/relay/envelopes?device_id=dev_custom_1&channel_id=chan_custom_1&after_seq=2&limit=25&wait_ms=5000&include_acked=true");
+assert.equal(waitCalls[2].url, "https://api.example.test/v1/products/bridge-demo/relay/envelopes?device_id=dev_custom_1&channel_id=chan_custom_1&after_seq=2&limit=25&wait_ms=5000&include_acked=true");
 assert.equal(waitCalls[2].init.method, "GET");
 
 const callCalls = [];
@@ -562,7 +570,7 @@ const readyPreflight = mockClient([
   { body: { ok: true, protocol: "panda-bridge-protocol-v0.2" } },
   { body: { authenticated: true, user: { id: "user_1" } } },
   { body: { items: [{ id: "dev_1", status: "online", device_name: "Mac" }] } },
-  { body: { authorization: { device_id: "dev_1", product_id: "panda-chat", status: "active" } } },
+  { body: { authorization: { device_id: "dev_1", product_id: "bridge-demo", status: "active" } } },
 ]);
 const readyPreflightResult = await readyPreflight.client.preflight();
 assert.equal(readyPreflightResult.ready, true);
@@ -576,7 +584,7 @@ assert.equal(state.ready, true);
 assert.equal(state.accounts[0].authorization.status, "active");
 assert.equal(state.accounts[0].connected, true);
 assert.equal(state.bridge_state, "ready");
-assert.equal(stateClient.calls[0].path, "/v1/bridge/state?product_id=panda-chat");
+assert.equal(stateClient.calls[0].path, "/v1/bridge/state?product_id=bridge-demo");
 
 const install = client.install();
 assert.equal(install.version, "0.1.0");
@@ -607,8 +615,8 @@ const waitedEnsure = mockClient([
 const waitedResult = await waitedEnsure.client.ensureReady({ intervalMs: 1, timeoutMs: 200, wait: true });
 assert.equal(waitedResult.ready, true);
 assert.deepEqual(waitedEnsure.calls.map((call) => call.path), [
-  "/v1/bridge/state?product_id=panda-chat",
-  "/v1/bridge/state?product_id=panda-chat",
+  "/v1/bridge/state?product_id=bridge-demo",
+  "/v1/bridge/state?product_id=bridge-demo",
 ]);
 
 const originalWebSocket = globalThis.WebSocket;
@@ -650,7 +658,7 @@ try {
 
 const errorClient = createBridgeClient({
   apiBase: "https://api.example.test",
-  productId: "panda-chat",
+  productId: "bridge-demo",
   fetch: async () => new Response(JSON.stringify({
     error: "authorization_paused",
     message: "authorization_paused",
@@ -684,7 +692,7 @@ console.log("[sdk.test] pass");
 
 function bridgeStateFixture(status, connected) {
   return {
-    product_id: "panda-chat",
+    product_id: "bridge-demo",
     install: stateInstall(),
     accounts: [{
       account: { id: "acct_1", email: "panda@example.test" },
@@ -716,7 +724,7 @@ function mockClient(responses) {
   const calls = [];
   const client = createBridgeClient({
     apiBase: "https://api.example.test",
-    productId: "panda-chat",
+    productId: "bridge-demo",
     fetch: async (url, init) => {
       const next = responses.shift() || { body: {} };
       const parsed = new URL(url);

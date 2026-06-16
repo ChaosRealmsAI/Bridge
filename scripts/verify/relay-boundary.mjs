@@ -55,7 +55,7 @@ const fakeFetch = async (url, options = {}) => {
 
 const client = createBridgeClient({
   apiBase: "https://bridge.example.test",
-  productId: "panda-syllo",
+  productId: "acme-demo",
   fetch: fakeFetch,
 });
 assert.equal(Object.hasOwn(client, "codex"), false, "SDK must not expose client.codex");
@@ -79,12 +79,12 @@ await client.relay.create({
   recipientKeyId: "device-key-1",
 });
 assert.equal(calls[0].method, "POST");
-assert.equal(calls[0].url, "https://bridge.example.test/v1/products/panda-syllo/relay/envelopes");
+assert.equal(calls[0].url, "https://bridge.example.test/v1/products/acme-demo/relay/envelopes");
 assert.equal(calls[0].body.direction, "product_to_device");
-assert.equal(calls[0].body.product_id, "panda-syllo");
+assert.equal(calls[0].body.product_id, "acme-demo");
 
 const plaintext = validateRelayEnvelope({
-  productId: "panda-syllo",
+  productId: "acme-demo",
   deviceId: "dev_1",
   channelId: "chan_1",
   direction: "product_to_device",
@@ -101,7 +101,7 @@ assert.equal(plaintext.ok, false);
 assert.ok(plaintext.errors.includes("plaintext_fields_forbidden"));
 
 const metaPlaintext = validateRelayEnvelope({
-  productId: "panda-syllo",
+  productId: "acme-demo",
   deviceId: "dev_1",
   channelId: "chan_1",
   direction: "product_to_device",
@@ -190,6 +190,7 @@ assert.ok(desktopUi.includes("product_authorization"), "Desktop UI preview must 
 assert.ok(desktopUi.includes("policy caps"), "Desktop UI preview must render relay policy capability summary");
 
 const workerMain = readFileSync(new URL("../../apps/cloud-worker/src/index.js", import.meta.url), "utf8");
+const workerLegacyRuntime = readFileSync(new URL("../../apps/cloud-worker/src/legacy-runtime.js", import.meta.url), "utf8");
 for (const marker of [
   ...verticalKinds,
   ...publicLegacyJobMarkers,
@@ -208,12 +209,12 @@ assert.ok(workerMain.includes("safeAdapterProducts"), "Worker must preserve gene
 assert.ok(workerMain.includes("deviceRelayKeyExchange(device, product.id)"), "Worker relay key bootstrap must select exchange by product");
 assert.ok(workerMain.includes("relayKeyBootstrapAadTexts"), "Worker relay key bootstrap must accept versioned generic AAD");
 assert.ok(workerMain.includes("bridge-relay-key-bootstrap-v1"), "Worker must accept generic Bridge relay-key bootstrap AAD");
-assert.ok(workerMain.includes("syllo-relay-key-bootstrap-v1"), "Worker must preserve legacy Syllo relay-key bootstrap AAD");
+assert.equal(workerMain.includes("syllo-relay-key-bootstrap-v1"), false, "Worker must not keep Syllo-specific relay-key bootstrap AAD");
 assert.equal(workerMain.includes("async function queueSummary"), false, "Worker must not expose legacy job queue summary implementation");
-assert.ok(
-  workerMain.includes('if (path === "/v1/queue/summary" && request.method === "GET") return legacyRuntimeApiRemoved(env);'),
-  "legacy /v1/queue/summary must return legacyRuntimeApiRemoved",
-);
+assert.ok(workerMain.includes("isLegacyRuntimeRoute(request.method, path)"), "Worker must delegate legacy runtime route matching");
+assert.ok(workerMain.includes("legacyRuntimeApiRemovedPayload()"), "Worker must delegate legacy runtime payload");
+assert.ok(workerLegacyRuntime.includes("legacy_runtime_api_removed"), "legacy-runtime module must return legacy_runtime_api_removed");
+assert.ok(workerLegacyRuntime.includes("\\/v1\\/queue\\/summary"), "legacy-runtime module must cover /v1/queue/summary");
 
 const readme = readFileSync(new URL("../../README.md", import.meta.url), "utf8");
 for (const marker of [

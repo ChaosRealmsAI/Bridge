@@ -4,14 +4,29 @@ import { resolve } from "node:path";
 
 import worker from "../../apps/cloud-worker/src/index.js";
 
+const SECONDARY_PRODUCT_ID = "bridge-secondary";
+
 function makeEnv(overrides = {}) {
   return {
     BRIDGE_LOCAL_MEMORY: "1",
     BRIDGE_WEB_ORIGIN: "http://local.test",
     BRIDGE_RELAY_ENVELOPE_TTL_MS: "300000",
     BRIDGE_PRODUCT_ALLOWED_ORIGINS: JSON.stringify({
-      "panda-chat": ["http://local.test"],
-      otherline: ["http://local.test"],
+      "bridge-demo": ["http://local.test"],
+      [SECONDARY_PRODUCT_ID]: ["http://local.test"],
+    }),
+    BRIDGE_PRODUCT_REGISTRY_MODE: "extend",
+    BRIDGE_PRODUCT_REGISTRY_JSON: JSON.stringify({
+      products: [{
+        id: SECONDARY_PRODUCT_ID,
+        name: "Bridge Secondary Test Product",
+        official_origin: "http://local.test",
+        official_origins: ["http://local.test"],
+        capabilities: ["relay.envelope", "relay.ack"],
+        adapter_boundary: { adapter_id: SECONDARY_PRODUCT_ID, adapter_owner: "product" },
+        default_policy: {},
+        requires_desktop_authorization: true,
+      }],
     }),
     ...overrides,
   };
@@ -159,9 +174,9 @@ async function runDeviceLimit() {
   });
   const api = makeApi(env);
   await api.api("POST", "/v1/sessions/guest", { display_name: "relay-device-limit" });
-  const claim = await authorizeProduct(api, "panda-chat", "device-limit");
-  await createEnvelope(api, "panda-chat", claim.device.id, { channel_id: "device-a", request_key: "device-1" });
-  return expectLimit(api, "panda-chat", claim.device.id, "relay_device_queue_full", {
+  const claim = await authorizeProduct(api, "bridge-demo", "device-limit");
+  await createEnvelope(api, "bridge-demo", claim.device.id, { channel_id: "device-a", request_key: "device-1" });
+  return expectLimit(api, "bridge-demo", claim.device.id, "relay_device_queue_full", {
     channel_id: "device-b",
     request_key: "device-2",
   });
@@ -176,9 +191,9 @@ async function runChannelLimit() {
   });
   const api = makeApi(env);
   await api.api("POST", "/v1/sessions/guest", { display_name: "relay-channel-limit" });
-  const claim = await authorizeProduct(api, "panda-chat", "channel-limit");
-  await createEnvelope(api, "panda-chat", claim.device.id, { channel_id: "channel-a", seq: 1, request_key: "channel-1" });
-  return expectLimit(api, "panda-chat", claim.device.id, "relay_channel_queue_full", {
+  const claim = await authorizeProduct(api, "bridge-demo", "channel-limit");
+  await createEnvelope(api, "bridge-demo", claim.device.id, { channel_id: "channel-a", seq: 1, request_key: "channel-1" });
+  return expectLimit(api, "bridge-demo", claim.device.id, "relay_channel_queue_full", {
     channel_id: "channel-a",
     seq: 2,
     request_key: "channel-2",
@@ -194,9 +209,9 @@ async function runProductLimit() {
   });
   const api = makeApi(env);
   await api.api("POST", "/v1/sessions/guest", { display_name: "relay-product-limit" });
-  const claim = await authorizeProduct(api, "panda-chat", "product-limit");
-  await createEnvelope(api, "panda-chat", claim.device.id, { channel_id: "product-a", request_key: "product-1" });
-  return expectLimit(api, "panda-chat", claim.device.id, "relay_product_queue_full", {
+  const claim = await authorizeProduct(api, "bridge-demo", "product-limit");
+  await createEnvelope(api, "bridge-demo", claim.device.id, { channel_id: "product-a", request_key: "product-1" });
+  return expectLimit(api, "bridge-demo", claim.device.id, "relay_product_queue_full", {
     channel_id: "product-b",
     request_key: "product-2",
   });
@@ -211,10 +226,10 @@ async function runAccountLimit() {
   });
   const api = makeApi(env);
   await api.api("POST", "/v1/sessions/guest", { display_name: "relay-account-limit" });
-  const first = await authorizeProduct(api, "panda-chat", "account-limit-a");
-  await createEnvelope(api, "panda-chat", first.device.id, { channel_id: "account-a", request_key: "account-1" });
-  const second = await authorizeProduct(api, "otherline", "account-limit-b", first.device_token);
-  return expectLimit(api, "otherline", second.device.id, "relay_account_queue_full", {
+  const first = await authorizeProduct(api, "bridge-demo", "account-limit-a");
+  await createEnvelope(api, "bridge-demo", first.device.id, { channel_id: "account-a", request_key: "account-1" });
+  const second = await authorizeProduct(api, SECONDARY_PRODUCT_ID, "account-limit-b", first.device_token);
+  return expectLimit(api, SECONDARY_PRODUCT_ID, second.device.id, "relay_account_queue_full", {
     channel_id: "account-b",
     request_key: "account-2",
   });
@@ -229,7 +244,7 @@ async function runIdempotencyUnderFullQueue() {
   });
   const api = makeApi(env);
   await api.api("POST", "/v1/sessions/guest", { display_name: "relay-idempotency-full" });
-  const claim = await authorizeProduct(api, "panda-chat", "idempotency-full");
+  const claim = await authorizeProduct(api, "bridge-demo", "idempotency-full");
   const originalInput = {
     channel_id: "idempotency-a",
     seq: 7,
@@ -237,15 +252,15 @@ async function runIdempotencyUnderFullQueue() {
     ttl_ms: 300000,
     meta: { adapter_id: "relay-backpressure", trace_id: "idempotency-full" },
   };
-  const original = await createEnvelope(api, "panda-chat", claim.device.id, originalInput);
-  const retry = await api.apiRaw("POST", "/v1/products/panda-chat/relay/envelopes", relayEnvelope({
+  const original = await createEnvelope(api, "bridge-demo", claim.device.id, originalInput);
+  const retry = await api.apiRaw("POST", "/v1/products/bridge-demo/relay/envelopes", relayEnvelope({
     device_id: claim.device.id,
     ...originalInput,
   }));
   assert.equal(retry.response.status, 200);
   assert.equal(retry.payload.reused, true);
   assert.equal(retry.payload.envelope.id, original.envelope.id);
-  const limit = await expectLimit(api, "panda-chat", claim.device.id, "relay_device_queue_full", {
+  const limit = await expectLimit(api, "bridge-demo", claim.device.id, "relay_device_queue_full", {
     channel_id: "idempotency-b",
     seq: 8,
     request_key: "idempotency-2",
@@ -258,7 +273,7 @@ async function runIdempotencyUnderFullQueue() {
     meta: { meta: { adapter_id: "relay-backpressure", trace_id: "changed" } },
     envelope_version: { envelope_version: "relay-envelope-v2" },
   })) {
-    conflicts[field] = await expectConflict(api, "panda-chat", claim.device.id, {
+    conflicts[field] = await expectConflict(api, "bridge-demo", claim.device.id, {
       ...originalInput,
       ...overrides,
     });
@@ -280,13 +295,13 @@ async function runDirectionSharedDeviceLimit() {
   });
   const api = makeApi(env);
   await api.api("POST", "/v1/sessions/guest", { display_name: "relay-direction-shared-limit" });
-  const claim = await authorizeProduct(api, "panda-chat", "direction-shared");
-  await createEnvelope(api, "panda-chat", claim.device.id, {
+  const claim = await authorizeProduct(api, "bridge-demo", "direction-shared");
+  await createEnvelope(api, "bridge-demo", claim.device.id, {
     channel_id: "direction-a",
     request_key: "direction-1",
   });
   const result = await api.apiRaw("POST", "/v1/connectors/relay/envelopes", relayEnvelope({
-    product_id: "panda-chat",
+    product_id: "bridge-demo",
     device_id: claim.device.id,
     channel_id: "direction-b",
     seq: 2,

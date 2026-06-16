@@ -272,16 +272,12 @@ export function bridgeSnapshotStatusForDevice(device?: JsonObject): "connected" 
 
 export type BridgeAuthorizationPolicy = {
   version?: string;
-  preset?: string;
   request_source?: string;
   product_id?: string;
   source_origin?: string;
   capabilities?: string[];
-  workspace_roots?: Array<{ id?: string; path_display?: string; allow_all?: boolean; [key: string]: JsonValue | undefined }>;
-  sandbox_floor?: string;
-  approval_policy_floor?: string;
-  allow_approval_never?: boolean;
-  allow_developer_instructions?: boolean;
+  product_authorization?: JsonObject;
+  productAuthorization?: JsonObject;
   [key: string]: JsonValue | undefined;
 };
 
@@ -432,8 +428,6 @@ export type BridgeRelayCallInput = BridgeRelayWaitInput & {
   session?: BridgeRelaySession;
   crypto?: BridgeRelaySession;
   payload?: JsonValue;
-  command?: JsonValue;
-  input?: JsonValue;
   deviceId?: string;
   device_id?: string;
   channelId?: string;

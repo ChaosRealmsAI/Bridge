@@ -12,6 +12,8 @@ import {
   productById,
   scopeDangerMetadataFromCapabilities,
 } from "./products.js";
+import { legacyRuntimeApiRemovedPayload, isLegacyRuntimeRoute } from "./legacy-runtime.js";
+import { requestPath } from "./router.js";
 
 // Authorization epoch helper (relocated from the removed cap-token module).
 function authorizationEpoch(authorization) {
@@ -78,8 +80,7 @@ export default {
       const originError = rejectBadOrigin(request, env);
       if (originError) return originError;
       if (request.method === "OPTIONS") return cors(new Response(null, { status: 204 }), env);
-      const url = new URL(request.url);
-      const path = normalizePath(url.pathname);
+      const { url, path } = requestPath(request, normalizePath);
 
       if (path === "/v1/health" && request.method === "GET") {
         return json({
@@ -94,7 +95,7 @@ export default {
         return json(diagnosticsPayload(env), env);
       }
 
-      if (path === "/v1/queue/summary" && request.method === "GET") return legacyRuntimeApiRemoved(env);
+      if (isLegacyRuntimeRoute(request.method, path)) return legacyRuntimeApiRemoved(env);
 
       if (path === "/v1/sessions/password" && request.method === "POST") return await createPasswordSession(request, env);
       if (path === "/v1/sessions/guest" && request.method === "POST") return await createGuestSession(request, env);
@@ -115,7 +116,6 @@ export default {
       if (connectorAuthMatch && request.method === "DELETE") return await revokeConnectorAuthorization(request, env, decodeURIComponent(connectorAuthMatch[1]));
       const connectorRelayKeyBootstrapMatch = path.match(/^\/v1\/connectors\/products\/([^/]+)\/relay-key-bootstrap$/);
       if (connectorRelayKeyBootstrapMatch && request.method === "GET") return await connectorRelayKeyBootstrap(request, env, decodeURIComponent(connectorRelayKeyBootstrapMatch[1]));
-      if (path === "/v1/connectors/jobs" && request.method === "GET") return legacyRuntimeApiRemoved(env);
       if (path === "/v1/connectors/relay/envelopes" && request.method === "GET") return await connectorRelayEnvelopes(request, env);
       if (path === "/v1/connectors/relay/envelopes" && request.method === "POST") return await createConnectorRelayEnvelope(request, env, ctx);
       const connectorRelayAckMatch = path.match(/^\/v1\/connectors\/relay\/envelopes\/([^/]+)\/ack$/);
@@ -147,8 +147,6 @@ export default {
       if (productRelayMatch && request.method === "GET") return await listProductRelayEnvelopes(request, env, decodeURIComponent(productRelayMatch[1]));
       const productRelayAckMatch = path.match(/^\/v1\/products\/([^/]+)\/relay\/envelopes\/([^/]+)\/ack$/);
       if (productRelayAckMatch && request.method === "POST") return await ackProductRelayEnvelope(request, env, decodeURIComponent(productRelayAckMatch[1]), decodeURIComponent(productRelayAckMatch[2]));
-      const productJobMatch = path.match(/^\/v1\/products\/([^/]+)\/jobs$/);
-      if (productJobMatch && request.method === "POST") return legacyRuntimeApiRemoved(env);
       const delegatedAuthorizationMatch = path.match(/^\/v1\/products\/([^/]+)\/delegated\/authorization$/);
       if (delegatedAuthorizationMatch && request.method === "GET") return await delegatedProductAuthorization(request, env, decodeURIComponent(delegatedAuthorizationMatch[1]));
       if (delegatedAuthorizationMatch && request.method === "PATCH") return await updateDelegatedProductAuthorization(request, env, decodeURIComponent(delegatedAuthorizationMatch[1]));
@@ -170,31 +168,6 @@ export default {
       if (delegatedProductRelayMatch && request.method === "GET") return await listDelegatedProductRelayEnvelopes(request, env, decodeURIComponent(delegatedProductRelayMatch[1]));
       const delegatedProductRelayAckMatch = path.match(/^\/v1\/products\/([^/]+)\/delegated\/relay\/envelopes\/([^/]+)\/ack$/);
       if (delegatedProductRelayAckMatch && request.method === "POST") return await ackDelegatedProductRelayEnvelope(request, env, decodeURIComponent(delegatedProductRelayAckMatch[1]), decodeURIComponent(delegatedProductRelayAckMatch[2]));
-      const delegatedProductJobMatch = path.match(/^\/v1\/products\/([^/]+)\/delegated\/jobs$/);
-      if (delegatedProductJobMatch && request.method === "POST") return legacyRuntimeApiRemoved(env);
-      const delegatedJobEventsMatch = path.match(/^\/v1\/products\/([^/]+)\/delegated\/jobs\/([^/]+)\/events$/);
-      if (delegatedJobEventsMatch && request.method === "GET") return legacyRuntimeApiRemoved(env);
-      const delegatedCancelMatch = path.match(/^\/v1\/products\/([^/]+)\/delegated\/jobs\/([^/]+)\/cancel$/);
-      if (delegatedCancelMatch && request.method === "POST") return legacyRuntimeApiRemoved(env);
-      const delegatedJobMatch = path.match(/^\/v1\/products\/([^/]+)\/delegated\/jobs\/([^/]+)$/);
-      if (delegatedJobMatch && request.method === "GET") return legacyRuntimeApiRemoved(env);
-
-      const jobMatch = path.match(/^\/v1\/jobs\/([^/]+)$/);
-      if (jobMatch && request.method === "GET") return legacyRuntimeApiRemoved(env);
-      if (jobMatch && request.method === "POST" && url.pathname.endsWith("/cancel")) return notFound(env);
-
-      const jobEventsMatch = path.match(/^\/v1\/jobs\/([^/]+)\/events$/);
-      if (jobEventsMatch && request.method === "GET") return legacyRuntimeApiRemoved(env);
-      const cancelMatch = path.match(/^\/v1\/jobs\/([^/]+)\/cancel$/);
-      if (cancelMatch && request.method === "POST") return legacyRuntimeApiRemoved(env);
-
-      const connectorEventMatch = path.match(/^\/v1\/connectors\/jobs\/([^/]+)\/events$/);
-      if (connectorEventMatch && request.method === "POST") return legacyRuntimeApiRemoved(env);
-      const acceptMatch = path.match(/^\/v1\/connectors\/jobs\/([^/]+)\/accept$/);
-      if (acceptMatch && request.method === "POST") return legacyRuntimeApiRemoved(env);
-      const ackMatch = path.match(/^\/v1\/connectors\/jobs\/([^/]+)\/ack$/);
-      if (ackMatch && request.method === "POST") return legacyRuntimeApiRemoved(env);
-
       if (["GET", "HEAD"].includes(request.method) && !path.startsWith("/v1/")) return await assetResponse(request, env);
       return notFound(env);
     } catch (error) {
@@ -677,7 +650,7 @@ async function claimConnector(request, env) {
 async function createConnectIntent(request, env) {
   const session = await requireSession(request, env);
   const body = await readJson(request, env);
-  const productId = clean(body.product_id || body.productId || "panda-chat", 80) || "panda-chat";
+  const productId = clean(body.product_id || body.productId || "bridge-demo", 80) || "bridge-demo";
   const product = requireOfficialProduct(productId, env);
   const source_origin = sourceOrigin(env);
   const originError = rejectProductOrigin(product, source_origin, env);
@@ -749,7 +722,7 @@ function connectIntentConfirmError(intent) {
 
 async function bridgeState(request, env) {
   const url = new URL(request.url);
-  const productId = clean(url.searchParams.get("product_id") || url.searchParams.get("productId") || "panda-chat", 80) || "panda-chat";
+  const productId = clean(url.searchParams.get("product_id") || url.searchParams.get("productId") || "bridge-demo", 80) || "bridge-demo";
   const product = requireOfficialProduct(productId, env);
   const originError = rejectProductOrigin(product, sourceOrigin(env), env);
   if (originError) return originError;
@@ -900,16 +873,7 @@ async function rotateConnectorToken(request, env) {
 }
 
 function legacyRuntimeApiRemoved(env) {
-  return json({
-    error: "legacy_runtime_api_removed",
-    message: "Panda Bridge V0.3 only exposes hosted opaque relay surfaces. Use diagnostics for relay limits and /v1/*/relay/envelopes for encrypted transport.",
-    relay: {
-      product_create: "/v1/products/{product_id}/relay/envelopes",
-      delegated_create: "/v1/products/{product_id}/delegated/relay/envelopes",
-      connector_poll: "/v1/connectors/relay/envelopes",
-      diagnostics: "/v1/diagnostics",
-    },
-  }, env, 410);
+  return json(legacyRuntimeApiRemovedPayload(), env, 410);
 }
 
 async function createProductRelayEnvelope(request, env, productId, ctx = {}) {
@@ -2342,9 +2306,6 @@ function productDelegationSecret(env, productId) {
   if (envKey && env[envKey]) {
     return clean(env[envKey], 4096);
   }
-  if (productId === "otherline" && env.BRIDGE_OTHERLINE_DELEGATION_SECRET) {
-    return clean(env.BRIDGE_OTHERLINE_DELEGATION_SECRET, 4096);
-  }
   const raw = clean(env.BRIDGE_PRODUCT_DELEGATION_SECRETS, 20000);
   if (!raw) return "";
   try {
@@ -2429,7 +2390,6 @@ async function cleanupExpiredRows(env) {
     "bridge_pairing_codes",
     "bridge_connect_intents",
     "bridge_device_tokens",
-    "bridge_cap_token_jti",
     "bridge_password_attempts",
   ];
   const deleted = {};
@@ -2787,30 +2747,15 @@ async function deviceMatchesInstallId(device, installId) {
 
 function authorizationPolicyCoversRequest(grantPolicy, requestedPolicy) {
   const grant = object(grantPolicy);
-  if (!["AUTH-SCOPE-v1", "AUTH-SCOPE-v2"].includes(grant.version)) return false;
+  if (grant.version !== "BRIDGE-RELAY-AUTH-v1") return false;
   const requested = object(requestedPolicy);
   const capabilities = Array.isArray(requested.capabilities) ? requested.capabilities : [];
-  const roots = Array.isArray(requested.workspace_roots) && requested.workspace_roots.length
-    ? requested.workspace_roots
-    : [{ id: "default" }];
-  const sandbox = clean(requested.sandbox_floor, 80) || "workspace-write";
-  const approval = clean(requested.approval_policy_floor, 80) || "on-request";
   const grantedCapabilities = Array.isArray(grant.capabilities) ? grant.capabilities : [];
   if (capabilities.some((capability) => !grantedCapabilities.includes(capability))) return false;
   for (const capability of capabilities) {
     if (!RELAY_CAPABILITY_KINDS.includes(capability)) return false;
-    for (const root of roots) {
-      const workspaceRef = root?.allow_all === true || root?.allowAll === true || root?.id === "all" || root?.id === "*"
-        ? "*"
-        : clean(root?.id, 80) || "default";
-      if (!authorizationScopeAllowsWorkspace(grant, workspaceRef)) return false;
-    }
   }
-  if (!authorizationScopeAllowsSandbox(clean(grant.sandbox_floor, 80) || "workspace-write", sandbox)) return false;
-  const approvalFloor = clean(grant.approval_policy_floor, 80) || "on-request";
-  const allowNever = grant.allow_approval_never === true || approvalFloor === "never";
-  if (!authorizationScopeAllowsApproval(approvalFloor, approval, allowNever)) return false;
-  if (requested.allow_developer_instructions === true && grant.allow_developer_instructions !== true) return false;
+  if (canonicalJson(object(grant.product_authorization)) !== canonicalJson(object(requested.product_authorization))) return false;
   return true;
 }
 
@@ -2965,47 +2910,43 @@ function authorizationImportProofTtlMs(env) {
 function normalizeAuthorizationPolicy(input, product, source_origin) {
   const policy = object(input);
   const hasExplicitInput = Object.keys(policy).length > 0;
-  const explicitFullAccess = policy.fullAccess === true
-    || policy.full_access === true
-    || clean(policy.preset || policy.permission_preset, 80) === "full-access";
-  const requested = hasExplicitInput
-    ? explicitFullAccess ? { ...fullAccessAuthorizationPolicy(), ...policy } : policy
-    : defaultLowTierAuthorizationPolicy();
-  const workspaceRoots = Array.isArray(requested.workspace_roots) && requested.workspace_roots.length
-    ? requested.workspace_roots.map((item, index) => {
-        const root = object(item);
-        return {
-          id: clean(root.id, 80) || `workspace-${index + 1}`,
-          path_display: clean(root.path_display || root.label, 200) || "[local]/workspace",
-          ...(root.allow_all === true || root.allowAll === true ? { allow_all: true } : {}),
-        };
-      })
-    : [{ id: "default", path_display: "[local]/default" }];
+  rejectLegacyAuthorizationPolicyFields(policy);
+  const requested = hasExplicitInput ? policy : defaultRelayAuthorizationPolicy();
   const capabilities = normalizedPolicyCapabilities(requested, product, !hasExplicitInput);
   const productAuthorization = normalizeProductAuthorization(requested.product_authorization ?? requested.productAuthorization);
-  const sandboxFloor = clean(requested.sandbox_floor || requested.sandboxFloor, 80);
-  const approvalFloor = clean(requested.approval_policy_floor || requested.approvalPolicyFloor, 80);
-  const normalizedSandboxFloor = ["danger-full-access", "workspace-write", "read-only"].includes(sandboxFloor) ? sandboxFloor : "workspace-write";
-  const normalizedApprovalFloor = ["never", "on-request", "on-failure", "untrusted"].includes(approvalFloor) ? approvalFloor : "on-request";
-  const allowDeveloperInstructions = requested.allow_developer_instructions === true || requested.allowDeveloperInstructions === true;
-  const tierMetadata = scopeDangerMetadataFromCapabilities(capabilities);
   const normalized = {
-    version: "AUTH-SCOPE-v2",
-    preset: clean(requested.preset || requested.permission_preset, 80) || (hasExplicitInput ? "custom" : "workspace-default"),
-    request_source: clean(requested.request_source, 120) || (hasExplicitInput ? "caller_request" : "worker_default_low_tier"),
+    version: "BRIDGE-RELAY-AUTH-v1",
+    request_source: clean(requested.request_source, 120) || (hasExplicitInput ? "caller_request" : "worker_default_relay"),
     product_id: product.id,
     source_origin: clean(requested.source_origin, 300) || source_origin || product.official_origin || product.origin || null,
     capabilities,
-    workspace_roots: workspaceRoots,
-    sandbox_floor: normalizedSandboxFloor,
-    approval_policy_floor: normalizedApprovalFloor,
-    allow_approval_never: requested.allow_approval_never === true || requested.allowApprovalNever === true || normalizedApprovalFloor === "never",
-    allow_developer_instructions: allowDeveloperInstructions,
-    display: authorizationPolicyDisplay(workspaceRoots, normalizedSandboxFloor, normalizedApprovalFloor, allowDeveloperInstructions),
-    ...tierMetadata,
   };
   if (Object.keys(productAuthorization).length) normalized.product_authorization = productAuthorization;
   return normalized;
+}
+
+function rejectLegacyAuthorizationPolicyFields(policy) {
+  const fields = [
+    "workspace_roots",
+    "workspaceRoots",
+    "sandbox_floor",
+    "sandboxFloor",
+    "approval_policy_floor",
+    "approvalPolicyFloor",
+    "allow_approval_never",
+    "allowApprovalNever",
+    "allow_developer_instructions",
+    "allowDeveloperInstructions",
+    "fullAccess",
+    "full_access",
+    "preset",
+    "permission_preset",
+  ];
+  const present = fields.filter((field) => Object.hasOwn(policy, field));
+  if (!present.length) return;
+  const error = httpError("legacy_authorization_policy_forbidden", 400);
+  error.public = { fields: [...new Set(present)] };
+  throw error;
 }
 
 function normalizeProductAuthorization(input) {
@@ -3014,7 +2955,7 @@ function normalizeProductAuthorization(input) {
   const owner = clean(value.owner, 120);
   const enforcement = clean(value.enforcement, 160);
   const capabilities = normalizeStringList(value.capabilities || value.permissions, 120);
-  const roots = normalizeProductAuthorizationRoots(value.roots || value.workspace_roots || value.workspaceRoots);
+  const roots = normalizeProductAuthorizationRoots(value.roots);
   if (owner) out.owner = owner;
   if (enforcement) out.enforcement = enforcement;
   if (capabilities.length) out.capabilities = capabilities;
@@ -3027,10 +2968,9 @@ function normalizeProductAuthorizationRoots(input) {
   return input.map((item, index) => {
     const root = object(item);
     const id = clean(root.id, 80) || `root-${index + 1}`;
-    const pathDisplay = clean(root.path_display || root.pathDisplay || root.label || root.path, 300);
+    const pathDisplay = clean(root.path_display || root.pathDisplay || root.label, 300);
     const out = { id };
     if (pathDisplay) out.path_display = pathDisplay;
-    if (root.allow_all === true || root.allowAll === true) out.allow_all = true;
     return out;
   });
 }
@@ -3054,76 +2994,10 @@ function normalizedPolicyCapabilities(requested, product, defaultLowTier = false
   return capabilities;
 }
 
-function authorizationPolicyDisplay(workspaceRoots, sandboxFloor, approvalFloor, allowDeveloperInstructions) {
+function defaultRelayAuthorizationPolicy() {
   return {
-    workspace: workspaceRoots.some((item) => item.allow_all === true)
-      ? "All local files"
-      : workspaceRoots.map((item) => item.path_display || item.id).join(", "),
-    sandbox: sandboxFloor,
-    approval: approvalFloor,
-    developer_instructions: allowDeveloperInstructions ? "allowed" : "denied",
-  };
-}
-
-function authorizationScopeAllowsWorkspace(scope, workspaceRef) {
-  const roots = Array.isArray(scope.workspace_roots) ? scope.workspace_roots : [];
-  if (!roots.length) return workspaceRef === "default";
-  if (roots.some((root) => root?.allow_all === true || root?.allowAll === true || root?.id === "all" || root?.id === "*")) {
-    return true;
-  }
-  return roots.some((root) => root?.id === workspaceRef);
-}
-
-function authorizationScopeAllowsSandbox(floor, requested) {
-  if (floor === "danger-full-access") return ["danger-full-access", "workspace-write", "read-only"].includes(requested);
-  if (floor === "workspace-write") return ["workspace-write", "read-only"].includes(requested);
-  if (floor === "read-only") return requested === "read-only";
-  return false;
-}
-
-function authorizationScopeAllowsApproval(floor, requested, allowNever) {
-  if (floor === "never") return ["never", "on-failure", "on-request", "untrusted"].includes(requested);
-  if (requested === "never") return allowNever;
-  const ranks = new Map([["untrusted", 0], ["on-request", 1], ["on-failure", 2]]);
-  if (!ranks.has(floor) || !ranks.has(requested)) return false;
-  return ranks.get(requested) <= ranks.get(floor);
-}
-
-function fullAccessAuthorizationPolicy() {
-  return {
-    preset: "full-access",
-    request_source: "worker_default_full_access",
-    capabilities: [...RELAY_CAPABILITY_KINDS],
-    workspace_roots: [{ id: "all", path_display: "All local files", allow_all: true }],
-    sandbox_floor: "danger-full-access",
-    approval_policy_floor: "never",
-    allow_approval_never: true,
-    allow_developer_instructions: true,
-    display: {
-      workspace: "All local files",
-      sandbox: "danger-full-access",
-      approval: "never",
-      developer_instructions: "allowed",
-    },
-  };
-}
-
-function defaultLowTierAuthorizationPolicy() {
-  return {
-    preset: "workspace-default",
-    request_source: "worker_default_low_tier",
+    request_source: "worker_default_relay",
     capabilities: lowTierCapabilities(),
-    workspace_roots: [{ id: "default", path_display: "[local]/default" }],
-    sandbox_floor: "workspace-write",
-    approval_policy_floor: "on-request",
-    allow_approval_never: false,
-    allow_developer_instructions: false,
-    display: {
-      workspace: "[local]/default",
-      sandbox: "workspace-write",
-      approval: "on-request",
-      developer_instructions: "denied",
-    },
   };
 }
 
@@ -3412,10 +3286,6 @@ function uniqueConflict(tableName, rows, row) {
     ));
     if (duplicate) return "product_delegation_replay";
   }
-  if (tableName === "bridge_cap_token_jti") {
-    const duplicate = rows.find((item) => item.jti === row.jti);
-    if (duplicate) return "cap_token_replay";
-  }
   return "";
 }
 
@@ -3581,14 +3451,14 @@ function normalizeRelayKeyBootstrap(input, { productId, deviceId, authorization,
 }
 
 function relayKeyBootstrapAadTexts(productId, deviceId, authorizationId, authorizationEpochValue, keyId) {
-  return ["bridge-relay-key-bootstrap-v1", "syllo-relay-key-bootstrap-v1"].map((wireVersion) => [
-    wireVersion,
+  return [[
+    "bridge-relay-key-bootstrap-v1",
     productId,
     deviceId,
     authorizationId,
     String(authorizationEpochValue),
     keyId,
-  ].join("|"));
+  ].join("|")];
 }
 
 function plaintextRelayKeyFields(input, path = "") {
@@ -3800,8 +3670,7 @@ function notFound(env) {
 
 function rejectBadOrigin(request, env) {
   if (["GET", "HEAD", "OPTIONS"].includes(request.method)) return null;
-  const url = new URL(request.url);
-  const path = normalizePath(url.pathname);
+  const { path } = requestPath(request, normalizePath);
   const origin = request.headers.get("origin");
   if (origin && allowedWebOrigins(env).includes(origin)) return null;
   if (!origin && allowsMissingOrigin(request, path)) return null;

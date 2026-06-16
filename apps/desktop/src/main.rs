@@ -319,14 +319,11 @@ struct IntentPreview {
     cloud_origin: String,
     capabilities: Vec<String>,
     local_policy: Value,
-    local_root_state: Value,
     device_name: String,
     user_id: Option<String>,
     user_display_name: String,
     expires_at: String,
     confirmation_mode: String,
-    scope_widening: bool,
-    scope_diff: Value,
 }
 
 #[derive(Debug, Clone)]
@@ -1297,9 +1294,6 @@ fn pending_claim_public_value(pending: &PendingIntentClaim) -> Value {
         },
         "policy_capabilities": policy_capabilities,
         "product_authorization": product_authorization,
-        "local_root_state": pending.preview.local_root_state,
-        "scope_widening": pending.preview.scope_widening,
-        "scope_diff": pending.preview.scope_diff,
         "confirmation_mode": pending.preview.confirmation_mode,
         "expires_at": pending.preview.expires_at,
         "token": {
@@ -1535,17 +1529,6 @@ fn pending_authorization_screenshot_rows(pending: &Value) -> Vec<String> {
         .and_then(Value::as_array)
         .map(Vec::len)
         .unwrap_or(0);
-    let root_state = pending.get("local_root_state").unwrap_or(&Value::Null);
-    let fs_roots = root_state
-        .get("fs")
-        .and_then(Value::as_object)
-        .map(|items| items.len())
-        .unwrap_or(0);
-    let shell_roots = root_state
-        .get("shell")
-        .and_then(Value::as_object)
-        .map(|items| items.len())
-        .unwrap_or(0);
     vec![
         format!("STATUS: {}  CONFIRM ACTION: confirm_pending_intent", status),
         format!("PRODUCT: {} ({})", product_name, product_id),
@@ -1554,15 +1537,6 @@ fn pending_authorization_screenshot_rows(pending: &Value) -> Vec<String> {
         format!(
             "PRODUCT AUTH: OWNER {}  CAPS {}  ROOTS {}",
             product_auth_owner, product_auth_capabilities, product_auth_roots
-        ),
-        format!(
-            "ROOT PREVIEW: FS {}  SHELL {}  SCOPE WIDENING {}",
-            fs_roots,
-            shell_roots,
-            pending
-                .get("scope_widening")
-                .and_then(Value::as_bool)
-                .unwrap_or(false)
         ),
     ]
 }
@@ -2053,16 +2027,16 @@ struct KnownProduct {
 fn known_products() -> [KnownProduct; 2] {
     [
         KnownProduct {
-            id: "pandart",
-            name: "Pandart",
-            origin: "pandart.cc",
-            web_url: "https://pandart.cc",
+            id: "bridge-demo",
+            name: "Bridge Demo",
+            origin: "bridge.otherline.cc",
+            web_url: "https://bridge.otherline.cc",
         },
         KnownProduct {
-            id: "otherline",
-            name: "Otherline",
-            origin: "otherline.cc",
-            web_url: "https://otherline.cc",
+            id: "example-client",
+            name: "Example Client",
+            origin: "example.test",
+            web_url: "https://example.test",
         },
     ]
 }
@@ -2252,10 +2226,10 @@ fn known_product_id_for_grant(product: &ProductGrant) -> &'static str {
         product.origin.clone().unwrap_or_default()
     )
     .to_ascii_lowercase();
-    if haystack.contains("pandart") || haystack.contains("pandaart") {
-        "pandart"
+    if haystack.contains("bridge") {
+        "bridge-demo"
     } else {
-        "otherline"
+        "example-client"
     }
 }
 
@@ -2332,45 +2306,12 @@ fn preview_intent(api: &str, intent: &str) -> Result<IntentPreview, String> {
         authorization_display_product_name(&local_policy).unwrap_or(fallback_product_name);
     let capabilities =
         authorization_policy_capabilities(&local_policy).unwrap_or(product_capabilities);
-    let local_credentials = load_credentials().ok();
-    let existing_grant = payload
-        .connect_intent
-        .user
-        .as_ref()
-        .and_then(|user| user.id.as_deref())
-        .and_then(|user_id| {
-            local_credentials.as_ref().and_then(|credentials| {
-                existing_grant_for_intent_from_credentials(
-                    credentials,
-                    &api_base,
-                    user_id,
-                    &product_id,
-                )
-            })
-        });
-    let scope_diff = existing_grant
-        .as_ref()
-        .map(|grant| scope_diff(&grant.policy, &local_policy))
-        .unwrap_or_else(|| scope_diff(&Value::Null, &local_policy));
-    let scope_widening = existing_grant
-        .as_ref()
-        .map(|grant| is_scope_widening(&grant.policy, &local_policy))
-        .unwrap_or(true);
-    let confirmation_mode =
-        confirmation_mode_for_existing_grant(existing_grant.as_ref(), scope_widening);
-    let current_device_id = local_credentials
-        .as_ref()
-        .map(|credentials| credentials.device_id.as_str())
-        .unwrap_or("");
-    let local_root_state =
-        local_root_state_for_preview(&local_policy, existing_grant.as_ref(), current_device_id);
     Ok(IntentPreview {
         product_id,
         product_name,
         cloud_origin,
         capabilities,
         local_policy,
-        local_root_state,
         device_name: payload
             .connect_intent
             .device_name
@@ -2387,9 +2328,7 @@ fn preview_intent(api: &str, intent: &str) -> Result<IntentPreview, String> {
             .map(display_account)
             .unwrap_or_else(|| "Panda Account".to_string()),
         expires_at: payload.connect_intent.expires_at,
-        confirmation_mode,
-        scope_widening,
-        scope_diff,
+        confirmation_mode: "confirm".to_string(),
     })
 }
 
@@ -2419,260 +2358,6 @@ fn existing_grant_for_intent_from_credentials(
         }
     }
     fallback
-}
-
-fn is_scope_widening(existing: &Value, requested: &Value) -> bool {
-    scope_diff(existing, requested)
-        .get("widening")
-        .and_then(Value::as_bool)
-        .unwrap_or(true)
-}
-
-fn confirmation_mode_for_existing_grant(
-    existing_grant: Option<&ProductGrant>,
-    scope_widening: bool,
-) -> String {
-    if existing_grant.is_some() && !scope_widening {
-        "light".to_string()
-    } else {
-        "full".to_string()
-    }
-}
-
-fn local_root_state_for_preview(
-    policy: &Value,
-    existing_grant: Option<&ProductGrant>,
-    current_device_id: &str,
-) -> Value {
-    let mut fs_state = Map::new();
-    for root in declared_fs_roots(policy, "allowed_roots", "allowedRoots") {
-        fs_state.insert(
-            root.id.clone(),
-            local_root_binding_state(
-                existing_grant.and_then(|grant| grant.local_roots.fs_roots.get(&root.id)),
-                &root.path_display,
-                current_device_id,
-                Some("read"),
-            ),
-        );
-    }
-    for root in declared_fs_roots(policy, "write_roots", "writeRoots") {
-        fs_state.insert(
-            root.id.clone(),
-            local_root_binding_state(
-                existing_grant.and_then(|grant| grant.local_roots.fs_roots.get(&root.id)),
-                &root.path_display,
-                current_device_id,
-                Some("write"),
-            ),
-        );
-    }
-
-    let mut shell_state = Map::new();
-    if let Some(root) = declared_shell_cwd_root_for_preview(policy) {
-        shell_state.insert(
-            root.id.clone(),
-            local_root_binding_state(
-                existing_grant.and_then(|grant| grant.local_roots.shell_cwd.get(&root.id)),
-                &root.path_display,
-                current_device_id,
-                None,
-            ),
-        );
-    }
-
-    json!({
-        "fs": fs_state,
-        "shell": shell_state
-    })
-}
-
-fn local_root_binding_state(
-    binding: Option<&LocalRootBinding>,
-    path_display: &str,
-    current_device_id: &str,
-    kind: Option<&str>,
-) -> Value {
-    let bound = binding
-        .map(|binding| {
-            !current_device_id.trim().is_empty()
-                && binding.bound_device_id == current_device_id
-                && binding.path_display == path_display
-        })
-        .unwrap_or(false);
-    let mut state = Map::new();
-    state.insert("bound".to_string(), json!(bound));
-    state.insert(
-        "redacted_path".to_string(),
-        if bound {
-            binding
-                .map(|binding| json!(redact_local_path(&binding.real_path)))
-                .unwrap_or(Value::Null)
-        } else {
-            Value::Null
-        },
-    );
-    if let Some(kind) = kind {
-        state.insert("kind".to_string(), json!(kind));
-    }
-    Value::Object(state)
-}
-
-fn declared_shell_cwd_root_for_preview(policy: &Value) -> Option<DeclaredLocalRoot> {
-    let shell = policy.pointer("/boundaries/shell")?;
-    let root_id = shell
-        .get("cwd_root_id")
-        .or_else(|| shell.get("cwdRootId"))
-        .and_then(Value::as_str)
-        .map(trim_nfc_keep_slash_local)
-        .filter(|value| !value.is_empty())?;
-    declared_shell_cwd_root(policy, &root_id, None)
-}
-
-fn scope_diff(existing: &Value, requested: &Value) -> Value {
-    let existing_capabilities = policy_string_set(existing, "capabilities");
-    let requested_capabilities = policy_string_set(requested, "capabilities");
-    let added_capabilities = sorted_difference(&requested_capabilities, &existing_capabilities);
-
-    let existing_workspace_all = policy_allows_all_workspace(existing);
-    let requested_workspace_all = policy_allows_all_workspace(requested);
-    let existing_workspace_ids = policy_workspace_ids(existing);
-    let requested_workspace_ids = policy_workspace_ids(requested);
-    let added_workspace_ids = sorted_difference(&requested_workspace_ids, &existing_workspace_ids);
-    let workspace_widening = (requested_workspace_all && !existing_workspace_all)
-        || (!requested_workspace_all && !existing_workspace_all && !added_workspace_ids.is_empty());
-
-    let existing_sandbox =
-        policy_string(existing, "sandbox_floor").unwrap_or_else(|| "workspace-write".to_string());
-    let requested_sandbox =
-        policy_string(requested, "sandbox_floor").unwrap_or_else(|| "workspace-write".to_string());
-    let sandbox_widening = sandbox_rank(&requested_sandbox) > sandbox_rank(&existing_sandbox);
-
-    let existing_approval = policy_string(existing, "approval_policy_floor")
-        .unwrap_or_else(|| "on-request".to_string());
-    let requested_approval = policy_string(requested, "approval_policy_floor")
-        .unwrap_or_else(|| "on-request".to_string());
-    let existing_allow_never = existing
-        .get("allow_approval_never")
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-        || existing_approval == "never";
-    let requested_allow_never = requested
-        .get("allow_approval_never")
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-        || requested_approval == "never";
-    let approval_widening = approval_rank(&requested_approval) > approval_rank(&existing_approval)
-        || (requested_allow_never && !existing_allow_never);
-
-    let existing_dev = existing
-        .get("allow_developer_instructions")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    let requested_dev = requested
-        .get("allow_developer_instructions")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    let developer_instructions_widening = requested_dev && !existing_dev;
-
-    let widening = !added_capabilities.is_empty()
-        || workspace_widening
-        || sandbox_widening
-        || approval_widening
-        || developer_instructions_widening;
-
-    json!({
-        "widening": widening,
-        "capabilities": { "added": added_capabilities },
-        "workspace": {
-            "added": added_workspace_ids,
-            "from_all": existing_workspace_all,
-            "to_all": requested_workspace_all,
-            "widening": workspace_widening
-        },
-        "sandbox": {
-            "from": existing_sandbox,
-            "to": requested_sandbox,
-            "widening": sandbox_widening
-        },
-        "approval": {
-            "from": existing_approval,
-            "to": requested_approval,
-            "from_allow_never": existing_allow_never,
-            "to_allow_never": requested_allow_never,
-            "widening": approval_widening
-        },
-        "developer_instructions": {
-            "from": existing_dev,
-            "to": requested_dev,
-            "widening": developer_instructions_widening
-        }
-    })
-}
-
-fn policy_string_set(policy: &Value, key: &str) -> HashSet<String> {
-    policy
-        .get(key)
-        .and_then(Value::as_array)
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(Value::as_str)
-                .map(str::trim)
-                .filter(|item| !item.is_empty())
-                .map(ToOwned::to_owned)
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-fn policy_workspace_ids(policy: &Value) -> HashSet<String> {
-    policy
-        .get("workspace_roots")
-        .and_then(Value::as_array)
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(|item| item.get("id").and_then(Value::as_str))
-                .map(str::trim)
-                .filter(|item| !item.is_empty() && *item != "all" && *item != "*")
-                .map(ToOwned::to_owned)
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-fn policy_allows_all_workspace(policy: &Value) -> bool {
-    policy
-        .get("workspace_roots")
-        .and_then(Value::as_array)
-        .map(|items| items.iter().any(root_allows_all_workspaces))
-        .unwrap_or(false)
-}
-
-fn sorted_difference(left: &HashSet<String>, right: &HashSet<String>) -> Vec<String> {
-    let mut out = left.difference(right).cloned().collect::<Vec<_>>();
-    out.sort();
-    out
-}
-
-fn sandbox_rank(value: &str) -> i32 {
-    match value {
-        "read-only" => 0,
-        "workspace-write" => 1,
-        "danger-full-access" => 2,
-        _ => 3,
-    }
-}
-
-fn approval_rank(value: &str) -> i32 {
-    match value {
-        "untrusted" => 0,
-        "on-request" => 1,
-        "on-failure" => 2,
-        "never" => 3,
-        _ => 4,
-    }
 }
 
 fn claim_intent(api: &str, intent: &str, device_name: &str) -> Result<ClaimResult, String> {
@@ -3498,8 +3183,6 @@ fn declared_product_authorization_roots(policy: &Value) -> Vec<DeclaredLocalRoot
         .unwrap_or(&Value::Null);
     let roots = product_authorization
         .get("roots")
-        .or_else(|| product_authorization.get("workspace_roots"))
-        .or_else(|| product_authorization.get("workspaceRoots"))
         .unwrap_or(&Value::Null);
     declared_root_list_from_raw(roots)
 }
@@ -4882,7 +4565,6 @@ fn adapter_authorization_mirror(
     } else {
         product.policy.clone()
     };
-    let policy = policy_with_local_root_bindings(policy, product);
     let product_authorization = policy
         .get("product_authorization")
         .cloned()
@@ -4925,50 +4607,6 @@ fn adapter_authorization_mirror(
         "authorization_context": authorization_context,
         "authorization_epoch": product.epoch,
     })
-}
-
-fn policy_with_local_root_bindings(mut policy: Value, product: &ProductGrant) -> Value {
-    if let Some(roots) = policy.pointer_mut("/product_authorization/roots") {
-        apply_local_root_bindings_to_roots(roots, product);
-    }
-    if let Some(roots) = policy.pointer_mut("/productAuthorization/roots") {
-        apply_local_root_bindings_to_roots(roots, product);
-    }
-    if let Some(roots) = policy.get_mut("workspace_roots") {
-        apply_local_root_bindings_to_roots(roots, product);
-    }
-    if let Some(roots) = policy.get_mut("roots") {
-        apply_local_root_bindings_to_roots(roots, product);
-    }
-    policy
-}
-
-fn apply_local_root_bindings_to_roots(roots: &mut Value, product: &ProductGrant) {
-    let Some(items) = roots.as_array_mut() else {
-        return;
-    };
-    for item in items {
-        let Some(object) = item.as_object_mut() else {
-            continue;
-        };
-        let root_id = object
-            .get("id")
-            .and_then(Value::as_str)
-            .map(trim_nfc_keep_slash_local)
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| "default".to_string());
-        let binding = product
-            .local_roots
-            .fs_roots
-            .get(&root_id)
-            .or_else(|| product.local_roots.shell_cwd.get(&root_id));
-        let Some(binding) = binding else {
-            continue;
-        };
-        object.insert("path".to_string(), json!(binding.real_path));
-        object.insert("real_path".to_string(), json!(binding.real_path));
-        object.insert("path_display".to_string(), json!(binding.path_display));
-    }
 }
 
 fn connection_authorizes_product_active(credentials: &Credentials, product_id: &str) -> bool {
@@ -5286,133 +4924,15 @@ fn configured_adapter_product_ids() -> Vec<String> {
 }
 
 fn low_tier_capabilities() -> Vec<String> {
-    // Bridge core advertises no vertical low-tier kinds; relay capabilities
-    // (relay.envelope / relay.ack) come from the product registry, not here.
-    Vec::new()
-}
-
-fn capability_metadata(kind: &str) -> Option<(String, String, String)> {
-    if kind == "saas.custom.run" {
-        Some((
-            "saas".to_string(),
-            "high".to_string(),
-            "opaque_runtime".to_string(),
-        ))
-    } else {
-        None
-    }
-}
-
-fn scope_domain_boundaries_from_capabilities(capabilities: &[String]) -> Value {
-    let mut domain_boundaries = serde_json::Map::new();
-    for capability in capabilities {
-        if let Some((domain, danger, boundary_type)) = capability_metadata(capability) {
-            domain_boundaries.insert(
-                domain,
-                json!({
-                    "granted": true,
-                    "danger": danger,
-                    "boundary_type": boundary_type
-                }),
-            );
-        }
-    }
-    Value::Object(domain_boundaries)
-}
-
-fn scope_danger_metadata_from_capabilities(capabilities: &[String]) -> (Value, Value) {
-    let mut low = HashSet::new();
-    let mut medium = HashSet::new();
-    let mut high = HashSet::new();
-    let mut critical = HashSet::new();
-    for capability in capabilities {
-        if let Some((domain, danger, _)) = capability_metadata(capability) {
-            match danger.as_str() {
-                "low" => {
-                    low.insert(domain);
-                }
-                "medium" => {
-                    medium.insert(domain);
-                }
-                "high" => {
-                    high.insert(domain);
-                }
-                "critical" => {
-                    critical.insert(domain);
-                }
-                _ => {}
-            }
-        }
-    }
-    let danger_tiers = json!({
-        "low": tier_metadata_value(&low),
-        "medium": tier_metadata_value(&medium),
-        "high": tier_metadata_value(&high),
-        "critical": tier_metadata_value(&critical)
-    });
-    (
-        danger_tiers,
-        scope_domain_boundaries_from_capabilities(capabilities),
-    )
-}
-
-fn tier_metadata_value(domains: &HashSet<String>) -> Value {
-    let mut sorted = domains.iter().cloned().collect::<Vec<_>>();
-    sorted.sort();
-    json!({
-        "granted": !sorted.is_empty(),
-        "domains": sorted
-    })
-}
-
-#[cfg(test)]
-fn project_v1_scope_to_v2(scope: &Value) -> Value {
-    let mut projected = scope.clone();
-    if let Some(map) = projected.as_object_mut() {
-        map.insert("version".to_string(), json!("AUTH-SCOPE-v2"));
-        let capabilities = map
-            .get("capabilities")
-            .and_then(Value::as_array)
-            .map(|items| {
-                items
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .map(ToOwned::to_owned)
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        let (danger_tiers, domain_boundaries) =
-            scope_danger_metadata_from_capabilities(&capabilities);
-        map.insert("danger_tiers".to_string(), danger_tiers);
-        map.insert("domain_boundaries".to_string(), domain_boundaries);
-    }
-    projected
+    vec!["relay.envelope".to_string(), "relay.ack".to_string()]
 }
 
 fn local_policy_preview() -> Value {
     let capabilities = low_tier_capabilities();
-    let (danger_tiers, domain_boundaries) = scope_danger_metadata_from_capabilities(&capabilities);
     json!({
-        "version": "AUTH-SCOPE-v2",
-        "preset": "workspace-default",
-        "request_source": "desktop_fallback_low_tier",
-        "capabilities": capabilities,
-        "workspace_roots": [{
-            "id": "default",
-            "path_display": "[local]/default"
-        }],
-        "sandbox_floor": "workspace-write",
-        "approval_policy_floor": "on-request",
-        "allow_approval_never": false,
-        "allow_developer_instructions": false,
-        "display": {
-            "workspace": "[local]/default",
-            "sandbox": "workspace-write",
-            "approval": "on-request",
-            "developer_instructions": "denied"
-        },
-        "danger_tiers": danger_tiers,
-        "domain_boundaries": domain_boundaries
+        "version": "BRIDGE-RELAY-AUTH-v1",
+        "request_source": "desktop_default_relay",
+        "capabilities": capabilities
     })
 }
 
@@ -5440,11 +4960,9 @@ fn intent_authorization_policy(
     };
     if let Some(map) = policy.as_object_mut() {
         map.entry("version".to_string())
-            .or_insert_with(|| json!("AUTH-SCOPE-v2"));
-        map.entry("preset".to_string())
-            .or_insert_with(|| json!("workspace-default"));
+            .or_insert_with(|| json!("BRIDGE-RELAY-AUTH-v1"));
         map.entry("request_source".to_string())
-            .or_insert_with(|| json!("desktop_fallback_low_tier"));
+            .or_insert_with(|| json!("desktop_default_relay"));
         map.insert("product_id".to_string(), json!(product_id));
         map.insert("source_origin".to_string(), json!(source_origin));
         if !map.contains_key("capabilities") {
@@ -5457,47 +4975,6 @@ fn intent_authorization_policy(
                     .collect::<Vec<_>>()
             };
             map.insert("capabilities".to_string(), json!(defaults));
-        }
-        if !map.contains_key("workspace_roots") {
-            map.insert(
-                "workspace_roots".to_string(),
-                json!([{ "id": "default", "path_display": "[local]/default" }]),
-            );
-        }
-        map.entry("sandbox_floor".to_string())
-            .or_insert_with(|| json!("workspace-write"));
-        map.entry("approval_policy_floor".to_string())
-            .or_insert_with(|| json!("on-request"));
-        map.entry("allow_approval_never".to_string())
-            .or_insert_with(|| json!(false));
-        map.entry("allow_developer_instructions".to_string())
-            .or_insert_with(|| json!(false));
-        map.entry("display".to_string()).or_insert_with(|| {
-            json!({
-                "workspace": "[local]/default",
-                "sandbox": "workspace-write",
-                "approval": "on-request",
-                "developer_instructions": "denied"
-            })
-        });
-        if map.get("version").and_then(Value::as_str) == Some("AUTH-SCOPE-v2") {
-            let capabilities = map
-                .get("capabilities")
-                .and_then(Value::as_array)
-                .map(|items| {
-                    items
-                        .iter()
-                        .filter_map(Value::as_str)
-                        .map(ToOwned::to_owned)
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
-            let (danger_tiers, domain_boundaries) =
-                scope_danger_metadata_from_capabilities(&capabilities);
-            map.entry("danger_tiers".to_string())
-                .or_insert(danger_tiers);
-            map.entry("domain_boundaries".to_string())
-                .or_insert(domain_boundaries);
         }
     }
     policy
@@ -6326,18 +5803,6 @@ fn home_dir() -> Result<PathBuf, String> {
     Err("cannot determine home directory".to_string())
 }
 
-fn root_allows_all_workspaces(root: &Value) -> bool {
-    root.get("allow_all")
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-        || root
-            .get("allowAll")
-            .and_then(Value::as_bool)
-            .unwrap_or(false)
-        || root.get("id").and_then(Value::as_str) == Some("all")
-        || root.get("id").and_then(Value::as_str) == Some("*")
-}
-
 fn env_flag(name: &str) -> bool {
     env::var(name)
         .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
@@ -6682,12 +6147,12 @@ mod tests {
             install_id: None,
             account_id: Some("user_1".to_string()),
             account_display: Some("user@example.test".to_string()),
-            product_id: Some("panda-chat".to_string()),
-            product_name: Some("Panda Chat".to_string()),
+            product_id: Some("bridge-demo".to_string()),
+            product_name: Some("Bridge Demo".to_string()),
             cloud_origin: Some("http://local.test".to_string()),
             authorized_products: vec![ProductGrant {
-                id: "panda-chat".to_string(),
-                name: "Panda Chat".to_string(),
+                id: "bridge-demo".to_string(),
+                name: "Bridge Demo".to_string(),
                 origin: Some("http://local.test".to_string()),
                 authorization: AuthorizationState::Active,
                 capabilities: capabilities.into_iter().map(ToOwned::to_owned).collect(),
@@ -6730,7 +6195,7 @@ mod tests {
         let credentials = test_credentials(vec!["relay.envelope", "relay.ack"]);
         let mut product = credentials.authorized_products[0].clone();
         product.policy["product_authorization"] = json!({
-            "owner": "panda-chat",
+            "owner": "bridge-demo",
             "capabilities": ["acme.chat"],
             "roots": [{ "id": "default", "path_display": "[local]/default" }]
         });
@@ -6761,11 +6226,11 @@ mod tests {
             .expect("authorization mirror missing");
 
         assert_eq!(mirror["status"], json!("active"));
-        assert_eq!(mirror["product_id"], json!("panda-chat"));
+        assert_eq!(mirror["product_id"], json!("bridge-demo"));
         assert_eq!(
             mirror["authorization_context"],
             json!({
-                "product_id": "panda-chat",
+                "product_id": "bridge-demo",
                 "device_id": "dev_1",
                 "authorization_id": "auth_1",
                 "authorization_epoch": "7",
@@ -6778,7 +6243,7 @@ mod tests {
         );
         assert_eq!(
             mirror["product_authorization"]["roots"][0]["path"],
-            json!("/tmp/acme-chat")
+            Value::Null
         );
         let text = serde_json::to_string(&payload).unwrap();
         assert!(!text.contains("pbd_test"));
@@ -6809,7 +6274,7 @@ mod tests {
         env::set_var("HOME", &home);
         env::remove_var("USERPROFILE");
 
-        let credentials = test_credentials(vec!["codex.chat"]);
+        let credentials = test_credentials(vec!["relay.envelope", "relay.ack"]);
         save_credentials(&credentials).unwrap();
         let path = fallback_credentials_path().unwrap();
         assert!(
@@ -6895,7 +6360,7 @@ mod tests {
         let state = dir.join("desktop-state.json");
         env::set_var("PANDA_BRIDGE_DESKTOP_STATE", &state);
 
-        save_credentials(&test_credentials(vec!["codex.chat"])).unwrap();
+        save_credentials(&test_credentials(vec!["relay.envelope", "relay.ack"])).unwrap();
 
         let parent_mode = fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
         let file_mode = fs::metadata(&state).unwrap().permissions().mode() & 0o777;
@@ -6914,41 +6379,22 @@ mod tests {
 
     fn test_auth_scope() -> Value {
         json!({
-            "version": "AUTH-SCOPE-v1",
-            "preset": "full-access",
-            "request_source": "test_full_access_scope",
-            "product_id": "panda-chat",
+            "version": "BRIDGE-RELAY-AUTH-v1",
+            "request_source": "test_relay_scope",
+            "product_id": "bridge-demo",
             "source_origin": "http://local.test",
-            "capabilities": ["codex.chat", "codex.run"],
-            "workspace_roots": [{ "id": "default", "path_display": "[local]/default" }],
-            "sandbox_floor": "workspace-write",
-            "approval_policy_floor": "on-request",
-            "allow_approval_never": false,
-            "allow_developer_instructions": false
+            "capabilities": ["relay.envelope", "relay.ack"],
+            "product_authorization": {
+                "owner": "product-adapter",
+                "capabilities": ["demo.message"],
+                "roots": [{ "id": "project", "path_display": "Product-managed project" }]
+            }
         })
-    }
-
-    fn test_full_access_scope() -> Value {
-        json!({
-            "version": "AUTH-SCOPE-v1",
-            "product_id": "panda-chat",
-            "source_origin": "http://local.test",
-            "capabilities": ["codex.chat", "codex.run", "codex.rpc", "saas.custom.run"],
-            "workspace_roots": [{ "id": "all", "path_display": "All local files", "allow_all": true }],
-            "sandbox_floor": "danger-full-access",
-            "approval_policy_floor": "never",
-            "allow_approval_never": true,
-            "allow_developer_instructions": true
-        })
-    }
-
-    fn test_auth_scope_v2() -> Value {
-        project_v1_scope_to_v2(&test_auth_scope())
     }
 
     fn local_root_params(domain: &str, root_id: &str, path_display: &str) -> Value {
         json!({
-            "product_id": "panda-chat",
+            "product_id": "bridge-demo",
             "account": "user_1",
             "domain": domain,
             "root_id": root_id,
@@ -7076,8 +6522,8 @@ mod tests {
     #[test]
     fn diagnostics_product_without_web_url_uses_origin_fallback() {
         let product = ProductInfo {
-            id: "panda-syllo".to_string(),
-            name: "Panda Syllo".to_string(),
+            id: "acme-demo".to_string(),
+            name: "Acme Demo".to_string(),
             origin: Some("http://local.test".to_string()),
             official_origin: None,
             official_origins: Vec::new(),
@@ -7094,13 +6540,13 @@ mod tests {
     #[test]
     fn diagnostics_product_accepts_authorize_web_url_query() {
         let product = ProductInfo {
-            id: "panda-syllo".to_string(),
-            name: "Panda Syllo".to_string(),
-            origin: Some("https://syllo.test.example".to_string()),
+            id: "acme-demo".to_string(),
+            name: "Acme Demo".to_string(),
+            origin: Some("https://acme.example.test".to_string()),
             official_origin: None,
             official_origins: Vec::new(),
             web_url: Some(
-                "https://syllo.test.example/authorize?source=bridge&product=panda-syllo"
+                "https://acme.example.test/authorize?source=bridge&product=acme-demo"
                     .to_string(),
             ),
             capabilities: vec!["relay.envelope".to_string(), "relay.ack".to_string()],
@@ -7111,15 +6557,15 @@ mod tests {
 
         assert_eq!(
             entry.web_url.as_deref(),
-            Some("https://syllo.test.example/authorize?source=bridge&product=panda-syllo"),
+            Some("https://acme.example.test/authorize?source=bridge&product=acme-demo"),
         );
     }
 
     #[test]
     fn diagnostics_product_rejects_unknown_capability() {
         let product = ProductInfo {
-            id: "panda-syllo".to_string(),
-            name: "Panda Syllo".to_string(),
+            id: "acme-demo".to_string(),
+            name: "Acme Demo".to_string(),
             origin: Some("http://local.test".to_string()),
             official_origin: None,
             official_origins: Vec::new(),
@@ -7184,10 +6630,10 @@ mod tests {
     fn connect_intent_payload(policy: Value) -> Value {
         json!({
             "connect_intent": {
-                "product_id": "panda-chat",
+                "product_id": "bridge-demo",
                 "product": {
-                    "id": "panda-chat",
-                    "name": "Panda Chat",
+                    "id": "bridge-demo",
+                    "name": "Bridge Demo",
                     "origin": "http://local.test",
                     "capabilities": ["fs.read", "fs.write", "shell.run"]
                 },
@@ -7205,7 +6651,7 @@ mod tests {
 
     fn test_pending_intent_claim() -> PendingIntentClaim {
         let policy = json!({
-            "version": "AUTH-SCOPE-v2",
+            "version": "BRIDGE-RELAY-AUTH-v1",
             "product_id": "acme-chat",
             "source_origin": "https://acme.example",
             "capabilities": ["relay.envelope", "relay.ack"],
@@ -7253,14 +6699,11 @@ mod tests {
                 cloud_origin: "https://acme.example".to_string(),
                 capabilities: vec!["relay.envelope".to_string(), "relay.ack".to_string()],
                 local_policy: policy,
-                local_root_state: json!({ "fs": {}, "shell": {} }),
                 device_name: "Panda Bridge Desktop".to_string(),
                 user_id: Some("user_1".to_string()),
                 user_display_name: "user@example.test".to_string(),
                 expires_at: "2099-01-01T00:00:00Z".to_string(),
-                confirmation_mode: "full".to_string(),
-                scope_widening: true,
-                scope_diff: json!({ "widening": true }),
+                confirmation_mode: "confirm".to_string(),
             },
         }
     }
@@ -7341,8 +6784,8 @@ mod tests {
                         "api_base": api_for_thread.clone(),
                         "web_origin": api_for_thread.clone(),
                         "products": [{
-                            "id": "panda-chat",
-                            "name": "Panda Chat",
+                            "id": "bridge-demo",
+                            "name": "Bridge Demo",
                             "origin": api_for_thread.clone(),
                             "official_origin": api_for_thread.clone(),
                             "official_origins": [api_for_thread.clone()],
@@ -7383,7 +6826,7 @@ mod tests {
         account_id: &str,
         display: &str,
     ) -> Credentials {
-        let mut credentials = test_credentials(vec!["codex.chat"]);
+        let mut credentials = test_credentials(vec!["relay.envelope", "relay.ack"]);
         credentials.device_id = device_id.to_string();
         credentials.device_name = format!("Device {device_id}");
         credentials.account_id = Some(account_id.to_string());
@@ -7472,10 +6915,10 @@ mod tests {
             next_event_seq()
         ));
         env::set_var("PANDA_BRIDGE_DESKTOP_STATE", &state_path);
-        let credentials = test_credentials(vec!["codex.chat"]);
+        let credentials = test_credentials(vec!["relay.envelope", "relay.ack"]);
         save_credentials(&credentials).unwrap();
 
-        let paused = toggle_authorization("otherline", "user@example.test").unwrap();
+        let paused = toggle_authorization("bridge-demo", "user@example.test").unwrap();
         assert_eq!(paused["authorized"], "paused");
         let loaded = load_credentials().unwrap();
         assert_eq!(
@@ -7484,7 +6927,7 @@ mod tests {
         );
         assert!(authorized_connections(&loaded).is_empty());
 
-        let restored = toggle_authorization("otherline", "user@example.test").unwrap();
+        let restored = toggle_authorization("bridge-demo", "user@example.test").unwrap();
         assert_eq!(restored["authorized"], "active");
         let loaded = load_credentials().unwrap();
         assert_eq!(
@@ -7507,11 +6950,11 @@ mod tests {
         ));
         env::set_var("PANDA_BRIDGE_DESKTOP_STATE", &state_path);
         env::set_var("PANDA_BRIDGE_SKIP_REMOTE_REVOKE", "1");
-        let mut credentials = test_credentials(vec!["codex.chat"]);
+        let mut credentials = test_credentials(vec!["relay.envelope", "relay.ack"]);
         credentials.api_base = "http://127.0.0.1:9".to_string();
         save_credentials(&credentials).unwrap();
 
-        let removed = revoke_authorization("otherline", Some("user@example.test"), None).unwrap();
+        let removed = revoke_authorization("bridge-demo", Some("user@example.test"), None).unwrap();
         assert_eq!(removed["ok"], true);
         let loaded = load_credentials().unwrap();
         assert!(credentials_products(&loaded).is_empty());
@@ -7605,7 +7048,7 @@ mod tests {
 
     #[test]
     fn status_serializes_account_level_dual_switches() {
-        let mut credentials = test_credentials(vec!["codex.chat"]);
+        let mut credentials = test_credentials(vec!["relay.envelope", "relay.ack"]);
         credentials.authorized_products[0].authorization = AuthorizationState::Paused;
         let state = new_app_state();
         state.worker_running.store(true, Ordering::SeqCst);
@@ -7615,16 +7058,16 @@ mod tests {
         normalize_settings(&mut settings, &credentials.api_base);
         settings.selected_cloud_profile_id = profile_id_for_api(&credentials.api_base);
         let products = desktop_products(Some(&credentials), &state, &settings);
-        let otherline = products
+        let bridge_demo = products
             .iter()
-            .find(|product| product.id == "otherline")
+            .find(|product| product.id == "bridge-demo")
             .unwrap();
-        assert_eq!(otherline.accounts.len(), 1);
-        assert_eq!(otherline.accounts[0].authorized, AuthorizationState::Paused);
-        assert!(!otherline.accounts[0].connected);
-        assert_eq!(otherline.accounts[0].connection, "disabled");
+        assert_eq!(bridge_demo.accounts.len(), 1);
+        assert_eq!(bridge_demo.accounts[0].authorized, AuthorizationState::Paused);
+        assert!(!bridge_demo.accounts[0].connected);
+        assert_eq!(bridge_demo.accounts[0].connection, "disabled");
 
-        let serialized = serde_json::to_value(otherline).unwrap();
+        let serialized = serde_json::to_value(bridge_demo).unwrap();
         assert_eq!(serialized["accounts"][0]["authorized"], "paused");
         assert_eq!(serialized["accounts"][0]["connected"], false);
 
@@ -7632,7 +7075,7 @@ mod tests {
         let products = desktop_products(Some(&credentials), &state, &settings);
         let account = &products
             .iter()
-            .find(|product| product.id == "otherline")
+            .find(|product| product.id == "bridge-demo")
             .unwrap()
             .accounts[0];
         assert_eq!(account.authorized, AuthorizationState::Active);
@@ -7641,49 +7084,12 @@ mod tests {
     }
 
     #[test]
-    fn scope_widening_detects_material_expansion() {
-        let base = test_auth_scope();
-        assert!(!is_scope_widening(&base, &base));
-        let mut caps = base.clone();
-        caps["capabilities"] = json!(["codex.chat", "codex.run", "codex.rpc"]);
-        assert!(is_scope_widening(&base, &caps));
-        let mut workspace = base.clone();
-        workspace["workspace_roots"] = json!([{ "id": "all", "allow_all": true }]);
-        assert!(is_scope_widening(&base, &workspace));
-        let mut sandbox = base.clone();
-        sandbox["sandbox_floor"] = json!("danger-full-access");
-        assert!(is_scope_widening(&base, &sandbox));
-        let mut approval = base.clone();
-        approval["approval_policy_floor"] = json!("never");
-        approval["allow_approval_never"] = json!(true);
-        assert!(is_scope_widening(&base, &approval));
-        let mut dev = base.clone();
-        dev["allow_developer_instructions"] = json!(true);
-        assert!(is_scope_widening(&base, &dev));
-    }
-
-    #[test]
-    fn scope_diff_reports_light_confirmation_when_not_widening() {
-        let base = test_auth_scope();
-        let diff = scope_diff(&base, &base);
-        assert_eq!(diff["widening"], false);
-        assert!(diff["capabilities"]["added"].as_array().unwrap().is_empty());
-    }
-
-    #[test]
-    fn confirmation_mode_is_light_only_for_existing_non_widening_grant() {
-        let grant = test_credentials(vec!["codex.chat"])
-            .authorized_products
-            .remove(0);
-        assert_eq!(
-            confirmation_mode_for_existing_grant(Some(&grant), false),
-            "light"
-        );
-        assert_eq!(
-            confirmation_mode_for_existing_grant(Some(&grant), true),
-            "full"
-        );
-        assert_eq!(confirmation_mode_for_existing_grant(None, false), "full");
+    fn pending_preview_public_value_hides_local_scope_state() {
+        let public = pending_claim_public_value(&test_pending_intent_claim());
+        assert_eq!(public["local_root_state"], Value::Null);
+        assert_eq!(public["scope_widening"], Value::Null);
+        assert_eq!(public["scope_diff"], Value::Null);
+        assert_eq!(public["confirmation_mode"], "confirm");
     }
 
     #[test]
@@ -7697,58 +7103,15 @@ mod tests {
     }
 
     #[test]
-    fn local_policy_preview_defaults_to_low_tier_v2() {
+    fn local_policy_preview_defaults_to_relay_only() {
         let preview = local_policy_preview();
-        assert_eq!(preview["version"], "AUTH-SCOPE-v2");
-        assert_eq!(preview["preset"], "workspace-default");
-        assert_eq!(preview["request_source"], "desktop_fallback_low_tier");
-        // Relay-only core advertises no vertical low-tier kinds.
-        assert_eq!(preview["capabilities"], json!([]));
-        assert_eq!(
-            preview["capabilities"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|item| item.as_str() == Some("saas.custom.run")),
-            false
-        );
-        assert_eq!(
-            preview["capabilities"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|item| item.as_str() == Some("fs.read")),
-            false
-        );
-        assert_eq!(
-            preview["capabilities"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|item| item.as_str() == Some("fs.write")),
-            false
-        );
-        assert_eq!(
-            preview["capabilities"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|item| item.as_str() == Some("shell.run")),
-            false
-        );
-        assert_eq!(
-            preview["workspace_roots"],
-            json!([{ "id": "default", "path_display": "[local]/default" }])
-        );
-        assert_eq!(preview["sandbox_floor"], "workspace-write");
-        assert_eq!(preview["approval_policy_floor"], "on-request");
-        assert_eq!(preview["allow_approval_never"], false);
-        assert_eq!(preview["allow_developer_instructions"], false);
-        assert_eq!(preview["danger_tiers"]["low"]["granted"], false);
-        assert_eq!(preview["danger_tiers"]["medium"]["granted"], false);
-        assert_eq!(preview["danger_tiers"]["high"]["granted"], false);
-        assert_eq!(preview["danger_tiers"]["critical"]["granted"], false);
-        assert_eq!(preview["domain_boundaries"], json!({}));
+        assert_eq!(preview["version"], "BRIDGE-RELAY-AUTH-v1");
+        assert_eq!(preview["request_source"], "desktop_default_relay");
+        assert_eq!(preview["capabilities"], json!(["relay.envelope", "relay.ack"]));
+        assert_eq!(preview["workspace_roots"], Value::Null);
+        assert_eq!(preview["sandbox_floor"], Value::Null);
+        assert_eq!(preview["approval_policy_floor"], Value::Null);
+        assert_eq!(preview["allow_developer_instructions"], Value::Null);
         assert_eq!(capabilities()["runtime"], Value::Null);
         assert_eq!(
             capabilities()["relay"],
@@ -7759,9 +7122,9 @@ mod tests {
     }
 
     #[test]
-    fn intent_authorization_policy_defaults_to_low_tier_v2() {
+    fn intent_authorization_policy_defaults_to_relay_only() {
         let intent = ConnectIntent {
-            product_id: "panda-chat".to_string(),
+            product_id: "bridge-demo".to_string(),
             product: None,
             policy: json!({}),
             source_origin: Some("http://local.test".to_string()),
@@ -7770,39 +7133,30 @@ mod tests {
             user: None,
         };
         let product_capabilities = vec![
-            "codex.chat".to_string(),
-            "codex.run".to_string(),
-            "codex.rpc".to_string(),
-            "saas.custom.run".to_string(),
+            "relay.envelope".to_string(),
+            "relay.ack".to_string(),
         ];
         let policy = intent_authorization_policy(
             &intent,
-            "panda-chat",
+            "bridge-demo",
             "http://local.test",
             &product_capabilities,
         );
-        assert_eq!(policy["version"], "AUTH-SCOPE-v2");
-        assert_eq!(policy["preset"], "workspace-default");
-        assert_eq!(policy["request_source"], "desktop_fallback_low_tier");
-        // Relay-only core advertises no vertical low-tier kinds.
-        assert_eq!(policy["capabilities"], json!([]));
-        assert_eq!(
-            policy["workspace_roots"],
-            json!([{ "id": "default", "path_display": "[local]/default" }])
-        );
-        assert_eq!(policy["sandbox_floor"], "workspace-write");
-        assert_eq!(policy["approval_policy_floor"], "on-request");
-        assert_eq!(policy["allow_approval_never"], false);
-        assert_eq!(policy["allow_developer_instructions"], false);
-        assert_eq!(policy["danger_tiers"]["critical"]["granted"], false);
+        assert_eq!(policy["version"], "BRIDGE-RELAY-AUTH-v1");
+        assert_eq!(policy["request_source"], "desktop_default_relay");
+        assert_eq!(policy["capabilities"], json!(["relay.envelope", "relay.ack"]));
+        assert_eq!(policy["workspace_roots"], Value::Null);
+        assert_eq!(policy["sandbox_floor"], Value::Null);
+        assert_eq!(policy["approval_policy_floor"], Value::Null);
+        assert_eq!(policy["allow_developer_instructions"], Value::Null);
     }
 
     #[test]
     fn merge_authorized_products_preserves_pending_until_confirm() {
         let products = merge_authorized_products(
             None,
-            Some("panda-chat".to_string()),
-            Some("Panda Chat".to_string()),
+            Some("bridge-demo".to_string()),
+            Some("Bridge Demo".to_string()),
             Some("http://local.test".to_string()),
             vec!["relay.envelope".to_string()],
             json!({ "capabilities": ["relay.envelope"] }),
@@ -7845,12 +7199,12 @@ mod tests {
                 "device_name": "Verifier Desktop",
                 "worker_running": false,
                 "realtime_connected": false,
-                "codex_available": true,
+                "relay_available": true,
                 "authorized_products": [{
-                    "id": "panda-chat",
-                    "name": "Panda Chat",
+                    "id": "bridge-demo",
+                    "name": "Bridge Demo",
                     "origin": "http://chat.local.test",
-                    "capabilities": ["codex.chat", "codex.run"],
+                    "capabilities": ["relay.envelope", "relay.ack"],
                     "accounts": [{ "id": "user_1", "device_id": "dev_1", "authorized_at": "unix:1" }]
                 }]
             },

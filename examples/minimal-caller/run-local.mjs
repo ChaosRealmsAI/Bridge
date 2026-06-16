@@ -19,8 +19,8 @@ import worker from "../../apps/cloud-worker/src/index.js";
 import { createBridgeServerClient } from "../../packages/sdk/src/server.js";
 
 const apiBase = "http://minimal-caller.local";
-const productId = "otherline";
-const delegationSecret = "minimal-caller-otherline-secret";
+const productId = "minimal-caller";
+const delegationSecret = "minimal-caller-secret";
 const installId = "minimal-caller-install-id";
 const relayKeyId = "rkx_minimal_caller";
 
@@ -30,7 +30,16 @@ const env = {
   BRIDGE_WEB_ORIGIN: apiBase,
   BRIDGE_PUBLIC_API_BASE: apiBase,
   SESSION_COOKIE_NAME: "pb_session",
-  BRIDGE_OTHERLINE_DELEGATION_SECRET: delegationSecret,
+  BRIDGE_MINIMAL_CALLER_DELEGATION_SECRET: delegationSecret,
+  BRIDGE_PRODUCT_REGISTRY_MODE: "extend",
+  BRIDGE_PRODUCT_REGISTRY_JSON: JSON.stringify({
+    products: [{
+      id: productId,
+      name: "Minimal Caller",
+      official_origin: apiBase,
+      official_origins: [apiBase],
+    }],
+  }),
   BRIDGE_PRODUCT_ALLOWED_ORIGINS: JSON.stringify({ [productId]: [apiBase] }),
 };
 
@@ -274,10 +283,14 @@ async function connector(deviceToken, method, path, body = null) {
 
 function bridgePolicy() {
   return {
-    version: "AUTH-SCOPE-v2",
+    version: "BRIDGE-RELAY-AUTH-v1",
     capabilities: ["relay.envelope", "relay.ack"],
-    workspace_roots: [{ id: "default", path_display: "Minimal Caller workspace" }],
     source_origin: apiBase,
+    product_authorization: {
+      owner: "minimal-caller",
+      capabilities: ["minimal.message"],
+      roots: [{ id: "default", path_display: "Minimal Caller workspace" }],
+    },
   };
 }
 

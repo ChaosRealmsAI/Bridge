@@ -294,7 +294,7 @@ export function bridgeRelayKeyBootstrapAadText(input = {}) {
 
 export function createBridgeClient(options = {}) {
   const apiBase = String(options.apiBase || "").replace(/\/$/, "");
-  const productId = options.productId || "panda-chat";
+  const productId = options.productId || "bridge-demo";
   const fetchImpl = options.fetch || globalThis.fetch;
   if (!apiBase) throw new Error("apiBase is required");
   if (!fetchImpl) throw new Error("fetch is required");
@@ -443,39 +443,9 @@ export function createBridgeClient(options = {}) {
 
 function bridgeDefaultAuthorizationPolicy(overrides = {}) {
   const policy = {
-    version: "AUTH-SCOPE-v2",
-    preset: "workspace-default",
-    request_source: "sdk_default_low_tier",
+    version: "BRIDGE-RELAY-AUTH-v1",
+    request_source: "sdk_default_relay",
     capabilities: ["relay.envelope", "relay.ack"],
-    workspace_roots: [{
-      id: "default",
-      path_display: "[local]/default",
-    }],
-    sandbox_floor: "workspace-write",
-    approval_policy_floor: "on-request",
-    allow_approval_never: false,
-    allow_developer_instructions: false,
-    ...objectValue(overrides),
-  };
-  delete policy.display;
-  return policy;
-}
-
-function bridgeFullAccessAuthorizationPolicy(overrides = {}) {
-  const policy = {
-    version: "AUTH-SCOPE-v2",
-    preset: "full-access",
-    request_source: "sdk_default_full_access",
-    capabilities: ["relay.envelope", "relay.ack"],
-    workspace_roots: [{
-      id: "all",
-      path_display: "All local files",
-      allow_all: true,
-    }],
-    sandbox_floor: "danger-full-access",
-    approval_policy_floor: "never",
-    allow_approval_never: true,
-    allow_developer_instructions: true,
     ...objectValue(overrides),
   };
   delete policy.display;
@@ -1146,11 +1116,7 @@ async function callEncryptedRelay(request, productId, input = {}) {
   };
   const aadText = bridgeRelayEnvelopeAadText(context);
   const aad = stringValue(value.aad, 8192) || bridgeRelayEnvelopeAadBase64(context);
-  const payload = Object.hasOwn(value, "payload")
-    ? value.payload
-    : Object.hasOwn(value, "command")
-      ? value.command
-      : value.input;
+  const payload = value.payload;
   const encrypted = objectValue(await encrypt.call(session, {
     payload,
     context,
@@ -1229,9 +1195,6 @@ function normalizeRelayEnvelopeInput(input = {}, productId = "", direction = "pr
 function normalizeAuthorizationPolicyRequest(input = {}) {
   const policy = objectValue(input);
   if (!Object.keys(policy).length) return bridgeDefaultAuthorizationPolicy();
-  if (policy.fullAccess === true || policy.full_access === true || policy.preset === "full-access") {
-    return bridgeFullAccessAuthorizationPolicy(policy);
-  }
   return policy;
 }
 

@@ -24,7 +24,7 @@ const apiBase = workerServer.apiBase;
 const serverVisibleChecks = [];
 
 try {
-  const bridge = createBridgeClient({ apiBase, productId: "panda-chat", fetch: fetchWithJar(apiBase) });
+  const bridge = createBridgeClient({ apiBase, productId: "bridge-demo", fetch: fetchWithJar(apiBase) });
   const session = await bridge.auth.guest("Relay Local Control");
   assert.equal(session.authenticated, true);
   const intent = await bridge.connect.createIntent({ deviceName: "Relay Local Control Device" });
@@ -53,7 +53,7 @@ try {
   assert.equal(ls.op, "ls");
   assert.ok(ls.entries.some((item) => item.name === "package.json"), "ls result must include repo package.json");
 
-  const legacyJobs = await fetch(`${apiBase}/v1/products/panda-chat/jobs`, {
+  const legacyJobs = await fetch(`${apiBase}/v1/products/bridge-demo/jobs`, {
     method: "POST",
     headers: { origin: apiBase, "content-type": "application/json", accept: "application/json" },
     body: JSON.stringify({ kind: "shell.run", input: { command: "pwd" } }),
@@ -90,7 +90,7 @@ try {
 async function runCommandThroughBridge(bridge, deviceId, channelId, seq, command, options = {}) {
   const requestKey = `relay-local-control-${seq}-${Date.now()}`;
   const envelope = await encryptCommandEnvelope(command, adapter.keyBytes, {
-    product_id: "panda-chat",
+    product_id: "bridge-demo",
     device_id: deviceId,
     channel_id: channelId,
     seq,
@@ -155,7 +155,7 @@ async function startLocalWorker() {
         BRIDGE_WEB_ORIGIN: `http://127.0.0.1:${port}`,
         BRIDGE_PUBLIC_API_BASE: `http://127.0.0.1:${port}`,
         BRIDGE_PRODUCT_ALLOWED_ORIGINS: JSON.stringify({
-          "panda-chat": [`http://127.0.0.1:${port}`],
+          "bridge-demo": [`http://127.0.0.1:${port}`],
         }),
       });
       outgoing.writeHead(response.status, Object.fromEntries(response.headers.entries()));
@@ -238,7 +238,7 @@ function runDesktop(args) {
         ...process.env,
         PANDA_BRIDGE_ALLOW_HEADLESS_CONNECT: "1",
         PANDA_BRIDGE_DESKTOP_STATE: statePath,
-        PANDA_BRIDGE_ADAPTER_PANDA_CHAT_URL: adapter.url,
+        PANDA_BRIDGE_ADAPTER_BRIDGE_DEMO_URL: adapter.url,
         PANDA_BRIDGE_SKIP_KEYCHAIN: "1",
       },
       stdio: ["ignore", "pipe", "pipe"],

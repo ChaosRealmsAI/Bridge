@@ -211,8 +211,8 @@ html.app .lights{display:none}
 const DEFAULT_API="https://api.bridge.otherline.cc";
 if(window.ipc)document.documentElement.classList.add("app");
 const BASE_PRODUCTS=[
-  {id:"pandart",name:"Pandart",origin:"pandart.cc",web_url:"https://pandart.cc",initials:"PT",color:"linear-gradient(150deg,#34c3c8,#0c8c98)",accounts:[],connected:false,connection:"offline"},
-  {id:"otherline",name:"Otherline",origin:"otherline.cc",web_url:"https://otherline.cc",initials:"OT",color:"linear-gradient(150deg,#7c74ff,#5040d9)",accounts:[],connected:false,connection:"offline"}
+  {id:"bridge-demo",name:"Bridge Demo",origin:"bridge.otherline.cc",web_url:"https://bridge.otherline.cc",initials:"BD",color:"linear-gradient(150deg,#2f7bff,#14a6a6)",accounts:[],connected:false,connection:"offline"},
+  {id:"example-client",name:"Example Client",origin:"example.test",web_url:"https://example.test",initials:"EC",color:"linear-gradient(150deg,#1f9d67,#2374d9)",accounts:[],connected:false,connection:"offline"}
 ];
 const LANG_OPTIONS=[
   ["auto","跟随系统"],["zh-CN","简体中文"],["zh-TW","繁體中文"],["en","English"],["ja","日本語"]
@@ -228,7 +228,7 @@ Object.assign(TEXT["zh-TW"],{server:"伺服器",serverProfile:"伺服器 Profile
 Object.assign(TEXT.en,{server:"Server",serverProfile:"Server profile",addServer:"Add server",serverUrl:"https://your Bridge API",refresh:"Refresh",official:"Official",custom:"Self-hosted",serverAdded:"Server added",serverSelected:"Server switched",serverRemoved:"Server removed",serverRefreshed:"Server refreshed"});
 Object.assign(TEXT.ja,{server:"サーバー",serverProfile:"サーバー Profile",addServer:"サーバー追加",serverUrl:"https://your Bridge API",refresh:"更新",official:"公式",custom:"セルフホスト",serverAdded:"サーバーを追加しました",serverSelected:"サーバーを切り替えました",serverRemoved:"サーバーを削除しました",serverRefreshed:"サーバーを更新しました"});
 const OFFICIAL_PROFILE={id:"official",name:"Official Bridge Cloud",api_base:DEFAULT_API,web_origin:"https://bridge.otherline.cc",source:"official",products:BASE_PRODUCTS.map(clone)};
-const ui={view:"product",selected:"pandart",products:BASE_PRODUCTS.map(clone),settings:{launch_at_login:true,appearance:"auto",language:"auto",api_base:DEFAULT_API,cloud_profiles:[clone(OFFICIAL_PROFILE)],selected_cloud_profile_id:"official"},pending:null,status:null};
+const ui={view:"product",selected:"bridge-demo",products:BASE_PRODUCTS.map(clone),settings:{launch_at_login:true,appearance:"auto",language:"auto",api_base:DEFAULT_API,cloud_profiles:[clone(OFFICIAL_PROFILE)],selected_cloud_profile_id:"official"},pending:null,status:null};
 const mq=window.matchMedia("(prefers-color-scheme: dark)");
 const ipcState={seq:0,calls:new Map()};
 window.PandaBridge={
@@ -369,12 +369,7 @@ function authSummaryHtml(p){
     <div class="dsum-row"><span class="dsum-k">roots</span><span class="dsum-v">${esc(roots)}</span></div>
   </div>`;
 }
-function dangerReady(d){
-  if(!d)return true;
-  if((d.fsRows||[]).some(r=>!r.bound))return false;
-  if(d.shell&&!d.shell.cwd.bound)return false;
-  return true;
-}
+function dangerReady(d){return !d}
 function dangerHtml(d){
   const crit=d.tier==="critical";
   const rows=(d.fsRows||[]).map(r=>permRowHtml(r.kind,r)).join("");
@@ -400,26 +395,7 @@ function permRowHtml(kind,r){
     :`<button class="dp-pick" onclick="pickRoot('${kind}','${esc(r.id)}')">${t("pickDir")}</button>`;
   return `<div class="dperm"><span class="rico ${ic[0]}">${ic[1]}</span><div class="dp-main"><div class="pn">${esc(label)}</div><div class="pd">${esc(r.path_display)}</div></div><div class="dp-end">${end}</div></div>`;
 }
-function dangerFromPreview(pre){
-  const lp=pre.local_policy||{};const caps=pre.capabilities||[];const b=lp.boundaries||{};
-  const st=pre.local_root_state||{fs:{},shell:{}};
-  const hasShell=caps.includes("shell.run")&&!!b.shell;
-  const hasFs=!!b.fs&&((b.fs.allowed_roots||[]).length||(b.fs.write_roots||[]).length);
-  if(!hasShell&&!hasFs)return null;
-  const fsRows=[];
-  if(b.fs){
-    for(const r of (b.fs.allowed_roots||[]))fsRows.push(rootRow("read",r,st.fs));
-    for(const r of (b.fs.write_roots||[]))fsRows.push(rootRow("write",r,st.fs));
-  }
-  let shell=null;
-  if(hasShell){
-    const id=b.shell.cwd_root_id||"";
-    const pd=(b.shell.cwd_root&&b.shell.cwd_root.path_display)||b.shell.cwd_path_display||id;
-    const s=(st.shell||{})[id]||{};
-    shell={cwd:{id,path_display:pd,bound:!!s.bound,redacted_path:s.redacted_path||null},net:b.shell.net||"deny",exec_subtree:!!b.shell.allow_exec_subtree};
-  }
-  return {tier:hasShell?"critical":"high",fsRows,shell,err:null};
-}
+function dangerFromPreview(){return null}
 function rootRow(kind,r,fsState){
   const id=r.id||"";const s=(fsState||{})[id]||{};
   return {kind,id,path_display:r.path_display||id,bound:!!s.bound,redacted_path:s.redacted_path||null};
@@ -429,16 +405,7 @@ function findDangerRow(d,kind,id){
   return (d.fsRows||[]).find(r=>r.kind===kind&&r.id===id)||null;
 }
 async function pickRoot(kind,rootId){
-  const p=ui.pending,d=p&&p.danger;if(!d)return;
-  const row=findDangerRow(d,kind,rootId);if(!row)return;
-  const domain=kind==="cwd"?"shell_cwd":(kind==="write"?"fs_write":"fs_read");
-  try{
-    const res=await window.PandaBridge.call("pick_local_root",{product_id:p.product_id,account:p.account_id||p.account,domain,root_id:rootId,path_display:row.path_display,confirm_broad:!!row._confirmBroad});
-    if(!res||res.cancelled)return;
-    if(res.denied){d.err=t("dirDenied");return render()}
-    if(res.warn_broad){row._confirmBroad=true;d.err=t("dirBroad",{name:p.product_name});return render()}
-    row.bound=true;row.redacted_path=res.redacted_path||res.path_display||"";row._confirmBroad=false;d.err=null;render();
-  }catch(e){d.err=String(e?.message||e).slice(0,120);render()}
+  return;
 }
 function productById(id){return ui.products.find(p=>p.id===id)}
 function displayHost(p){return p.origin||p.domain||hostOnly(p.web_url)}
@@ -477,7 +444,7 @@ async function refresh(){
   const status=await window.PandaBridge.call("status");
   ui.status=status;ui.settings={...ui.settings,...(status.settings||{})};
   ui.products=normalizeProducts(status.products||[]);
-  if(!productById(ui.selected))ui.selected=ui.products[0]?.id||"pandart";
+  if(!productById(ui.selected))ui.selected=ui.products[0]?.id||"bridge-demo";
   render();return status;
 }
 function normalizeProducts(items){
@@ -522,8 +489,8 @@ function knownFrom(id,name,origin){
   const existing=ui.products.find(p=>normalizeProductKey(p.id)===norm||normalizeProductKey(p.name)===norm);
   if(existing)return existing;
   const hay=[id,name,origin].join(" ").toLowerCase();
-  if(hay.includes("pandart")||hay.includes("pandaart"))return BASE_PRODUCTS[0];
-  if(hay.includes("otherline"))return BASE_PRODUCTS[1];
+  if(hay.includes("bridge"))return BASE_PRODUCTS[0];
+  if(hay.includes("example"))return BASE_PRODUCTS[1];
   const dynamic={id:id||normalizeProductKey(name)||"custom",name:name||id||"Custom Product",origin:origin||hostOnly(DEFAULT_API),web_url:origin||""};
   return {...dynamic,...productStyle(dynamic)};
 }
@@ -555,10 +522,10 @@ let toastTimer;
 function toast(msg){document.getElementById("toastTxt").textContent=msg;const el=document.getElementById("toast");el.classList.add("on");clearTimeout(toastTimer);toastTimer=setTimeout(()=>el.classList.remove("on"),1900)}
 function showError(e){toast(`${t("failed")} · ${String(e?.message||e).slice(0,120)}`)}
 function installFallback(){
-  const emptyPandart=new URLSearchParams(location.search).get("empty");
+  const emptyDemo=new URLSearchParams(location.search).get("empty");
   const mock={settings:{launch_at_login:true,appearance:new URLSearchParams(location.search).get("theme")||"auto",language:"auto",api_base:DEFAULT_API,cloud_profiles:[clone(OFFICIAL_PROFILE)],selected_cloud_profile_id:"official"},products:normalizeProducts([
-    {id:"pandart",name:"Pandart",origin:"pandart.cc",web_url:"https://pandart.cc",accounts:emptyPandart?[]:[{id:"demo_pt",email:"dreamsmoke57086",authorized:"active",connected:true,connection:"connected"}],connected:!emptyPandart,connection:emptyPandart?"offline":"connected"},
-    {id:"otherline",name:"Otherline",origin:"otherline.cc",web_url:"https://otherline.cc",accounts:[{id:"demo_ot",email:"chaos.realms.ai@gmail.com",authorized:"active",connected:true,connection:"connected"},{id:"demo_pause",email:"panda-final@bridge.otherline.cc",authorized:"paused",connected:false,connection:"disabled"}],connected:true,connection:"connected"}
+    {id:"bridge-demo",name:"Bridge Demo",origin:"bridge.otherline.cc",web_url:"https://bridge.otherline.cc",accounts:emptyDemo?[]:[{id:"demo_bridge",email:"demo@bridge.example",authorized:"active",connected:true,connection:"connected"}],connected:!emptyDemo,connection:emptyDemo?"offline":"connected"},
+    {id:"example-client",name:"Example Client",origin:"example.test",web_url:"https://example.test",accounts:[{id:"demo_client",email:"client@example.test",authorized:"active",connected:true,connection:"connected"},{id:"demo_pause",email:"paused@example.test",authorized:"paused",connected:false,connection:"disabled"}],connected:true,connection:"connected"}
   ])};
   window.ipc={postMessage(raw){const req=JSON.parse(raw);const reply=(ok,result,error)=>setTimeout(()=>window.PandaBridge.receive({type:"response",id:req.id,ok,result,error}),50);
     if(req.command==="status")return reply(true,clone(mock));
@@ -571,15 +538,12 @@ function installFallback(){
     if(req.command==="toggle_authorization"){const p=mock.products.find(x=>x.id===req.params.product_id);const a=p?.accounts.find(x=>x.id===req.params.account||x.email===req.params.account);if(a){a.authorized=a.authorized==="paused"?"active":"paused";a.connected=a.authorized==="active";a.connection=a.connected?"connected":"disabled"}return reply(true,{ok:true})}
     if(req.command==="remove_authorization"){const p=mock.products.find(x=>x.id===req.params.product_id);if(p)p.accounts=p.accounts.filter(x=>x.id!==req.params.account_id&&x.email!==req.params.account_id);return reply(true,{ok:true})}
     if(req.command==="preview_intent"){
-      const dz=new URLSearchParams(location.search).get("danger");
-      const base={product_id:"otherline",product_name:"Otherline",cloud_origin:"otherline.cc",user_display_name:"chaos.realms.ai@gmail.com",user_id:"demo_ot",capabilities:["relay.envelope","relay.ack"],local_policy:{source_origin:"otherline.cc",capabilities:["relay.envelope","relay.ack"],product_authorization:{owner:"product-adapter",capabilities:["syllo.chat"],roots:[{id:"project",path_display:"[local]/project"}]}},local_root_state:{fs:{},shell:{}}};
-      if(dz==="high"){base.capabilities=["codex.chat","fs.read","fs.write"];base.local_policy={boundaries:{fs:{allowed_roots:[{id:"project",path_display:"[local]/你的项目"}],write_roots:[{id:"export",path_display:"[local]/导出目录"}]}},danger_tiers:{high:{granted:true}}};base.local_root_state={fs:{project:{bound:true,redacted_path:"[local]/panda-bridge",kind:"read"}},shell:{}};}
-      if(dz==="critical"){base.capabilities=["shell.run"];base.local_policy={boundaries:{shell:{cwd_root_id:"sandbox",cwd_root:{id:"sandbox",path_display:"[local]/沙箱工作区"},net:"deny",allow_exec_subtree:false}},danger_tiers:{critical:{granted:true}}};base.local_root_state={fs:{},shell:{}};}
+      const base={product_id:"bridge-demo",product_name:"Bridge Demo",cloud_origin:"bridge.otherline.cc",user_display_name:"demo@example.test",user_id:"demo_user",capabilities:["relay.envelope","relay.ack"],local_policy:{version:"BRIDGE-RELAY-AUTH-v1",source_origin:"bridge.otherline.cc",capabilities:["relay.envelope","relay.ack"],product_authorization:{owner:"product-adapter",capabilities:["demo.message"],roots:[{id:"project",path_display:"Product-managed project"}]}}};
       return reply(true,base);
     }
     if(req.command==="pick_local_root")return reply(true,{root_id:req.params.root_id,path_display:req.params.path_display,redacted_path:"[local]/"+(req.params.root_id||"chosen")});
     if(req.command==="claim_intent_preview"||req.command==="claim_intent_pending")return reply(true,{pending_id:"pending_demo",status:"pending"});
-    if(req.command==="confirm_pending_intent"||req.command==="claim_intent"){mock.products[1].accounts.push({id:"team",email:"team-demo@otherline.cc",authorized:"active",connected:true,connection:"connected"});return reply(true,{ok:true})}
+    if(req.command==="confirm_pending_intent"||req.command==="claim_intent"){mock.products[0].accounts.push({id:"team",email:"team-demo@bridge.example",authorized:"active",connected:true,connection:"connected"});return reply(true,{ok:true})}
     if(req.command==="open_web"||req.command==="start_worker")return reply(true,{ok:true});
     reply(false,null,"unknown command");
   }};

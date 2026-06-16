@@ -59,7 +59,7 @@ export async function startRelayLocalControlAdapter(options = {}) {
 export async function encryptCommandEnvelope(input, keyBytes, fields = {}) {
   const payload = textEncoder.encode(JSON.stringify(input));
   const aadText = stableAad({
-    product_id: fields.product_id || "panda-chat",
+    product_id: fields.product_id || "bridge-demo",
     device_id: fields.device_id || "",
     channel_id: fields.channel_id || "relay-local-control",
     direction: "product_to_device",
@@ -74,7 +74,7 @@ export async function encryptCommandEnvelope(input, keyBytes, fields = {}) {
     additionalData: aad,
   }, key, payload));
   return {
-    product_id: fields.product_id || "panda-chat",
+    product_id: fields.product_id || "bridge-demo",
     device_id: fields.device_id || "",
     channel_id: fields.channel_id || "relay-local-control",
     direction: "product_to_device",
