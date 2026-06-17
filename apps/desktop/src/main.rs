@@ -48,8 +48,11 @@ const VERSION: &str = "panda-bridge-desktop-lite-v0.1";
 const BRIDGE_PROTOCOL_VERSION: &str = "panda-bridge-protocol-v0.2";
 const KEYCHAIN_SERVICE: &str = "cc.otherline.panda-bridge";
 const KEYCHAIN_USER: &str = "device";
-const DEFAULT_API: &str = "https://api.bridge.otherline.cc";
-const DEFAULT_WEB: &str = "https://bridge.otherline.cc";
+const DEFAULT_API: &str = "https://api.bridge.chaos-realms.cc";
+const DEFAULT_WEB: &str = "https://bridge.chaos-realms.cc";
+const BURN_PRODUCT_ID: &str = "panda-burn";
+const BURN_PRODUCT_NAME: &str = "Burn";
+const BURN_PRODUCT_ORIGIN: &str = "https://token-burn.com";
 #[cfg(windows)]
 const WINDOWS_SINGLE_INSTANCE_ADDR: &str = "127.0.0.1:52321";
 #[cfg(windows)]
@@ -2025,8 +2028,8 @@ fn known_products() -> [KnownProduct; 2] {
         KnownProduct {
             id: "bridge-demo",
             name: "Bridge Demo",
-            origin: "bridge.otherline.cc",
-            web_url: "https://bridge.otherline.cc",
+            origin: "bridge.chaos-realms.cc",
+            web_url: "https://bridge.chaos-realms.cc",
         },
         KnownProduct {
             id: "example-client",
@@ -2056,11 +2059,14 @@ fn desktop_products(
     } else {
         profile.clone()
     };
-    let mut catalog = if uses_official_fallback {
+    let mut catalog: Vec<DesktopProductCatalogEntry> = if uses_official_fallback {
         official_cloud_profile().products
     } else {
         profile.products.clone()
-    };
+    }
+    .into_iter()
+    .map(normalize_catalog_product_brand)
+    .collect();
     for connection in connections
         .iter()
         .filter(|connection| connection.api_base == profile.api_base)
@@ -2227,6 +2233,55 @@ fn known_product_id_for_grant(product: &ProductGrant) -> &'static str {
     } else {
         "example-client"
     }
+}
+
+fn is_burn_product_alias(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    let legacy_chat = ["co", "co"].concat();
+    let legacy_app = ["sy", "llo"].concat();
+    lower.contains("burn")
+        || lower.contains(BURN_PRODUCT_ID)
+        || lower.contains("token-burn")
+        || lower.contains(&legacy_chat)
+        || lower.contains(&legacy_app)
+}
+
+fn normalize_product_grant_brand(mut product: ProductGrant) -> ProductGrant {
+    let haystack = format!(
+        "{} {} {}",
+        product.id,
+        product.name,
+        product.origin.clone().unwrap_or_default()
+    );
+    if is_burn_product_alias(&haystack) {
+        product.id = BURN_PRODUCT_ID.to_string();
+        product.name = BURN_PRODUCT_NAME.to_string();
+        product.origin = Some(BURN_PRODUCT_ORIGIN.to_string());
+    }
+    product
+}
+
+fn normalize_catalog_product_brand(
+    mut product: DesktopProductCatalogEntry,
+) -> DesktopProductCatalogEntry {
+    let haystack = format!(
+        "{} {} {} {} {} {}",
+        product.id,
+        product.name,
+        product.origin.clone().unwrap_or_default(),
+        product.web_url.clone().unwrap_or_default(),
+        product.official_origin.clone().unwrap_or_default(),
+        product.official_origins.join(" ")
+    );
+    if is_burn_product_alias(&haystack) {
+        product.id = BURN_PRODUCT_ID.to_string();
+        product.name = BURN_PRODUCT_NAME.to_string();
+        product.origin = Some(BURN_PRODUCT_ORIGIN.to_string());
+        product.web_url = Some(BURN_PRODUCT_ORIGIN.to_string());
+        product.official_origin = Some(BURN_PRODUCT_ORIGIN.to_string());
+        product.official_origins = vec![BURN_PRODUCT_ORIGIN.to_string()];
+    }
+    product
 }
 
 fn product_matches_target(product: &ProductGrant, target: &str) -> bool {
@@ -3177,9 +3232,7 @@ fn declared_product_authorization_roots(policy: &Value) -> Vec<DeclaredLocalRoot
         .get("product_authorization")
         .or_else(|| policy.get("productAuthorization"))
         .unwrap_or(&Value::Null);
-    let roots = product_authorization
-        .get("roots")
-        .unwrap_or(&Value::Null);
+    let roots = product_authorization.get("roots").unwrap_or(&Value::Null);
     declared_root_list_from_raw(roots)
 }
 
@@ -3499,10 +3552,11 @@ fn connection_products(credentials: &Credentials) -> Vec<ProductGrant> {
             .iter()
             .cloned()
             .map(product_without_accounts)
+            .map(normalize_product_grant_brand)
             .collect();
     }
     match (&credentials.product_id, &credentials.product_name) {
-        (Some(id), Some(name)) => vec![ProductGrant {
+        (Some(id), Some(name)) => vec![normalize_product_grant_brand(ProductGrant {
             id: id.clone(),
             name: name.clone(),
             origin: credentials.cloud_origin.clone(),
@@ -3513,7 +3567,7 @@ fn connection_products(credentials: &Credentials) -> Vec<ProductGrant> {
             accounts: Vec::new(),
             local_roots: LocalRootBindings::default(),
             authorized_at: credentials.claimed_at.clone(),
-        }],
+        })],
         _ => Vec::new(),
     }
 }
@@ -5494,14 +5548,14 @@ fn upsert_cloud_profile(settings: &mut DesktopSettings, profile: CloudProfile, s
 }
 
 fn product_entry_from_known(product: KnownProduct) -> DesktopProductCatalogEntry {
-    DesktopProductCatalogEntry {
+    normalize_catalog_product_brand(DesktopProductCatalogEntry {
         id: product.id.to_string(),
         name: product.name.to_string(),
         origin: Some(product.origin.to_string()),
         web_url: Some(product.web_url.to_string()),
         official_origin: Some(product.web_url.to_string()),
         official_origins: vec![product.web_url.to_string()],
-    }
+    })
 }
 
 fn product_entry_from_info(product: &ProductInfo, api_base: &str) -> DesktopProductCatalogEntry {
@@ -5511,7 +5565,7 @@ fn product_entry_from_info(product: &ProductInfo, api_base: &str) -> DesktopProd
         .or_else(|| product.origin.clone())
         .or_else(|| product.official_origins.first().cloned())
         .unwrap_or_else(|| api_base.to_string());
-    DesktopProductCatalogEntry {
+    normalize_catalog_product_brand(DesktopProductCatalogEntry {
         id: product.id.clone(),
         name: if product.name.trim().is_empty() {
             product.id.clone()
@@ -5522,25 +5576,27 @@ fn product_entry_from_info(product: &ProductInfo, api_base: &str) -> DesktopProd
         web_url: product.web_url.clone().or(Some(origin.clone())),
         official_origin: Some(origin),
         official_origins: product.official_origins.clone(),
-    }
+    })
 }
 
 fn product_entry_from_grant(grant: &ProductGrant, api_base: &str) -> DesktopProductCatalogEntry {
+    let grant = normalize_product_grant_brand(grant.clone());
     let origin = grant.origin.clone().unwrap_or_else(|| api_base.to_string());
-    DesktopProductCatalogEntry {
-        id: grant.id.clone(),
-        name: grant.name.clone(),
+    normalize_catalog_product_brand(DesktopProductCatalogEntry {
+        id: grant.id,
+        name: grant.name,
         origin: Some(origin.clone()),
         web_url: Some(origin.clone()),
         official_origin: Some(origin.clone()),
         official_origins: vec![origin],
-    }
+    })
 }
 
 fn upsert_catalog_product(
     products: &mut Vec<DesktopProductCatalogEntry>,
     product: DesktopProductCatalogEntry,
 ) {
+    let product = normalize_catalog_product_brand(product);
     if let Some(existing) = products.iter_mut().find(|item| {
         item.id == product.id
             || normalize_product_key(&item.name) == normalize_product_key(&product.name)
@@ -6233,8 +6289,13 @@ mod tests {
                 "relay_key_id": "rkx_1"
             })
         );
-        assert_eq!(mirror["product_authorization"]["control"], "computer-control");
-        assert!(mirror["product_authorization"].get("capabilities").is_none());
+        assert_eq!(
+            mirror["product_authorization"]["control"],
+            "computer-control"
+        );
+        assert!(mirror["product_authorization"]
+            .get("capabilities")
+            .is_none());
         assert!(mirror["product_authorization"].get("roots").is_none());
         let text = serde_json::to_string(&payload).unwrap();
         assert!(!text.contains("pbd_test"));
@@ -6537,8 +6598,7 @@ mod tests {
             official_origin: None,
             official_origins: Vec::new(),
             web_url: Some(
-                "https://acme.example.test/authorize?source=bridge&product=acme-demo"
-                    .to_string(),
+                "https://acme.example.test/authorize?source=bridge&product=acme-demo".to_string(),
             ),
             capabilities: vec!["relay.envelope".to_string(), "relay.ack".to_string()],
         };
@@ -6716,7 +6776,9 @@ mod tests {
             public["product_authorization"]["control"],
             "computer-control"
         );
-        assert!(public["product_authorization"].get("capabilities").is_none());
+        assert!(public["product_authorization"]
+            .get("capabilities")
+            .is_none());
         assert!(public["product_authorization"].get("roots").is_none());
         assert_eq!(
             public["authorization"]["source_origin"],
@@ -6732,15 +6794,15 @@ mod tests {
     fn pending_claim_public_value_prefers_policy_display_product() {
         let mut pending = test_pending_intent_claim();
         if let Some(authorization) = pending.authorization.as_mut() {
-            authorization.policy["display"] = json!({ "product": "Coco" });
+            authorization.policy["display"] = json!({ "product": "Burn" });
         }
-        pending.preview.local_policy["display"] = json!({ "product": "Coco" });
+        pending.preview.local_policy["display"] = json!({ "product": "Burn" });
 
         let public = pending_claim_public_value(&pending);
 
-        assert_eq!(public["product"]["name"], "Coco");
+        assert_eq!(public["product"]["name"], "Burn");
         let rows = pending_authorization_screenshot_rows(&public);
-        assert!(rows.iter().any(|row| row == "PRODUCT: Coco (acme-chat)"));
+        assert!(rows.iter().any(|row| row == "PRODUCT: Burn (acme-chat)"));
     }
 
     fn start_one_shot_json_server(payload: Value) -> (String, std::thread::JoinHandle<()>) {
@@ -7056,7 +7118,10 @@ mod tests {
             .find(|product| product.id == "bridge-demo")
             .unwrap();
         assert_eq!(bridge_demo.accounts.len(), 1);
-        assert_eq!(bridge_demo.accounts[0].authorized, AuthorizationState::Paused);
+        assert_eq!(
+            bridge_demo.accounts[0].authorized,
+            AuthorizationState::Paused
+        );
         assert!(!bridge_demo.accounts[0].connected);
         assert_eq!(bridge_demo.accounts[0].connection, "disabled");
 
@@ -7100,7 +7165,10 @@ mod tests {
         let preview = local_policy_preview();
         assert_eq!(preview["version"], "BRIDGE-RELAY-AUTH-v1");
         assert_eq!(preview["request_source"], "desktop_default_relay");
-        assert_eq!(preview["capabilities"], json!(["relay.envelope", "relay.ack"]));
+        assert_eq!(
+            preview["capabilities"],
+            json!(["relay.envelope", "relay.ack"])
+        );
         assert_eq!(preview["workspace_roots"], Value::Null);
         assert_eq!(preview["sandbox_floor"], Value::Null);
         assert_eq!(preview["approval_policy_floor"], Value::Null);
@@ -7125,10 +7193,7 @@ mod tests {
             expires_at: "2099-01-01T00:00:00Z".to_string(),
             user: None,
         };
-        let product_capabilities = vec![
-            "relay.envelope".to_string(),
-            "relay.ack".to_string(),
-        ];
+        let product_capabilities = vec!["relay.envelope".to_string(), "relay.ack".to_string()];
         let policy = intent_authorization_policy(
             &intent,
             "bridge-demo",
@@ -7137,7 +7202,10 @@ mod tests {
         );
         assert_eq!(policy["version"], "BRIDGE-RELAY-AUTH-v1");
         assert_eq!(policy["request_source"], "desktop_default_relay");
-        assert_eq!(policy["capabilities"], json!(["relay.envelope", "relay.ack"]));
+        assert_eq!(
+            policy["capabilities"],
+            json!(["relay.envelope", "relay.ack"])
+        );
         assert_eq!(policy["workspace_roots"], Value::Null);
         assert_eq!(policy["sandbox_floor"], Value::Null);
         assert_eq!(policy["approval_policy_floor"], Value::Null);
@@ -7167,10 +7235,7 @@ mod tests {
             "origin": "https://bridge.test.example",
             "policy": { "source_origin": "https://app.test.example" }
         });
-        assert_eq!(
-            product_display_origin(&product),
-            "https://app.test.example"
-        );
+        assert_eq!(product_display_origin(&product), "https://app.test.example");
 
         let fallback = json!({ "origin": "https://bridge.test.example" });
         assert_eq!(

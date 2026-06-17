@@ -30,7 +30,7 @@
 import { createBridgeClient, BridgeErrorCodes } from "@panda-bridge/sdk";
 
 const bridge = createBridgeClient({
-  apiBase: "https://api.bridge.otherline.cc",
+  apiBase: "https://api.bridge.chaos-realms.cc",
   productId: "example-product",
 });
 ```
@@ -41,7 +41,7 @@ const bridge = createBridgeClient({
 import { createBridgeServerClient } from "@panda-bridge/sdk/server";
 
 const bridge = createBridgeServerClient({
-  apiBase: "https://api.bridge.otherline.cc",
+  apiBase: "https://api.bridge.chaos-realms.cc",
   productId: "example-product",
   secret: process.env.PANDA_BRIDGE_DELEGATION_SECRET,
 });

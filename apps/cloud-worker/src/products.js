@@ -32,8 +32,8 @@ export const PRODUCT_REGISTRY = {
   "bridge-demo": {
     id: "bridge-demo",
     name: "Bridge Demo",
-    official_origin: "https://bridge.otherline.cc",
-    official_origins: ["https://bridge.otherline.cc"],
+    official_origin: "https://bridge.chaos-realms.cc",
+    official_origins: ["https://bridge.chaos-realms.cc"],
     capabilities: [...RELAY_CAPABILITIES],
     adapter_boundary: { adapter_id: "bridge-demo", adapter_owner: "product" },
     default_policy: {},

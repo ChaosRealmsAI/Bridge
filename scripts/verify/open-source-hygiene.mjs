@@ -29,7 +29,7 @@ const privateCloudflareAccountId = "ca4503ffc9541" + "fa4af1b99132462c897";
 const forbiddenContent = [
   { label: "local user path", pattern: /\/Users\/Zhuanz\b/ },
   { label: "pandacode runtime", pattern: /\.pandacode\b|PandaCode session|pandacode-result/ },
-  { label: "private bridge test domain", pattern: /\b(?:api-bridge-test|bridge-test|assets-bridge-test|app-test|syllo-test)\.otherline\.cc\b/ },
+  { label: "private bridge test domain", pattern: /\b(?:api-bridge-test|bridge-test|assets-bridge-test|app-test|burn-test)\.otherline\.cc\b/ },
   { label: "private supabase project ref", pattern: new RegExp(`\\b(?:${privateSupabaseRefs.join("|")})\\b`) },
   { label: "private supabase keychain handle", pattern: /\botherline\.cloud\.supabase\.[A-Za-z0-9_.-]+\b/ },
   { label: "cloudflare account id", pattern: new RegExp(`\\b${privateCloudflareAccountId}\\b`) },

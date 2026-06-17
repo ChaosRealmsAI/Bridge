@@ -12,7 +12,7 @@ const android = read("packages/native/android/src/main/java/cc/pandabridge/sdk/B
 const ios = read("packages/native/ios/Sources/PandaBridgeKit/BridgeRelay.swift");
 
 const envelopeAad = bridgeRelayEnvelopeAadText({
-  productId: "panda-syllo",
+  productId: "panda-burn",
   deviceId: "dev_1",
   channelId: "chan_1",
   direction: "product_to_device",
@@ -23,17 +23,17 @@ const envelopeAad = bridgeRelayEnvelopeAadText({
 });
 assert.equal(
   envelopeAad,
-  "product:panda-syllo|device:dev_1|channel:chan_1|direction:product_to_device|seq:1|authorization:auth_1|epoch:3|relay_key:rk_1",
+  "product:panda-burn|device:dev_1|channel:chan_1|direction:product_to_device|seq:1|authorization:auth_1|epoch:3|relay_key:rk_1",
 );
 
 const bootstrapAad = bridgeRelayKeyBootstrapAadText({
-  productId: "panda-syllo",
+  productId: "panda-burn",
   deviceId: "dev_1",
   authorizationId: "auth_1",
   authorizationEpoch: 3,
   relayKeyId: "rk_1",
 });
-assert.equal(bootstrapAad, "bridge-relay-key-bootstrap-v1|panda-syllo|dev_1|auth_1|3|rk_1");
+assert.equal(bootstrapAad, "bridge-relay-key-bootstrap-v1|panda-burn|dev_1|auth_1|3|rk_1");
 
 for (const [name, text] of [["Android", android], ["iOS", ios]]) {
   for (const marker of [
@@ -51,7 +51,7 @@ for (const [name, text] of [["Android", android], ["iOS", ios]]) {
   }
   const hasAckPath = text.includes("/ack") || text.includes("appendPathComponent(\"ack\")");
   assert.ok(hasAckPath, `${name} native SDK missing relay parity marker ack path`);
-  for (const productMarker of [/\bsyllo\b/i, /\bcoco\b/i, /\bcodex\b/i, /\bclaude\b/i]) {
+  for (const productMarker of [/\bburn\b/i, /\bcodex\b/i, /\bclaude\b/i]) {
     assert.equal(productMarker.test(text), false, `${name} native SDK must stay product-neutral: ${productMarker}`);
   }
 }

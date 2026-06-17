@@ -11,10 +11,9 @@ import { validateRelayEnvelope } from "../../packages/protocol/src/index.js";
 import { createBridgeClient } from "../../packages/sdk/src/index.js";
 
 const verticalKinds = [
-  "coco.",
+  "burn.",
   "codex.",
   "claude.",
-  "syllo.",
   "shell.run",
   "fs.read",
   "fs.write",
@@ -180,7 +179,7 @@ const localState = desktopMain.slice(localStateStart, localStateEnd);
 assert.equal(localState.includes("commands"), false, "local_state must not publish commands");
 assert.equal(localState.includes("workspaces"), false, "local_state must not publish workspaces");
 assert.equal(localState.includes("codex"), false, "local_state must not publish codex state");
-assert.equal(localState.includes('"panda-syllo"'), false, "local_state must not hard-code the Syllo product");
+assert.equal(localState.includes('"panda-burn"'), false, "local_state must not hard-code the Burn product");
 assert.ok(localState.includes("adapter_router"), "local_state must publish only generic adapter router status");
 assert.ok(localState.includes("products"), "local_state must support product-scoped adapter status");
 const desktopUi = readFileSync(new URL("../../apps/desktop/ui/index.html", import.meta.url), "utf8");
@@ -203,13 +202,13 @@ for (const marker of [
 ]) {
   assert.equal(workerMain.includes(marker), false, `Worker core must not contain vertical runtime marker: ${marker}`);
 }
-assert.equal(workerMain.includes('product?.id !== "panda-syllo"'), false, "Worker must not keep Syllo-specific relay envelope enforcement");
-assert.equal(workerMain.includes('product.id === "panda-syllo"'), false, "Worker must not branch relay envelope behavior on Syllo product identity");
+assert.equal(workerMain.includes('product?.id !== "panda-burn"'), false, "Worker must not keep Burn-specific relay envelope enforcement");
+assert.equal(workerMain.includes('product.id === "panda-burn"'), false, "Worker must not branch relay envelope behavior on Burn product identity");
 assert.ok(workerMain.includes("safeAdapterProducts"), "Worker must preserve generic product-scoped adapter state");
 assert.ok(workerMain.includes("deviceRelayKeyExchange(device, product.id)"), "Worker relay key bootstrap must select exchange by product");
 assert.ok(workerMain.includes("relayKeyBootstrapAadTexts"), "Worker relay key bootstrap must accept versioned generic AAD");
 assert.ok(workerMain.includes("bridge-relay-key-bootstrap-v1"), "Worker must accept generic Bridge relay-key bootstrap AAD");
-assert.equal(workerMain.includes("syllo-relay-key-bootstrap-v1"), false, "Worker must not keep Syllo-specific relay-key bootstrap AAD");
+assert.equal(workerMain.includes("burn-relay-key-bootstrap-v1"), false, "Worker must not keep Burn-specific relay-key bootstrap AAD");
 assert.equal(workerMain.includes("async function queueSummary"), false, "Worker must not expose legacy job queue summary implementation");
 assert.ok(workerMain.includes("isLegacyRuntimeRoute(request.method, path)"), "Worker must delegate legacy runtime route matching");
 assert.ok(workerMain.includes("legacyRuntimeApiRemovedPayload()"), "Worker must delegate legacy runtime payload");
@@ -243,7 +242,7 @@ for (const marker of ["waitForResponse", "{ envelope, ack }", "relay_device_queu
 }
 
 const productDocs = readFileSync(new URL("../../docs/product-integration.md", import.meta.url), "utf8");
-for (const marker of ["waitForResponse", "relay_channel_queue_full", "queue.retry_after_ms", "Bridge 不执行 Claude、Codex、Syllo、shell、fs、data"]) {
+for (const marker of ["waitForResponse", "relay_channel_queue_full", "queue.retry_after_ms", "Bridge 不执行 Claude、Codex、Burn、shell、fs、data"]) {
   assert.equal(productDocs.includes(marker), true, `product integration docs missing V0.3 relay marker: ${marker}`);
 }
 

@@ -52,7 +52,7 @@ try {
   });
 
   const initialStatus = await desktopJson(["headless-status"], "initial-status");
-  assert.equal(initialStatus.settings.api_base, "https://api.bridge.otherline.cc");
+  assert.equal(initialStatus.settings.api_base, "https://api.bridge.chaos-realms.cc");
   assert.equal(initialStatus.settings.cloud_profiles.some((item) => item.id === "official"), true);
   step("bb-v04-official-default", {
     action: "Open Desktop status with empty local state",
@@ -103,10 +103,10 @@ try {
       "--profile-id",
       addedSettings.selected_cloud_profile_id,
     ], "after-delete-custom-profile-settings");
-    assert.equal(removedSettings.api_base, "https://api.bridge.otherline.cc");
+    assert.equal(removedSettings.api_base, "https://api.bridge.chaos-realms.cc");
     const removedStatus = await desktopJson(["headless-status"], "after-delete-custom-profile");
     deleteCustomProfileStatus = removedStatus;
-    assert.equal(removedStatus.settings.api_base, "https://api.bridge.otherline.cc");
+    assert.equal(removedStatus.settings.api_base, "https://api.bridge.chaos-realms.cc");
     assert.equal(removedStatus.settings.cloud_profiles.some((item) => item.api_base === apiBase), false);
     step("bb-v04-delete-custom-profile", {
       action: "Delete the selected custom self-host Profile",
@@ -121,7 +121,7 @@ try {
     const invalidAdd = await runDesktop(["headless-add-cloud-profile", "--api", invalidServer.apiBase, "--name", "Invalid Bridge"]);
     assert.notEqual(invalidAdd.status, 0, "invalid diagnostics must fail");
     const afterInvalid = await desktopJson(["headless-status"], "after-invalid-profile");
-    assert.equal(afterInvalid.settings.api_base, "https://api.bridge.otherline.cc");
+    assert.equal(afterInvalid.settings.api_base, "https://api.bridge.chaos-realms.cc");
     assert.equal(afterInvalid.settings.cloud_profiles.some((item) => item.api_base === invalidServer.apiBase), false);
     snapshot("invalid-profile-error", commandEvidence(invalidAdd));
     step("bb-v04-invalid-profile", {

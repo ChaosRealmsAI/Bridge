@@ -2,14 +2,14 @@
 
 Panda Bridge 是通用的 Cloud-to-Local Secure Relay / Jump Host。它把产品侧的加密 relay envelope 送到用户本机，再把本机 Product Adapter 返回的加密 envelope 送回产品侧。
 
-Bridge 不执行 Claude、Codex、Syllo、shell、fs、data 或任何垂直业务逻辑；这些能力属于产品自己的 Product Adapter。Bridge Cloud 只能看见账号、设备、产品、channel、seq、request_key、ciphertext、aad、nonce、key id 和投递状态。
+Bridge 不执行 Claude、Codex、Burn、shell、fs、data 或任何垂直业务逻辑；这些能力属于产品自己的 Product Adapter。Bridge Cloud 只能看见账号、设备、产品、channel、seq、request_key、ciphertext、aad、nonce、key id 和投递状态。
 
 默认使用官方托管 Bridge Cloud，或按 [`docs/self-hosting.md`](./self-hosting.md) 自托管。
 
 ```text
-API:    https://api.bridge.otherline.cc
-Web:    https://bridge.otherline.cc
-Assets: https://assets.bridge.otherline.cc
+API:    https://api.bridge.chaos-realms.cc
+Web:    https://bridge.chaos-realms.cc
+Assets: https://assets.bridge.chaos-realms.cc
 ```
 
 如果产品方或用户要自己维护 Bridge Cloud，按 [`docs/self-hosting.md`](./self-hosting.md) 部署 Worker 并配置 `BRIDGE_PRODUCT_REGISTRY_JSON`。桌面端会通过 `/v1/diagnostics` 读取自托管服务器声明的产品列表；Product Adapter 仍按 `PANDA_BRIDGE_ADAPTER_<PRODUCT_ID>_URL` 本机路由。
@@ -52,7 +52,7 @@ SDK 级最终调用细节见 [`docs/sdk-calling-guide.md`](./sdk-calling-guide.m
 
 ```js
 const bridge = createBridgeClient({
-  apiBase: "https://api.bridge.otherline.cc",
+  apiBase: "https://api.bridge.chaos-realms.cc",
   productId: "example-product",
 });
 
@@ -95,7 +95,7 @@ if (!ready.ready) {
 
 ```js
 const bridge = createBridgeServerClient({
-  apiBase: "https://api.bridge.otherline.cc",
+  apiBase: "https://api.bridge.chaos-realms.cc",
   productId: "example-product",
   secret: process.env.PANDA_BRIDGE_DELEGATION_SECRET,
 });

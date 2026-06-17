@@ -221,7 +221,7 @@ assert.equal(delegatedPaused.connected, false);
 assert.equal(delegatedPaused.authorization.status, "paused");
 
 const pendingIntentModel = bridgeDelegatedConnectIntentStatusModel({
-  deep_link: "panda-bridge://connect?intent=pbi_test&api=https%3A%2F%2Fapi.bridge.otherline.cc",
+  deep_link: "panda-bridge://connect?intent=pbi_test&api=https%3A%2F%2Fapi.bridge.chaos-realms.cc",
   connect_intent: { id: "intent_1", expires_at: "2099-01-01T00:00:00Z" },
 }, "pbi_test");
 assert.equal(pendingIntentModel.ready, false);
@@ -231,7 +231,7 @@ assert.equal(pendingIntentModel.expiresAt, "2099-01-01T00:00:00Z");
 assert.match(pendingIntentModel.deepLink, /^panda-bridge:\/\/connect/);
 
 const claimedIntentModel = bridgeDelegatedConnectIntentStatusModel({
-  deep_link: "panda-bridge://connect?intent=pbi_test&api=https%3A%2F%2Fapi.bridge.otherline.cc",
+  deep_link: "panda-bridge://connect?intent=pbi_test&api=https%3A%2F%2Fapi.bridge.chaos-realms.cc",
   connect_intent: { id: "intent_1", device_id: "dev_1", expires_at: "2099-01-01T00:00:00Z" },
   device: { id: "dev_1", status: "online" },
   authorization: { id: "auth_1", status: "active" },
@@ -712,7 +712,7 @@ function bridgeStateFixture(status, connected) {
 
 function stateInstall() {
   return {
-    download_url: "https://assets.bridge.otherline.cc/downloads/panda-bridge-macos.dmg",
+    download_url: "https://assets.bridge.chaos-realms.cc/downloads/panda-bridge-macos.dmg",
     version: "0.1.0",
     sha256: "e65e04f08373ffe2363616dc1426516b74f12123f52c71d7225af4bac7225962",
     platform: "macos",

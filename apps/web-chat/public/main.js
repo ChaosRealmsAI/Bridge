@@ -6,7 +6,7 @@ const PRODUCT_PROFILES = Object.freeze({
     id: "bridge-demo",
     name: "Bridge Demo",
     mark: "BD",
-    domain: "bridge.otherline.cc",
+    domain: "bridge.chaos-realms.cc",
     accountLabel: "Bridge demo account",
     desktopLabel: "Bridge device",
     tagline: "Secure local relay",

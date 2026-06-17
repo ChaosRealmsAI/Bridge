@@ -8,7 +8,7 @@ const tokenInstallIds = new Map();
 const env = {
   BRIDGE_LOCAL_MEMORY: "1",
   BRIDGE_WEB_ORIGIN: "http://local.test",
-  BRIDGE_ALLOWED_ORIGINS: "http://local.test https://bridge.test.example https://syllo.test.example",
+  BRIDGE_ALLOWED_ORIGINS: "http://local.test https://bridge.test.example https://token-burn.com",
   BRIDGE_RELAY_ENVELOPE_TTL_MS: "300000",
   BRIDGE_PRODUCT_REGISTRY_MODE: "extend",
   BRIDGE_PRODUCT_REGISTRY_JSON: JSON.stringify({
@@ -20,10 +20,10 @@ const env = {
         official_origins: ["http://local.test", "http://chat.local.test"],
       },
       {
-        id: "panda-syllo",
-        name: "Test Syllo Product",
+        id: "panda-burn",
+        name: "Test Burn Product",
         official_origin: "http://local.test",
-        official_origins: ["http://local.test", "http://localhost:8790", "https://syllo.test.example"],
+        official_origins: ["http://local.test", "http://localhost:8790", "https://token-burn.com"],
       },
       {
         id: "delegated-demo",
@@ -35,7 +35,7 @@ const env = {
   }),
   BRIDGE_PRODUCT_ALLOWED_ORIGINS: JSON.stringify({
     "panda-chat": ["http://local.test", "http://chat.local.test"],
-    "panda-syllo": ["http://local.test", "http://localhost:8790", "https://syllo.test.example"],
+    "panda-burn": ["http://local.test", "http://localhost:8790", "https://token-burn.com"],
     "delegated-demo": ["https://delegated.example", "http://local.test"],
   }),
   BRIDGE_DELEGATED_DEMO_DELEGATION_SECRET: "delegated-demo-delegation-test-secret",
@@ -162,7 +162,7 @@ function relayEnvelope(overrides = {}) {
     sender_key_id: overrides.sender_key_id || "product-key-1",
     recipient_key_id: overrides.recipient_key_id || "device-key-1",
     ttl_ms: overrides.ttl_ms || 300000,
-    meta: overrides.meta || { adapter_id: "panda-syllo" },
+    meta: overrides.meta || { adapter_id: "panda-burn" },
     ...overrides,
   };
 }
@@ -277,7 +277,7 @@ assert.ok(products.items.some((item) => item.id === "panda-chat"));
 assert.ok(products.items.every((item) => item.capabilities.includes("relay.envelope")));
 for (const product of products.items) {
   assert.deepEqual(product.capabilities, RELAY_CAPABILITIES);
-  assert.doesNotMatch(JSON.stringify(product), /codex\.|claude\.|syllo\.chat|syllo\.sessions|syllo\.issue|syllo\.highlight|syllo\.doc|shell\.run|fs\.|data\./);
+  assert.doesNotMatch(JSON.stringify(product), /codex\.|claude\.|burn\.chat|burn\.sessions|burn\.issue|burn\.highlight|burn\.doc|shell\.run|fs\.|data\./);
 }
 
 const invalidTokenClaim = await apiMissingOrigin("POST", "/v1/connect-intents/pbi_missing/claim", {
@@ -597,7 +597,7 @@ assert.deepEqual(plaintextRejected.payload.plaintext_fields, ["input"]);
 const metaPlaintextRejected = await apiRaw("POST", "/v1/products/panda-chat/relay/envelopes", {
   ...relayEnvelope({
     device_id: claimed.device.id,
-    meta: { adapter_id: "panda-syllo", payload: "server must not store this", message: "hello" },
+    meta: { adapter_id: "panda-burn", payload: "server must not store this", message: "hello" },
   }),
 });
 assert.equal(metaPlaintextRejected.response.status, 400);
@@ -611,7 +611,7 @@ const created = await api("POST", "/v1/products/panda-chat/relay/envelopes", rel
 assert.equal(created.envelope.delivery_status, "queued");
 assert.equal(created.envelope.direction, "product_to_device");
 assert.equal(created.envelope.ciphertext, "base64:ciphertext");
-assert.equal(created.envelope.meta.adapter_id, "panda-syllo");
+assert.equal(created.envelope.meta.adapter_id, "panda-burn");
 assert.equal("input" in created.envelope, false);
 assert.equal("result" in created.envelope, false);
 
@@ -633,7 +633,7 @@ for (const [field, overrides] of [
   ["seq", { seq: 99 }],
   ["algorithm", { algorithm: "X25519-AES-GCM-v2" }],
   ["ttl_ms", { ttl_ms: 299000 }],
-  ["meta", { meta: { adapter_id: "panda-syllo", priority: "high" } }],
+  ["meta", { meta: { adapter_id: "panda-burn", priority: "high" } }],
   ["envelope_version", { envelope_version: "relay-envelope-v2" }],
 ]) {
   assert.equal(__bridgeTestRelayEnvelopeMatches(legacyNoHashRow, relayEnvelope({
@@ -656,7 +656,7 @@ for (const [field, overrides] of [
   ["seq", { seq: 99 }],
   ["algorithm", { algorithm: "X25519-AES-GCM-v2" }],
   ["ttl_ms", { ttl_ms: 299000 }],
-  ["meta", { meta: { adapter_id: "panda-syllo", priority: "high" } }],
+  ["meta", { meta: { adapter_id: "panda-burn", priority: "high" } }],
   ["envelope_version", { envelope_version: "relay-envelope-v2" }],
 ]) {
   const changed = await apiRaw("POST", "/v1/products/panda-chat/relay/envelopes", relayEnvelope({
@@ -799,32 +799,32 @@ assert.ok(snapshot.bridge_relay_envelopes.every((row) => row.ciphertext && row.a
 assert.ok(snapshot.bridge_relay_envelopes.every((row) => row.idempotency_hash));
 assert.doesNotMatch(JSON.stringify(snapshot.bridge_relay_envelopes), /prompt|stdout|stderr|"input"|"result"|"policy"|"kind"|"runtime"/);
 
-const sylloIntent = await api("POST", "/v1/connect-intents", {
-  product_id: "panda-syllo",
-  device_name: "Syllo Full Device",
-  install_id: "install-syllo-full",
+const burnIntent = await api("POST", "/v1/connect-intents", {
+  product_id: "panda-burn",
+  device_name: "Burn Full Device",
+  install_id: "install-burn-full",
   policy: {
-    ...authorizationPolicy(RELAY_CAPABILITIES, "[local]/syllo"),
+    ...authorizationPolicy(RELAY_CAPABILITIES, "[local]/burn"),
     product_authorization: {
-      owner: "panda-syllo",
-      enforcement: "syllo-product-adapter",
+      owner: "panda-burn",
+      enforcement: "burn-product-adapter",
       control: "computer-control",
-      label: "Coco authorized local adapter control",
+      label: "Burn authorized local adapter control",
     },
   },
 });
-const sylloClaim = await nativeClaimIntent(sylloIntent.token, {
-  device_name: "Syllo Full Device",
-  install_id: "install-syllo-full",
+const burnClaim = await nativeClaimIntent(burnIntent.token, {
+  device_name: "Burn Full Device",
+  install_id: "install-burn-full",
   capabilities: { relay: ["relay.envelope", "relay.ack"] },
 });
-const sylloConfirmed = await nativeConfirmIntent(sylloIntent.token, sylloClaim.device_token, {
-  "x-panda-bridge-install-id": "install-syllo-full",
+const burnConfirmed = await nativeConfirmIntent(burnIntent.token, burnClaim.device_token, {
+  "x-panda-bridge-install-id": "install-burn-full",
 });
-assert.equal(sylloConfirmed.authorization.status, "active");
-const sylloRelayKeyExchange = {
+assert.equal(burnConfirmed.authorization.status, "active");
+const burnRelayKeyExchange = {
   algorithm: "ECDH-P256+A256GCM",
-  key_id: "rkx_test_syllo",
+  key_id: "rkx_test_burn",
   public_jwk: {
     kty: "EC",
     crv: "P-256",
@@ -833,7 +833,7 @@ const sylloRelayKeyExchange = {
   },
 };
 await api("POST", "/v1/connectors/heartbeat", {
-  install_id: "install-syllo-full",
+  install_id: "install-burn-full",
   capabilities: { relay: ["relay.envelope", "relay.ack"] },
   local_state: {
     relay: { envelopes: true, ack: true },
@@ -841,25 +841,25 @@ await api("POST", "/v1/connectors/heartbeat", {
       configured: true,
       mode: "external_http",
       products: {
-        "panda-syllo": {
+        "panda-burn": {
           configured: true,
-          relay_key_exchange: sylloRelayKeyExchange,
+          relay_key_exchange: burnRelayKeyExchange,
         },
       },
     },
   },
-}, sylloConfirmed.device_token || sylloClaim.device_token);
-const sylloState = await api("GET", "/v1/bridge/state?product_id=panda-syllo");
-const sylloStateDevice = sylloState.devices.find((device) => device.id === sylloClaim.device.id);
-assert.equal(sylloStateDevice.relay_key_exchange.key_id, "rkx_test_syllo");
-const sylloBootstrap = await api("POST", "/v1/products/panda-syllo/relay-key-bootstrap", {
-  device_id: sylloClaim.device.id,
+}, burnConfirmed.device_token || burnClaim.device_token);
+const burnState = await api("GET", "/v1/bridge/state?product_id=panda-burn");
+const burnStateDevice = burnState.devices.find((device) => device.id === burnClaim.device.id);
+assert.equal(burnStateDevice.relay_key_exchange.key_id, "rkx_test_burn");
+const burnBootstrap = await api("POST", "/v1/products/panda-burn/relay-key-bootstrap", {
+  device_id: burnClaim.device.id,
   relay_key_bootstrap: {
     algorithm: "ECDH-P256+A256GCM",
-    key_id: "rkx_test_syllo",
+    key_id: "rkx_test_burn",
     wrapped_key: {
       algorithm: "ECDH-P256+A256GCM",
-      key_id: "rkx_test_syllo",
+      key_id: "rkx_test_burn",
       app_public_jwk: {
         kty: "EC",
         crv: "P-256",
@@ -869,113 +869,113 @@ const sylloBootstrap = await api("POST", "/v1/products/panda-syllo/relay-key-boo
       nonce_b64: "AAAAAAAAAAAAAAAA",
       ciphertext_b64: "ZmFrZS13cmFwcGVkLWtleQ==",
       aad_b64: b64Text(relayKeyBootstrapAadText(
-        "panda-syllo",
-        sylloClaim.device.id,
-        sylloConfirmed.authorization.id,
-        sylloConfirmed.authorization.epoch,
-        "rkx_test_syllo",
+        "panda-burn",
+        burnClaim.device.id,
+        burnConfirmed.authorization.id,
+        burnConfirmed.authorization.epoch,
+        "rkx_test_burn",
       )),
     },
   },
 });
-assert.equal(sylloBootstrap.relay_key_bootstrap.status, "ready");
-const sylloRelayMeta = {
-  adapter_id: "panda-syllo",
-  authorization_id: sylloConfirmed.authorization.id,
-  authorization_epoch: sylloConfirmed.authorization.epoch,
-  relay_key_id: "rkx_test_syllo",
+assert.equal(burnBootstrap.relay_key_bootstrap.status, "ready");
+const burnRelayMeta = {
+  adapter_id: "panda-burn",
+  authorization_id: burnConfirmed.authorization.id,
+  authorization_epoch: burnConfirmed.authorization.epoch,
+  relay_key_id: "rkx_test_burn",
 };
-assert.deepEqual(sylloConfirmed.authorization.policy.capabilities, RELAY_CAPABILITIES);
-assert.deepEqual(sylloConfirmed.authorization.policy.product_authorization, {
-  owner: "panda-syllo",
-  enforcement: "syllo-product-adapter",
+assert.deepEqual(burnConfirmed.authorization.policy.capabilities, RELAY_CAPABILITIES);
+assert.deepEqual(burnConfirmed.authorization.policy.product_authorization, {
+  owner: "panda-burn",
+  enforcement: "burn-product-adapter",
   control: "computer-control",
-  label: "Coco authorized local adapter control",
+  label: "Burn authorized local adapter control",
 });
-const sylloChatEnvelope = await api("POST", "/v1/products/panda-syllo/relay/envelopes", relayEnvelope({
-  product_id: "panda-syllo",
-  device_id: sylloClaim.device.id,
-  channel_id: "syllo_chat",
+const burnChatEnvelope = await api("POST", "/v1/products/panda-burn/relay/envelopes", relayEnvelope({
+  product_id: "panda-burn",
+  device_id: burnClaim.device.id,
+  channel_id: "burn_chat",
   direction: "product_to_device",
-  request_key: "rq_syllo_chat",
+  request_key: "rq_burn_chat",
   aad: b64Text(relayEnvelopeAadText({
-    productId: "panda-syllo",
-    deviceId: sylloClaim.device.id,
-    channelId: "syllo_chat",
-    authorizationId: sylloConfirmed.authorization.id,
-    authorizationEpoch: sylloConfirmed.authorization.epoch,
-    keyId: "rkx_test_syllo",
+    productId: "panda-burn",
+    deviceId: burnClaim.device.id,
+    channelId: "burn_chat",
+    authorizationId: burnConfirmed.authorization.id,
+    authorizationEpoch: burnConfirmed.authorization.epoch,
+    keyId: "rkx_test_burn",
   })),
-  meta: sylloRelayMeta,
+  meta: burnRelayMeta,
 }));
-assert.equal(sylloChatEnvelope.envelope.delivery_status, "queued");
-const sylloWrongRelayKey = await apiRaw("POST", "/v1/products/panda-syllo/relay/envelopes", relayEnvelope({
-  product_id: "panda-syllo",
-  device_id: sylloClaim.device.id,
-  channel_id: "syllo_wrong_key",
+assert.equal(burnChatEnvelope.envelope.delivery_status, "queued");
+const burnWrongRelayKey = await apiRaw("POST", "/v1/products/panda-burn/relay/envelopes", relayEnvelope({
+  product_id: "panda-burn",
+  device_id: burnClaim.device.id,
+  channel_id: "burn_wrong_key",
   direction: "product_to_device",
-  request_key: "rq_syllo_wrong_key",
+  request_key: "rq_burn_wrong_key",
   aad: b64Text(relayEnvelopeAadText({
-    productId: "panda-syllo",
-    deviceId: sylloClaim.device.id,
-    channelId: "syllo_wrong_key",
-    authorizationId: sylloConfirmed.authorization.id,
-    authorizationEpoch: sylloConfirmed.authorization.epoch,
+    productId: "panda-burn",
+    deviceId: burnClaim.device.id,
+    channelId: "burn_wrong_key",
+    authorizationId: burnConfirmed.authorization.id,
+    authorizationEpoch: burnConfirmed.authorization.epoch,
     keyId: "rkx_wrong",
   })),
-  meta: { ...sylloRelayMeta, relay_key_id: "rkx_wrong" },
+  meta: { ...burnRelayMeta, relay_key_id: "rkx_wrong" },
 }));
-assert.equal(sylloWrongRelayKey.response.status, 201);
-assert.equal(sylloWrongRelayKey.payload.envelope.delivery_status, "queued");
-const pausedSyllo = await api("PATCH", `/v1/products/panda-syllo/authorization?device_id=${encodeURIComponent(sylloClaim.device.id)}`, { status: "paused" });
-assert.equal(pausedSyllo.authorization.status, "paused");
-assert.equal(pausedSyllo.authorization.relay_key_bootstrap, undefined);
-const resumedSyllo = await api("PATCH", `/v1/products/panda-syllo/authorization?device_id=${encodeURIComponent(sylloClaim.device.id)}`, { status: "active" });
-assert.equal(resumedSyllo.authorization.status, "active");
-assert.equal(resumedSyllo.authorization.relay_key_bootstrap, undefined);
-const sylloOldEpochAfterResume = await apiRaw("POST", "/v1/products/panda-syllo/relay/envelopes", relayEnvelope({
-  product_id: "panda-syllo",
-  device_id: sylloClaim.device.id,
-  channel_id: "syllo_stale_epoch",
+assert.equal(burnWrongRelayKey.response.status, 201);
+assert.equal(burnWrongRelayKey.payload.envelope.delivery_status, "queued");
+const pausedBurn = await api("PATCH", `/v1/products/panda-burn/authorization?device_id=${encodeURIComponent(burnClaim.device.id)}`, { status: "paused" });
+assert.equal(pausedBurn.authorization.status, "paused");
+assert.equal(pausedBurn.authorization.relay_key_bootstrap, undefined);
+const resumedBurn = await api("PATCH", `/v1/products/panda-burn/authorization?device_id=${encodeURIComponent(burnClaim.device.id)}`, { status: "active" });
+assert.equal(resumedBurn.authorization.status, "active");
+assert.equal(resumedBurn.authorization.relay_key_bootstrap, undefined);
+const burnOldEpochAfterResume = await apiRaw("POST", "/v1/products/panda-burn/relay/envelopes", relayEnvelope({
+  product_id: "panda-burn",
+  device_id: burnClaim.device.id,
+  channel_id: "burn_stale_epoch",
   direction: "product_to_device",
-  request_key: "rq_syllo_stale_epoch",
+  request_key: "rq_burn_stale_epoch",
   aad: b64Text(relayEnvelopeAadText({
-    productId: "panda-syllo",
-    deviceId: sylloClaim.device.id,
-    channelId: "syllo_stale_epoch",
-    authorizationId: sylloConfirmed.authorization.id,
-    authorizationEpoch: sylloConfirmed.authorization.epoch,
-    keyId: "rkx_test_syllo",
+    productId: "panda-burn",
+    deviceId: burnClaim.device.id,
+    channelId: "burn_stale_epoch",
+    authorizationId: burnConfirmed.authorization.id,
+    authorizationEpoch: burnConfirmed.authorization.epoch,
+    keyId: "rkx_test_burn",
   })),
-  meta: sylloRelayMeta,
+  meta: burnRelayMeta,
 }));
-assert.equal(sylloOldEpochAfterResume.response.status, 201);
-assert.equal(sylloOldEpochAfterResume.payload.envelope.delivery_status, "queued");
+assert.equal(burnOldEpochAfterResume.response.status, 201);
+assert.equal(burnOldEpochAfterResume.payload.envelope.delivery_status, "queued");
 
-const sylloRelayOnlyIntent = await api("POST", "/v1/connect-intents", {
-  product_id: "panda-syllo",
-  device_name: "Syllo Relay Only Device",
-  install_id: "install-syllo-relay-only",
-  policy: authorizationPolicy(RELAY_CAPABILITIES, "[local]/syllo-relay"),
+const burnRelayOnlyIntent = await api("POST", "/v1/connect-intents", {
+  product_id: "panda-burn",
+  device_name: "Burn Relay Only Device",
+  install_id: "install-burn-relay-only",
+  policy: authorizationPolicy(RELAY_CAPABILITIES, "[local]/burn-relay"),
 });
-const sylloRelayOnlyClaim = await nativeClaimIntent(sylloRelayOnlyIntent.token, {
-  device_name: "Syllo Relay Only Device",
-  install_id: "install-syllo-relay-only",
+const burnRelayOnlyClaim = await nativeClaimIntent(burnRelayOnlyIntent.token, {
+  device_name: "Burn Relay Only Device",
+  install_id: "install-burn-relay-only",
   capabilities: { relay: ["relay.envelope", "relay.ack"] },
 });
-const sylloRelayOnlyConfirmed = await nativeConfirmIntent(sylloRelayOnlyIntent.token, sylloRelayOnlyClaim.device_token, {
-  "x-panda-bridge-install-id": "install-syllo-relay-only",
+const burnRelayOnlyConfirmed = await nativeConfirmIntent(burnRelayOnlyIntent.token, burnRelayOnlyClaim.device_token, {
+  "x-panda-bridge-install-id": "install-burn-relay-only",
 });
-assert.equal(sylloRelayOnlyConfirmed.authorization.status, "active");
-const sylloNoProductAuth = await apiRaw("POST", "/v1/products/panda-syllo/relay/envelopes", relayEnvelope({
-  product_id: "panda-syllo",
-  device_id: sylloRelayOnlyClaim.device.id,
-  channel_id: "syllo_scope",
-  request_key: "rq_syllo_scope",
-  meta: { adapter_id: "panda-syllo" },
+assert.equal(burnRelayOnlyConfirmed.authorization.status, "active");
+const burnNoProductAuth = await apiRaw("POST", "/v1/products/panda-burn/relay/envelopes", relayEnvelope({
+  product_id: "panda-burn",
+  device_id: burnRelayOnlyClaim.device.id,
+  channel_id: "burn_scope",
+  request_key: "rq_burn_scope",
+  meta: { adapter_id: "panda-burn" },
 }));
-assert.equal(sylloNoProductAuth.response.status, 201);
-assert.equal(sylloNoProductAuth.payload.envelope.delivery_status, "queued");
+assert.equal(burnNoProductAuth.response.status, 201);
+assert.equal(burnNoProductAuth.payload.envelope.delivery_status, "queued");
 
 const delegatedIntent = await api("POST", "/v1/connect-intents", {
   product_id: "delegated-demo",

@@ -45,7 +45,7 @@ const RELAY_CAPABILITY_KINDS = Object.freeze(Object.keys(RELAY_CAPABILITY_REGIST
 const BRIDGE_DESKTOP_INSTALL = Object.freeze({
   platform: "macos",
   version: "panda-bridge-desktop-lite-v0.1",
-  download_url: "https://assets.bridge.otherline.cc/downloads/panda-bridge-macos.dmg",
+  download_url: "https://assets.bridge.chaos-realms.cc/downloads/panda-bridge-macos.dmg",
   download_path: "/downloads/panda-bridge-macos.dmg",
   sha256: "e65e04f08373ffe2363616dc1426516b74f12123f52c71d7225af4bac7225962",
   open_url: "panda-bridge://open",
@@ -3603,13 +3603,13 @@ function contentSecurityPolicy(env) {
 function apiOriginForCsp(origin) {
   try {
     const url = new URL(origin);
-    if (url.hostname === "bridge.otherline.cc") return "https://api.bridge.otherline.cc";
+    if (url.hostname === "bridge.chaos-realms.cc") return "https://api.bridge.chaos-realms.cc";
     if (url.hostname === "bridge.test.example" || url.hostname === "app.test.example") {
       return "https://api.bridge.test.example";
     }
     return `${url.protocol}//${url.host}`;
   } catch {
-    return "https://api.bridge.otherline.cc";
+    return "https://api.bridge.chaos-realms.cc";
   }
 }
 
@@ -3871,7 +3871,7 @@ function productExtraAllowedOrigins(productId, env) {
 }
 
 function publicApiBase(env) {
-  return env.BRIDGE_PUBLIC_API_BASE || "https://api.bridge.otherline.cc";
+  return env.BRIDGE_PUBLIC_API_BASE || "https://api.bridge.chaos-realms.cc";
 }
 
 function desktopProtocol(env) {

@@ -69,7 +69,7 @@ function assertNoStaleSurface(name, text) {
   const stale = [
     "codex.",
     "claude.",
-    "syllo.",
+    "burn.",
     "shell.run",
     "fs.read",
     "fs.write",

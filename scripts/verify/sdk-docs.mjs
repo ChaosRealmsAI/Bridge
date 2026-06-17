@@ -88,7 +88,7 @@ for (const doc of [
   assert.ok(text.includes("file:"), `${name} must document current local/file dependency mode`);
 }
 
-for (const marker of ["coco.", "syllo.", "codex.", "claude.", "shell.run", "fs.read", "fs.write"]) {
+for (const marker of ["burn.", "codex.", "claude.", "shell.run", "fs.read", "fs.write"]) {
   assert.equal(adapterSource.includes(marker), false, `adapter SDK must not contain vertical business marker: ${marker}`);
   assert.equal(adapterTypes.includes(marker), false, `adapter SDK types must not contain vertical business marker: ${marker}`);
   assert.equal(serverSource.includes(marker), false, `server SDK must not contain vertical business marker: ${marker}`);

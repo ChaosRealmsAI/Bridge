@@ -16,7 +16,7 @@ Product App
 
 ## 核心边界
 
-- Bridge Cloud 不执行 Claude、Codex、Syllo、shell、fs 或 data 业务。
+- Bridge Cloud 不执行 Claude、Codex、Burn、shell、fs 或 data 业务。
 - Bridge Desktop core 不解密业务内容，不理解命令，不持有产品会话密钥。
 - Product App 和本机 Product Adapter 负责端到端加密、业务协议和本机权限策略。
 - 服务器只短期保存 `ciphertext/aad/nonce/key ids/channel/seq/status` 等路由数据。
@@ -73,17 +73,17 @@ npm run desktop:package:windows:xwin
 官方托管资源：
 
 ```text
-API:    https://api.bridge.otherline.cc
-Web:    https://bridge.otherline.cc
-Assets: https://assets.bridge.otherline.cc
+API:    https://api.bridge.chaos-realms.cc
+Web:    https://bridge.chaos-realms.cc
+Assets: https://assets.bridge.chaos-realms.cc
 ```
 
 测试托管资源：
 
 ```text
-API:    https://api-bridge-test.otherline.cc
-Web:    https://bridge-test.otherline.cc
-Assets: https://assets-bridge-test.otherline.cc
+API:    https://api-bridge-test.chaos-realms.cc
+Web:    https://bridge-test.chaos-realms.cc
+Assets: https://assets-bridge-test.chaos-realms.cc
 ```
 
 ## 本机控制样板

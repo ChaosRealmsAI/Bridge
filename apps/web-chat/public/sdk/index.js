@@ -133,7 +133,7 @@ export const bridgeDesktopInstallDefaults = Object.freeze({
     openUrl: "panda-bridge://open",
     downloadPath: "/downloads/panda-bridge-macos.dmg",
     downloadUrls: Object.freeze({
-      production: "https://assets.bridge.otherline.cc/downloads/panda-bridge-macos.dmg",
+      production: "https://assets.bridge.chaos-realms.cc/downloads/panda-bridge-macos.dmg",
       test: "https://assets.bridge.test.example/downloads/panda-bridge-macos.dmg",
     }),
     sha256: "e65e04f08373ffe2363616dc1426516b74f12123f52c71d7225af4bac7225962",

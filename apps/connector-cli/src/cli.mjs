@@ -4,7 +4,7 @@ import { homedir, hostname, platform } from "node:os";
 import { dirname, resolve } from "node:path";
 
 const VERSION = "panda-bridge-connector-relay-v0.8";
-const DEFAULT_API = (process.env.PANDA_BRIDGE_API_BASE || "https://api.bridge.otherline.cc").replace(/\/$/, "");
+const DEFAULT_API = (process.env.PANDA_BRIDGE_API_BASE || "https://api.bridge.chaos-realms.cc").replace(/\/$/, "");
 const DEFAULT_STATE = resolve(homedir(), ".panda-bridge", "connector.json");
 const args = parseArgs(process.argv.slice(2));
 const command = args._[0] || "help";
