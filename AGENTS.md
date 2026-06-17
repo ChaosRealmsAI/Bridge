@@ -19,6 +19,14 @@
 - Burn 需要的 `burn` backend/CLI、Task/Issue/Doc/Resource store、Codex/Claude profile scanner、Codex app-server launcher、Claude SDK runner 等，可以随 Bridge Desktop 打包，但逻辑归 Burn Adapter/Burn 工具包所有。
 - Codex CLI、Claude Code、用户账号和本机数据目录是用户电脑上的外部依赖/数据源；Bridge 可以让产品 Adapter 发现和调用，但不得把这些账号或业务数据变成云端或 core 状态。
 
+## Bridge / Burn 硬切分
+
+- Bridge 生产代码、Desktop UI 和桌面打包脚本不得再写 Burn 专名逻辑：禁止 Burn 产品归一化、Burn icon 分支、`PANDA_BRIDGE_BURN_ADAPTER_DIR`、`../syllo` 默认路径、`burn_manifest` 或 `panda-burn` 专用 copy path 回流。
+- Managed adapter 只能通过通用入口接入：打包时显式提供 `PANDA_BRIDGE_MANAGED_ADAPTERS_DIR`，目录内每个 adapter 以 `adapter.manifest.json` 声明 `product_id`、runtime、entry 和 args；Bridge 只按 manifest 复制到 `Resources/adapters/<product_id>` 或等价资源目录。
+- Bridge 不从产品仓库或 sibling source tree 推断 runtime。Burn 或其他产品若需要 Bridge SDK / Adapter SDK / protocol，必须把运行时包进自己的 adapter artifact；Bridge 打包脚本只消费 artifact，不复制产品源码依赖。
+- 新增产品 adapter 时，只允许改通用 manifest 发现、runtime 启动、健康检查和 SDK 抽象；不得为了某个产品改 Bridge core 的 product alias、UI branding、业务 command 或路径默认值。
+- 改动后至少运行 `node scripts/verify/relay-boundary.mjs` 和相关 desktop package check；涉及 managed adapter 启动时补跑 `cargo test --manifest-path apps/desktop/Cargo.toml managed_adapter_manifest_starts_node_runtime_and_returns_endpoint -- --nocapture`。
+
 ## 数据与明文
 
 - 云端只保存必要路由元数据和短期密文 envelope 状态，不建设产品业务数据库。
