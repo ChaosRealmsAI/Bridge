@@ -46,6 +46,8 @@ const KEYCHAIN_SERVICE: &str = "cc.otherline.panda-bridge";
 const KEYCHAIN_USER: &str = "device";
 const DEFAULT_API: &str = "https://api.bridge.chaos-realms.cc";
 const DEFAULT_WEB: &str = "https://bridge.chaos-realms.cc";
+const DESKTOP_WINDOW_WIDTH: f64 = 840.0;
+const DESKTOP_WINDOW_HEIGHT: f64 = 560.0;
 #[cfg(windows)]
 const WINDOWS_SINGLE_INSTANCE_ADDR: &str = "127.0.0.1:52321";
 #[cfg(windows)]
@@ -729,9 +731,15 @@ fn run_window() -> Result<(), String> {
     }
     #[allow(unused_mut)]
     let mut window_builder = WindowBuilder::new()
-        .with_title("Panda Bridge")
-        .with_inner_size(LogicalSize::new(760.0, 500.0))
-        .with_min_inner_size(LogicalSize::new(760.0, 500.0))
+        .with_title("Bridge")
+        .with_inner_size(LogicalSize::new(
+            DESKTOP_WINDOW_WIDTH,
+            DESKTOP_WINDOW_HEIGHT,
+        ))
+        .with_min_inner_size(LogicalSize::new(
+            DESKTOP_WINDOW_WIDTH,
+            DESKTOP_WINDOW_HEIGHT,
+        ))
         .with_resizable(false);
     #[cfg(target_os = "macos")]
     {
@@ -785,6 +793,19 @@ fn run_window() -> Result<(), String> {
         match event {
             Event::NewEvents(StartCause::Init) if !sent_initial_links => {
                 sent_initial_links = true;
+                // Center on the monitor the window opened on, then focus — keeps it
+                // visible/centered on the user's active display (no off-screen / corner).
+                if let Some(monitor) = window.current_monitor() {
+                    let scale = monitor.scale_factor();
+                    let area = monitor.size();
+                    let origin = monitor.position();
+                    let ww = (DESKTOP_WINDOW_WIDTH * scale).round() as i32;
+                    let wh = (DESKTOP_WINDOW_HEIGHT * scale).round() as i32;
+                    let x = origin.x + ((area.width as i32 - ww) / 2).max(0);
+                    let y = origin.y + ((area.height as i32 - wh) / 2).max(0);
+                    window.set_outer_position(tao::dpi::PhysicalPosition::new(x, y));
+                }
+                window.set_focus();
                 if should_apply_launch_at_login_on_startup() {
                     let settings = load_settings_with_api(DEFAULT_API);
                     if let Err(error) = apply_launch_at_login(settings.launch_at_login) {

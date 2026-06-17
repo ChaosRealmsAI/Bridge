@@ -1,44 +1,69 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
-  <title id="title">Blue Infinity Connector Logo</title>
-  <desc id="desc">Clean Bridge app icon derived from the company blue infinity connector SVG resource.</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="1254" height="1254" viewBox="0 0 1254 1254" role="img" aria-labelledby="title desc">
+  <title id="title">Blue Infinity Connector Logo Replica</title>
+  <desc id="desc">Pure SVG replica of the source PNG: blue infinity ribbon, cyan connector bridge, two nodes, and white dotted relay line.</desc>
   <defs>
-    <linearGradient id="bridgeLoop" x1="72" y1="512" x2="952" y2="512" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#0735b8"/>
-      <stop offset="0.26" stop-color="#096ee8"/>
-      <stop offset="0.5" stop-color="#21d3f1"/>
-      <stop offset="0.76" stop-color="#0a86f4"/>
-      <stop offset="1" stop-color="#0756e8"/>
+    <linearGradient id="ribbonGradient" x1="145" y1="620" x2="1109" y2="620" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0135ad"/>
+      <stop offset="0.22" stop-color="#0047c8"/>
+      <stop offset="0.40" stop-color="#0878ee"/>
+      <stop offset="0.50" stop-color="#18cffe"/>
+      <stop offset="0.60" stop-color="#16b9fa"/>
+      <stop offset="0.78" stop-color="#0879f3"/>
+      <stop offset="1" stop-color="#0052ee"/>
     </linearGradient>
-    <linearGradient id="bridgeLink" x1="270" y1="512" x2="754" y2="512" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#12a7eb"/>
-      <stop offset="0.5" stop-color="#29d1e8"/>
-      <stop offset="1" stop-color="#087cf1"/>
+    <linearGradient id="bridgeGradient" x1="365" y1="620" x2="889" y2="620" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0287f4"/>
+      <stop offset="0.48" stop-color="#16ccfe"/>
+      <stop offset="0.52" stop-color="#19d3ff"/>
+      <stop offset="1" stop-color="#0398fd"/>
     </linearGradient>
-    <radialGradient id="bridgeNode" cx="35%" cy="30%" r="75%">
-      <stop offset="0" stop-color="#28c8ff"/>
-      <stop offset="0.55" stop-color="#0d96f1"/>
-      <stop offset="1" stop-color="#0060d8"/>
+    <radialGradient id="leftNodeGradient" cx="37%" cy="34%" r="74%">
+      <stop offset="0" stop-color="#10b7ff"/>
+      <stop offset="0.56" stop-color="#0375ef"/>
+      <stop offset="1" stop-color="#014bd8"/>
     </radialGradient>
-    <filter id="softLift" x="-8%" y="-14%" width="116%" height="128%">
-      <feDropShadow dx="0" dy="12" stdDeviation="12" flood-color="#0551b5" flood-opacity="0.18"/>
-    </filter>
+    <radialGradient id="rightNodeGradient" cx="38%" cy="32%" r="76%">
+      <stop offset="0" stop-color="#22caff"/>
+      <stop offset="0.58" stop-color="#0188fd"/>
+      <stop offset="1" stop-color="#0063e8"/>
+    </radialGradient>
   </defs>
-  <rect width="1024" height="1024" fill="#fff"/>
-  <g filter="url(#softLift)">
-    <path d="M78 512C78 342 288 284 512 512c224 228 434 170 434 0" fill="none" stroke="url(#bridgeLoop)" stroke-width="104" stroke-linecap="round" stroke-linejoin="round"/>
-    <path d="M78 512c0 170 210 228 434 0 224-228 434-170 434 0" fill="none" stroke="url(#bridgeLoop)" stroke-width="104" stroke-linecap="round" stroke-linejoin="round"/>
-    <rect x="274" y="480" width="476" height="64" rx="32" fill="url(#bridgeLink)"/>
-    <circle cx="274" cy="512" r="74" fill="url(#bridgeNode)"/>
-    <circle cx="750" cy="512" r="74" fill="url(#bridgeNode)"/>
-    <g fill="#fff">
-      <circle cx="368" cy="512" r="8"/>
-      <circle cx="414" cy="512" r="8"/>
-      <circle cx="460" cy="512" r="8"/>
-      <circle cx="506" cy="512" r="8"/>
-      <circle cx="552" cy="512" r="8"/>
-      <circle cx="598" cy="512" r="8"/>
-      <circle cx="644" cy="512" r="8"/>
-      <circle cx="690" cy="512" r="8"/>
-    </g>
+
+  <rect width="1254" height="1254" fill="#fdfdff"/>
+
+  <path
+    d="M1064 620 L1063.3 637.4 L1061.2 654.5 L1057.8 671.3 L1053 687.6 L1047 703.2 L1039.9 717.9 L1031.7 731.8 L1022.6 744.5 L1012.7 756.1 L1002.1 766.6 L990.8 775.8 L979.2 783.9 L967.1 790.7 L954.8 796.3 L942.3 800.8 L929.8 804.1 L917.2 806.3 L904.7 807.6 L892.2 807.9 L880 807.2 L867.9 805.8 L856 803.6 L844.4 800.7 L833 797.1 L821.9 793 L811.1 788.3 L800.5 783.1 L790.3 777.5 L780.3 771.5 L770.5 765.1 L761.1 758.5 L751.9 751.5 L742.9 744.3 L734.1 736.8 L725.6 729.2 L717.2 721.4 L709.1 713.4 L701.1 705.3 L693.2 697.1 L685.5 688.7 L677.9 680.3 L670.5 671.8 L663.1 663.3 L655.8 654.7 L648.5 646 L641.3 637.4 L634.2 628.7 L627 620 L619.8 611.3 L612.7 602.6 L605.5 594 L598.2 585.3 L590.9 576.7 L583.5 568.2 L576.1 559.7 L568.5 551.3 L560.8 542.9 L552.9 534.7 L544.9 526.6 L536.8 518.6 L528.4 510.8 L519.9 503.2 L511.1 495.7 L502.1 488.5 L492.9 481.5 L483.5 474.9 L473.7 468.5 L463.7 462.5 L453.5 456.9 L442.9 451.7 L432.1 447 L421 442.9 L409.6 439.3 L398 436.4 L386.1 434.2 L374 432.8 L361.8 432.1 L349.3 432.4 L336.8 433.7 L324.2 435.9 L311.7 439.2 L299.2 443.7 L286.9 449.3 L274.8 456.1 L263.2 464.2 L251.9 473.4 L241.3 483.9 L231.4 495.5 L222.3 508.2 L214.1 522.1 L207 536.8 L201 552.4 L196.2 568.7 L192.8 585.5 L190.7 602.6 L190 620 L190.7 637.4 L192.8 654.5 L196.2 671.3 L201 687.6 L207 703.2 L214.1 717.9 L222.3 731.8 L231.4 744.5 L241.3 756.1 L251.9 766.6 L263.2 775.8 L274.8 783.9 L286.9 790.7 L299.2 796.3 L311.7 800.8 L324.2 804.1 L336.8 806.3 L349.3 807.6 L361.8 807.9 L374 807.2 L386.1 805.8 L398 803.6 L409.6 800.7 L421 797.1 L432.1 793 L442.9 788.3 L453.5 783.1 L463.7 777.5 L473.7 771.5 L483.5 765.1 L492.9 758.5 L502.1 751.5 L511.1 744.3 L519.9 736.8 L528.4 729.2 L536.8 721.4 L544.9 713.4 L552.9 705.3 L560.8 697.1 L568.5 688.7 L576.1 680.3 L583.5 671.8 L590.9 663.3 L598.2 654.7 L605.5 646 L612.7 637.4 L619.8 628.7 L627 620 L634.2 611.3 L641.3 602.6 L648.5 594 L655.8 585.3 L663.1 576.7 L670.5 568.2 L677.9 559.7 L685.5 551.3 L693.2 542.9 L701.1 534.7 L709.1 526.6 L717.2 518.6 L725.6 510.8 L734.1 503.2 L742.9 495.7 L751.9 488.5 L761.1 481.5 L770.5 474.9 L780.3 468.5 L790.3 462.5 L800.5 456.9 L811.1 451.7 L821.9 447 L833 442.9 L844.4 439.3 L856 436.4 L867.9 434.2 L880 432.8 L892.2 432.1 L904.7 432.4 L917.2 433.7 L929.8 435.9 L942.3 439.2 L954.8 443.7 L967.1 449.3 L979.2 456.1 L990.8 464.2 L1002.1 473.4 L1012.7 483.9 L1022.6 495.5 L1031.7 508.2 L1039.9 522.1 L1047 536.8 L1053 552.4 L1057.8 568.7 L1061.2 585.5 L1063.3 602.6 L1064 620"
+    fill="none"
+    stroke="url(#ribbonGradient)"
+    stroke-width="94"
+    stroke-linecap="round"
+    stroke-linejoin="round"/>
+
+  <path
+    d="M536 586 C576 590 597 572 627 542"
+    fill="none"
+    stroke="#fdfdff"
+    stroke-width="7"
+    stroke-linecap="round"/>
+  <path
+    d="M627 699 C656 667 684 651 726 653"
+    fill="none"
+    stroke="#fdfdff"
+    stroke-width="7"
+    stroke-linecap="round"/>
+
+  <rect x="365" y="585" width="524" height="70" rx="35" fill="url(#bridgeGradient)"/>
+  <circle cx="367" cy="620" r="68" fill="url(#leftNodeGradient)"/>
+  <circle cx="888" cy="620" r="68" fill="url(#rightNodeGradient)"/>
+
+  <g fill="#fdfdff">
+    <circle cx="466" cy="620" r="9.4"/>
+    <circle cx="512" cy="620" r="9.4"/>
+    <circle cx="558" cy="620" r="9.4"/>
+    <circle cx="604" cy="620" r="9.4"/>
+    <circle cx="650" cy="620" r="9.4"/>
+    <circle cx="696" cy="620" r="9.4"/>
+    <circle cx="742" cy="620" r="9.4"/>
+    <circle cx="788" cy="620" r="9.4"/>
   </g>
 </svg>
