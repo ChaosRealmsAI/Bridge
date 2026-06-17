@@ -1103,24 +1103,30 @@ fn handle_verify_stream(
     }
 
     let path_only = path.split('?').next().unwrap_or(path);
-    let payload = match (method, path_only) {
+    let (status_code, payload) = match (method, path_only) {
         ("GET", "/v1/status") => {
-            serde_json::to_value(status(&state)).map_err(|error| error.to_string())?
+            let payload =
+                serde_json::to_value(status(&state)).map_err(|error| error.to_string())?;
+            (200, payload)
         }
-        ("GET", "/v1/events") => json!({ "items": state_events(&state) }),
-        ("GET", "/v1/snapshot") => verify_snapshot(&state),
-        ("GET", "/v1/screenshot") => desktop_screenshot(&state)?,
+        ("GET", "/v1/events") => (200, json!({ "items": state_events(&state) })),
+        ("GET", "/v1/snapshot") => (200, verify_snapshot(&state)),
+        ("GET", "/v1/screenshot") => (200, desktop_screenshot(&state)?),
         ("POST", "/v1/actions") => {
             let body_value: Value =
                 serde_json::from_str(body).map_err(|error| error.to_string())?;
-            run_verify_action(&state, proxy, &body_value)?
+            match run_verify_action(&state, proxy, &body_value) {
+                Ok(payload) => (200, payload),
+                Err(error) => (
+                    400,
+                    json!({ "error": "verify_action_failed", "message": error }),
+                ),
+            }
         }
-        _ => json!({ "error": "not_found", "method": method, "path": path_only }),
-    };
-    let status_code = if payload.get("error").is_some() {
-        404
-    } else {
-        200
+        _ => (
+            404,
+            json!({ "error": "not_found", "method": method, "path": path_only }),
+        ),
     };
     write_http_json(&mut stream, status_code, payload)
 }
@@ -2026,6 +2032,7 @@ fn status(state: &AppState) -> DesktopStatus {
             .map(|item| item.api_base.as_str())
             .unwrap_or(DEFAULT_API),
     );
+    let profile = selected_profile_for_settings(&settings);
     let products = desktop_products(credentials.as_ref(), state, &settings);
     DesktopStatus {
         api_base: credentials.as_ref().map(|item| item.api_base.clone()),
@@ -2048,7 +2055,7 @@ fn status(state: &AppState) -> DesktopStatus {
             .and_then(|item| item.cloud_origin.clone()),
         authorized_products: credentials
             .as_ref()
-            .map(credentials_products)
+            .map(|item| credentials_products_for_profile(item, &profile))
             .unwrap_or_default(),
         products,
         settings,
@@ -2065,21 +2072,13 @@ struct KnownProduct {
     web_url: &'static str,
 }
 
-fn known_products() -> [KnownProduct; 2] {
-    [
-        KnownProduct {
-            id: "bridge-demo",
-            name: "Bridge Demo",
-            origin: "bridge.chaos-realms.cc",
-            web_url: "https://bridge.chaos-realms.cc",
-        },
-        KnownProduct {
-            id: "example-client",
-            name: "Example Client",
-            origin: "example.test",
-            web_url: "https://example.test",
-        },
-    ]
+fn known_products() -> [KnownProduct; 1] {
+    [KnownProduct {
+        id: "panda-burn",
+        name: "Burn",
+        origin: "https://token-burn.com",
+        web_url: "https://token-burn.com/authorize",
+    }]
 }
 
 fn desktop_products(
@@ -2090,33 +2089,20 @@ fn desktop_products(
     let worker_running = state.worker_running.load(Ordering::SeqCst);
     let realtime_connected = state.realtime_connected.load(Ordering::SeqCst);
     let connections = credentials.map(credentials_connections).unwrap_or_default();
-    let profile = selected_cloud_profile(settings)
-        .cloned()
-        .unwrap_or_else(official_cloud_profile);
-    let uses_official_fallback = profile.products.is_empty();
-    let match_profile = if uses_official_fallback {
-        let mut value = profile.clone();
-        value.id = "official".to_string();
-        value
-    } else {
-        profile.clone()
-    };
-    let mut catalog: Vec<DesktopProductCatalogEntry> = if uses_official_fallback {
-        official_cloud_profile().products
-    } else {
-        profile.products.clone()
-    }
-    .into_iter()
-    .map(normalize_catalog_product_brand)
-    .collect();
+    let profile = selected_profile_for_settings(settings);
+    let allow_catalog = profile_catalog_entries(&profile);
+    let mut catalog = allow_catalog.clone();
     for connection in connections
         .iter()
         .filter(|connection| connection.api_base == profile.api_base)
     {
         for grant in connection_products(connection) {
+            if !profile_catalog_allows_grant(&allow_catalog, &profile, &grant) {
+                continue;
+            }
             if catalog
                 .iter()
-                .any(|product| catalog_matches_grant(product, &grant, &match_profile))
+                .any(|product| catalog_matches_grant(product, &grant, &profile))
             {
                 continue;
             }
@@ -2136,7 +2122,8 @@ fn desktop_products(
             {
                 for grant in connection_products(connection)
                     .into_iter()
-                    .filter(|grant| catalog_matches_grant(&product, grant, &match_profile))
+                    .filter(|grant| profile_catalog_allows_grant(&allow_catalog, &profile, grant))
+                    .filter(|grant| catalog_matches_grant(&product, grant, &profile))
                 {
                     upsert_desktop_account_status(
                         &mut accounts,
@@ -2182,6 +2169,38 @@ fn desktop_products(
             }
         })
         .collect()
+}
+
+fn selected_profile_for_settings(settings: &DesktopSettings) -> CloudProfile {
+    selected_cloud_profile(settings)
+        .cloned()
+        .unwrap_or_else(official_cloud_profile)
+}
+
+fn profile_catalog_entries(profile: &CloudProfile) -> Vec<DesktopProductCatalogEntry> {
+    if profile.products.is_empty() && profile.id == "official" {
+        return known_products()
+            .into_iter()
+            .map(product_entry_from_known)
+            .collect();
+    }
+    profile
+        .products
+        .iter()
+        .cloned()
+        .map(normalize_catalog_product_brand)
+        .collect()
+}
+
+fn profile_catalog_allows_grant(
+    catalog: &[DesktopProductCatalogEntry],
+    profile: &CloudProfile,
+    grant: &ProductGrant,
+) -> bool {
+    catalog.is_empty()
+        || catalog
+            .iter()
+            .any(|product| catalog_matches_grant(product, grant, profile))
 }
 
 fn upsert_desktop_account_status(
@@ -2263,18 +2282,8 @@ fn product_matches_known(product: &ProductGrant, known: KnownProduct) -> bool {
 }
 
 fn known_product_id_for_grant(product: &ProductGrant) -> &'static str {
-    let haystack = format!(
-        "{} {} {}",
-        product.id,
-        product.name,
-        product.origin.clone().unwrap_or_default()
-    )
-    .to_ascii_lowercase();
-    if haystack.contains("bridge") {
-        "bridge-demo"
-    } else {
-        "example-client"
-    }
+    let _ = product;
+    ""
 }
 
 fn normalize_product_grant_brand(product: ProductGrant) -> ProductGrant {
@@ -2784,7 +2793,7 @@ fn toggle_authorization_for_state(
     account: &str,
 ) -> Result<Value, String> {
     let payload = toggle_authorization(product_id, account)?;
-    if authorized_connections(&load_credentials()?).is_empty() {
+    if !has_selected_profile_authorized_connections(&load_credentials()?) {
         state.worker_running.store(false, Ordering::SeqCst);
         state.realtime_connected.store(false, Ordering::SeqCst);
     } else {
@@ -2930,7 +2939,7 @@ fn revoke_authorization_for_state(
 ) -> Result<Value, String> {
     let payload = revoke_authorization(product_id, account_id, device_id)?;
     if load_credentials()
-        .map(|credentials| authorized_connections(&credentials).is_empty())
+        .map(|credentials| !has_selected_profile_authorized_connections(&credentials))
         .unwrap_or(true)
     {
         state.worker_running.store(false, Ordering::SeqCst);
@@ -3531,10 +3540,54 @@ fn start_worker(state: &AppState, proxy: EventLoopProxy<UserEvent>) -> Result<Va
     }))
 }
 
+#[cfg(test)]
 fn credentials_products(credentials: &Credentials) -> Vec<ProductGrant> {
     public_product_grants(&aggregate_authorized_products(&credentials_connections(
         credentials,
     )))
+}
+
+fn credentials_products_for_profile(
+    credentials: &Credentials,
+    profile: &CloudProfile,
+) -> Vec<ProductGrant> {
+    public_product_grants(&aggregate_authorized_products(&connections_for_profile(
+        credentials,
+        profile,
+    )))
+}
+
+fn connections_for_selected_profile(credentials: &Credentials) -> Vec<Credentials> {
+    let settings = load_settings_with_api(&credentials.api_base);
+    let profile = selected_profile_for_settings(&settings);
+    connections_for_profile(credentials, &profile)
+}
+
+fn connections_for_profile(credentials: &Credentials, profile: &CloudProfile) -> Vec<Credentials> {
+    let allow_catalog = profile_catalog_entries(profile);
+    credentials_connections(credentials)
+        .into_iter()
+        .filter_map(|connection| connection_for_profile(connection, profile, &allow_catalog))
+        .collect()
+}
+
+fn connection_for_profile(
+    mut connection: Credentials,
+    profile: &CloudProfile,
+    allow_catalog: &[DesktopProductCatalogEntry],
+) -> Option<Credentials> {
+    if connection.api_base != profile.api_base {
+        return None;
+    }
+    let products: Vec<ProductGrant> = connection_products(&connection)
+        .into_iter()
+        .filter(|grant| profile_catalog_allows_grant(allow_catalog, profile, grant))
+        .collect();
+    if products.is_empty() {
+        return None;
+    }
+    connection.authorized_products = products;
+    Some(connection_without_nested(connection))
 }
 
 fn public_product_grants(products: &[ProductGrant]) -> Vec<ProductGrant> {
@@ -3611,11 +3664,18 @@ fn credentials_connections(credentials: &Credentials) -> Vec<Credentials> {
     vec![connection_without_nested(credentials.clone())]
 }
 
+#[cfg(test)]
 fn authorized_connections(credentials: &Credentials) -> Vec<Credentials> {
     credentials_connections(credentials)
         .into_iter()
         .filter(|item| !active_connection_products(item).is_empty())
         .collect()
+}
+
+fn has_selected_profile_authorized_connections(credentials: &Credentials) -> bool {
+    connections_for_selected_profile(credentials)
+        .iter()
+        .any(|item| !active_connection_products(item).is_empty())
 }
 
 fn aggregate_authorized_products(connections: &[Credentials]) -> Vec<ProductGrant> {
@@ -4030,7 +4090,9 @@ fn prepare_connections_for_worker(
     proxy: &EventLoopProxy<UserEvent>,
 ) -> Result<Vec<Credentials>, String> {
     let credentials = ensure_credentials_install_id(load_credentials()?)?;
-    let mut connections = credentials_connections(&credentials);
+    let settings = load_settings_with_api(&credentials.api_base);
+    let profile = selected_profile_for_settings(&settings);
+    let mut connections = connections_for_profile(&credentials, &profile);
     if connections
         .iter()
         .all(|item| active_connection_products(item).is_empty())
@@ -4079,12 +4141,22 @@ fn prepare_connections_for_worker(
         }
     }
     if changed {
-        let next = credentials_from_connections(connections.clone(), None, Some(&credentials));
+        let mut merged_connections = credentials_connections(&credentials);
+        for connection in &connections {
+            upsert_connection(&mut merged_connections, connection.clone());
+        }
+        let next = credentials_from_connections(merged_connections, None, Some(&credentials));
         save_credentials(&next)?;
         write_connector_state(&next)?;
-        return Ok(authorized_connections(&next));
+        return Ok(connections_for_profile(&next, &profile)
+            .into_iter()
+            .filter(|item| !active_connection_products(item).is_empty())
+            .collect());
     }
-    Ok(authorized_connections(&credentials))
+    Ok(connections
+        .into_iter()
+        .filter(|item| !active_connection_products(item).is_empty())
+        .collect())
 }
 
 fn rotate_device_token(credentials: &Credentials) -> Result<Credentials, String> {
@@ -4198,7 +4270,10 @@ fn spawn_missing_realtime_workers(
     state: &AppState,
     proxy: &EventLoopProxy<UserEvent>,
 ) -> Result<usize, String> {
-    let connections = authorized_connections(&load_credentials()?);
+    let connections = connections_for_selected_profile(&load_credentials()?)
+        .into_iter()
+        .filter(|item| !active_connection_products(item).is_empty())
+        .collect::<Vec<_>>();
     let mut spawned = 0_usize;
     for connection in connections {
         let key = realtime_connection_key(&connection);
@@ -4456,7 +4531,10 @@ fn realtime_url(credentials: &Credentials) -> Result<String, String> {
 }
 
 fn poll_all_connections(credentials: &Credentials) -> Result<Value, String> {
-    let connections = authorized_connections(credentials);
+    let connections = connections_for_selected_profile(credentials)
+        .into_iter()
+        .filter(|item| !active_connection_products(item).is_empty())
+        .collect::<Vec<_>>();
     if connections.is_empty() {
         return Ok(json!({
             "ok": true,
@@ -5777,8 +5855,8 @@ fn product_entry_from_known(product: KnownProduct) -> DesktopProductCatalogEntry
         name: product.name.to_string(),
         origin: Some(product.origin.to_string()),
         web_url: Some(product.web_url.to_string()),
-        official_origin: Some(product.web_url.to_string()),
-        official_origins: vec![product.web_url.to_string()],
+        official_origin: Some(product.origin.to_string()),
+        official_origins: vec![product.origin.to_string()],
     })
 }
 
@@ -7363,6 +7441,52 @@ mod tests {
         assert_eq!(account.authorized, AuthorizationState::Active);
         assert!(account.connected);
         assert_eq!(account.connection, "connected");
+    }
+
+    #[test]
+    fn official_profile_filters_legacy_authorization_grants() {
+        let mut burn = test_credentials(vec!["relay.envelope", "relay.ack"]);
+        burn.api_base = DEFAULT_API.to_string();
+        burn.device_id = "dev_burn".to_string();
+        burn.device_token = "pbd_burn".to_string();
+        burn.account_id = Some("burn_user".to_string());
+        burn.account_display = Some("burn@example.test".to_string());
+        burn.product_id = Some("panda-burn".to_string());
+        burn.product_name = Some("Burn".to_string());
+        burn.cloud_origin = Some("https://token-burn.com".to_string());
+        burn.authorized_products[0].id = "panda-burn".to_string();
+        burn.authorized_products[0].name = "Burn".to_string();
+        burn.authorized_products[0].origin = Some("https://token-burn.com".to_string());
+
+        let mut legacy = test_credentials(vec!["relay.envelope", "relay.ack"]);
+        legacy.api_base = DEFAULT_API.to_string();
+        legacy.device_id = "dev_legacy".to_string();
+        legacy.device_token = "pbd_legacy".to_string();
+        legacy.account_id = Some("legacy_user".to_string());
+        legacy.account_display = Some("legacy@example.test".to_string());
+        legacy.product_id = Some("otherline".to_string());
+        legacy.product_name = Some("Otherline".to_string());
+        legacy.cloud_origin = Some("https://otherline.cc".to_string());
+        legacy.authorized_products[0].id = "otherline".to_string();
+        legacy.authorized_products[0].name = "Otherline".to_string();
+        legacy.authorized_products[0].origin = Some("https://otherline.cc".to_string());
+
+        let credentials =
+            credentials_from_connections(vec![burn.clone(), legacy], Some(&burn), None);
+        let settings = default_settings();
+        let profile = selected_profile_for_settings(&settings);
+
+        let connections = connections_for_profile(&credentials, &profile);
+        assert_eq!(connections.len(), 1);
+        assert_eq!(connections[0].device_id, "dev_burn");
+        assert_eq!(
+            active_connection_products(&connections[0])[0].id,
+            "panda-burn"
+        );
+
+        let products = credentials_products_for_profile(&credentials, &profile);
+        assert_eq!(products.len(), 1);
+        assert_eq!(products[0].id, "panda-burn");
     }
 
     #[test]

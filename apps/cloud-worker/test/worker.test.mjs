@@ -10,7 +10,7 @@ const env = {
   BRIDGE_WEB_ORIGIN: "http://local.test",
   BRIDGE_ALLOWED_ORIGINS: "http://local.test https://bridge.test.example https://token-burn.com",
   BRIDGE_RELAY_ENVELOPE_TTL_MS: "300000",
-  BRIDGE_PRODUCT_REGISTRY_MODE: "extend",
+  BRIDGE_PRODUCT_REGISTRY_MODE: "replace",
   BRIDGE_PRODUCT_REGISTRY_JSON: JSON.stringify({
     products: [
       {
@@ -328,6 +328,35 @@ assert.deepEqual(legacyPolicyRejected.payload.fields, [
   "allow_developer_instructions",
 ]);
 
+const tokenBurnOriginIntent = await apiRaw("POST", "/v1/connect-intents", {
+  product_id: "panda-burn",
+  device_name: "Token Burn Origin Device",
+  install_id: "install-token-burn-origin",
+}, "", { origin: "https://token-burn.com" });
+assert.equal(tokenBurnOriginIntent.response.status, 201);
+assert.equal(tokenBurnOriginIntent.payload.connect_intent.source_origin, "https://token-burn.com");
+assert.equal(tokenBurnOriginIntent.payload.connect_intent.policy.source_origin, "https://token-burn.com");
+
+const burnWrongOriginRejected = await apiRaw("POST", "/v1/connect-intents", {
+  product_id: "panda-burn",
+  device_name: "Wrong Origin Device",
+  install_id: "install-burn-wrong-origin",
+}, "", { origin: "http://chat.local.test" });
+assert.equal(burnWrongOriginRejected.response.status, 403);
+assert.equal(burnWrongOriginRejected.payload.error, "product_origin_mismatch");
+
+const sourceOriginSpoofRejected = await apiRaw("POST", "/v1/connect-intents", {
+  product_id: "panda-burn",
+  device_name: "Spoof Origin Device",
+  install_id: "install-burn-spoof-origin",
+  policy: {
+    capabilities: ["relay.envelope"],
+    source_origin: "https://evil.example",
+  },
+}, "", { origin: "https://token-burn.com" });
+assert.equal(sourceOriginSpoofRejected.response.status, 400);
+assert.equal(sourceOriginSpoofRejected.payload.error, "invalid_authorization_policy");
+
 const customRegistryEnv = {
   ...env,
   BRIDGE_PRODUCT_REGISTRY_MODE: "replace",
@@ -346,8 +375,15 @@ const customDiagnosticsResponse = await worker.fetch(new Request("http://local.t
 assert.equal(customDiagnosticsResponse.status, 200);
 const customDiagnostics = await customDiagnosticsResponse.json();
 assert.deepEqual(customDiagnostics.products.map((item) => item.id), ["acme-demo"]);
+assert.equal(customDiagnostics.products[0].origin, "http://acme.local.test");
 assert.equal(customDiagnostics.products[0].web_url, "http://acme.local.test/app");
 assert.deepEqual(customDiagnostics.products[0].capabilities, ["relay.envelope", "relay.ack"]);
+const customDiagnosticsFromBridgeResponse = await worker.fetch(new Request("http://local.test/v1/diagnostics", {
+  headers: { origin: "http://local.test" },
+}), customRegistryEnv);
+assert.equal(customDiagnosticsFromBridgeResponse.status, 200);
+const customDiagnosticsFromBridge = await customDiagnosticsFromBridgeResponse.json();
+assert.equal(customDiagnosticsFromBridge.products[0].origin, "http://acme.local.test");
 const customProductsResponse = await worker.fetch(new Request("http://local.test/v1/products", {
   headers: { origin: "http://acme.local.test" },
 }), customRegistryEnv);
@@ -393,7 +429,7 @@ const extendOverrideRegistryResponse = await worker.fetch(new Request("http://lo
   BRIDGE_PRODUCT_REGISTRY_MODE: "extend",
   BRIDGE_PRODUCT_REGISTRY_JSON: JSON.stringify({
     products: [{
-      id: "bridge-demo",
+      id: "panda-burn",
       name: "Fake Panda",
       official_origin: "https://evil.example",
     }],

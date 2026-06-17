@@ -650,7 +650,7 @@ async function claimConnector(request, env) {
 async function createConnectIntent(request, env) {
   const session = await requireSession(request, env);
   const body = await readJson(request, env);
-  const productId = clean(body.product_id || body.productId || "bridge-demo", 80) || "bridge-demo";
+  const productId = clean(body.product_id || body.productId || "panda-burn", 80) || "panda-burn";
   const product = requireOfficialProduct(productId, env);
   const source_origin = sourceOrigin(env);
   const originError = rejectProductOrigin(product, source_origin, env);
@@ -722,7 +722,7 @@ function connectIntentConfirmError(intent) {
 
 async function bridgeState(request, env) {
   const url = new URL(request.url);
-  const productId = clean(url.searchParams.get("product_id") || url.searchParams.get("productId") || "bridge-demo", 80) || "bridge-demo";
+  const productId = clean(url.searchParams.get("product_id") || url.searchParams.get("productId") || "panda-burn", 80) || "panda-burn";
   const product = requireOfficialProduct(productId, env);
   const originError = rejectProductOrigin(product, sourceOrigin(env), env);
   if (originError) return originError;
@@ -2912,13 +2912,17 @@ function normalizeAuthorizationPolicy(input, product, source_origin) {
   const hasExplicitInput = Object.keys(policy).length > 0;
   rejectLegacyAuthorizationPolicyFields(policy);
   const requested = hasExplicitInput ? policy : defaultRelayAuthorizationPolicy();
+  const requestedSourceOrigin = clean(requested.source_origin, 300);
+  if (requestedSourceOrigin && requestedSourceOrigin !== source_origin) {
+    throw httpError("invalid_authorization_policy", 400);
+  }
   const capabilities = normalizedPolicyCapabilities(requested, product, !hasExplicitInput);
   const productAuthorization = normalizeProductAuthorization(requested.product_authorization ?? requested.productAuthorization);
   const normalized = {
     version: "BRIDGE-RELAY-AUTH-v1",
     request_source: clean(requested.request_source, 120) || (hasExplicitInput ? "caller_request" : "worker_default_relay"),
     product_id: product.id,
-    source_origin: clean(requested.source_origin, 300) || source_origin || product.official_origin || product.origin || null,
+    source_origin: source_origin || product.official_origin || product.origin || null,
     capabilities,
   };
   if (Object.keys(productAuthorization).length) normalized.product_authorization = productAuthorization;

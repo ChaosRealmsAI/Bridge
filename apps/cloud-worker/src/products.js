@@ -29,25 +29,26 @@ export const BRIDGE_RUNTIME_CAPABILITY_REGISTRY = Object.freeze({
 export const BRIDGE_RUNTIME_CAPABILITIES = Object.freeze(Object.keys(BRIDGE_RUNTIME_CAPABILITY_REGISTRY));
 
 export const PRODUCT_REGISTRY = {
-  "bridge-demo": {
-    id: "bridge-demo",
-    name: "Bridge Demo",
-    official_origin: "https://bridge.chaos-realms.cc",
-    official_origins: ["https://bridge.chaos-realms.cc"],
+  "panda-burn": {
+    id: "panda-burn",
+    name: "Burn",
+    official_origin: "https://token-burn.com",
+    official_origins: ["https://token-burn.com"],
+    web_url: "https://token-burn.com/authorize",
     capabilities: [...RELAY_CAPABILITIES],
-    adapter_boundary: { adapter_id: "bridge-demo", adapter_owner: "product" },
+    adapter_boundary: { adapter_id: "panda-burn", adapter_owner: "product" },
     default_policy: {},
     requires_desktop_authorization: true,
   },
 };
 
 export function allProducts(origin, env = {}) {
-  return Object.values(productRegistryForEnv(env)).map((product) => publicProduct(product, origin));
+  return Object.values(productRegistryForEnv(env)).map((product) => publicProduct(product));
 }
 
 export function productById(productId, origin, env = {}) {
   const product = productRegistryForEnv(env)[productId];
-  return product ? publicProduct(product, origin) : null;
+  return product ? publicProduct(product) : null;
 }
 
 export function officialProductOrigins(env = {}) {
@@ -114,11 +115,11 @@ export function assertRegistryWellFormed(registry = BRIDGE_RUNTIME_CAPABILITY_RE
   return true;
 }
 
-function publicProduct(product, origin) {
+function publicProduct(product) {
   return {
     id: product.id,
     name: product.name,
-    origin: origin || product.official_origin,
+    origin: product.official_origin,
     official_origin: product.official_origin,
     official_origins: [...(product.official_origins || [product.official_origin])],
     web_url: product.web_url || product.official_origin,

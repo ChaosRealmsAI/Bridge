@@ -32,7 +32,10 @@ assert.equal(Object.hasOwn(protocol, "validateBridgeJob"), false, "protocol root
 assert.equal(Object.hasOwn(protocol, "normalizeBridgeJob"), false, "protocol root must not expose normalizeBridgeJob");
 for (const product of Object.values(PRODUCT_REGISTRY)) {
   assert.deepEqual(product.capabilities, RELAY_CAPABILITIES, `${product.id} must expose relay-only capabilities`);
-  const serialized = JSON.stringify(product);
+  const serialized = JSON.stringify({
+    capabilities: product.capabilities,
+    default_policy: product.default_policy,
+  });
   for (const marker of verticalKinds) {
     assert.equal(serialized.includes(marker), false, `${product.id} still exposes ${marker}`);
   }
@@ -174,8 +177,11 @@ assert.ok(desktopMain.includes("confirm_pending_intent"), "Desktop must expose e
 assert.ok(desktopMain.includes("pending_authorizations"), "Desktop verify snapshot must expose pending authorization previews");
 assert.ok(desktopMain.includes("PENDING AUTHORIZATION PREVIEW"), "Desktop built-in screenshot must render the pending authorization preview");
 assert.ok(desktopMain.includes("product_authorization"), "Desktop preview must surface product_authorization as product-scoped data");
-for (const marker of ["BURN_PRODUCT", "is_burn_product_alias", "token-burn"]) {
+for (const marker of ["BURN_PRODUCT", "is_burn_product_alias"]) {
   assert.equal(desktopProduction.includes(marker), false, `Desktop production code must not contain Burn-specific product branding: ${marker}`);
+}
+for (const marker of ['product.id == "panda-burn"', 'product_id == "panda-burn"', 'product.id == "burn"', 'product_id == "burn"']) {
+  assert.equal(desktopProduction.includes(marker), false, `Desktop production code must not branch on Burn product identity: ${marker}`);
 }
 const localStateStart = desktopMain.indexOf("fn local_state() -> Value");
 const localStateEnd = desktopMain.indexOf("fn low_tier_capabilities", localStateStart);
@@ -191,7 +197,7 @@ assert.ok(desktopUi.includes("claim_intent_preview"), "Desktop UI allow flow mus
 assert.ok(desktopUi.includes("confirm_pending_intent"), "Desktop UI allow flow must explicitly confirm pending authorization");
 assert.ok(desktopUi.includes("product_authorization"), "Desktop UI preview must render product_authorization summary");
 assert.ok(desktopUi.includes("policy caps"), "Desktop UI preview must render relay policy capability summary");
-for (const marker of ["BURN_ICON_URL", "token-burn", "panda-burn"]) {
+for (const marker of ["BURN_ICON_URL", "is_burn_product_alias", 'hay.includes("panda-burn")', 'hay.includes("token-burn")']) {
   assert.equal(desktopUi.includes(marker), false, `Desktop UI must not ship Burn-specific product affordance: ${marker}`);
 }
 

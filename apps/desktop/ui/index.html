@@ -95,7 +95,7 @@ html.app .rail-top .lights{display:none}
 .pnode[aria-current="true"]::before{content:"";position:absolute;left:-11px;top:50%;transform:translateY(-50%);width:3px;height:18px;border-radius:0 3px 3px 0;background:linear-gradient(var(--energy-1),var(--energy-2))}
 .ptile{width:30px;height:30px;border-radius:9px;flex:none;display:grid;place-items:center;color:#fff;font-size:11px;font-weight:700;letter-spacing:.01em;box-shadow:var(--tile-edge);position:relative;overflow:hidden}
 .ptile::after{content:"";position:absolute;inset:0;background:linear-gradient(rgba(255,255,255,.18),transparent 55%);pointer-events:none}
-.ptile img{width:100%;height:100%;object-fit:contain;padding:2px}
+.ptile img,.ptile svg{width:100%;height:100%;object-fit:contain;padding:2px}
 .pmeta{min-width:0;flex:1}
 .pname{font-size:12.5px;font-weight:560;letter-spacing:-.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .sdot{width:7px;height:7px;border-radius:50%;flex:none;background:var(--ink-3);opacity:.55;margin-left:auto}
@@ -174,6 +174,7 @@ html.app .wincontrols{display:none}
 .empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;animation:enter .35s var(--ease)}
 .elogo{width:64px;height:64px;border-radius:18px;display:grid;place-items:center;color:#fff;font-size:22px;font-weight:700;box-shadow:var(--tile-edge);position:relative;overflow:hidden;margin-bottom:6px}
 .elogo::after{content:"";position:absolute;inset:0;background:linear-gradient(rgba(255,255,255,.18),transparent 55%);pointer-events:none}
+.elogo svg{width:76%;height:76%;display:block}
 .empty h2{font-size:19px;font-weight:700;letter-spacing:-.025em;margin-top:14px}
 .empty .esub{font-size:12.5px;color:var(--ink-2);margin:7px 0 22px;max-width:320px;line-height:1.55}
 .empty .ewait{display:inline-flex;align-items:center;gap:7px;margin-top:18px;font-size:11.5px;color:var(--ink-3);padding:7px 14px;border-radius:99px;background:var(--surface-2);border:1px solid var(--line-soft)}
@@ -228,7 +229,7 @@ html.app .wincontrols{display:none}
 .sh-top{display:flex;flex-direction:column;align-items:center;text-align:center;padding:26px 26px 0;position:relative}
 .sh-mini{display:flex;align-items:center;gap:10px;margin-bottom:16px}
 .sh-mini .t{width:46px;height:46px;border-radius:13px;display:grid;place-items:center;color:#fff;font-size:15px;font-weight:700;box-shadow:var(--tile-edge);position:relative;overflow:hidden}
-.sh-mini .t img{width:100%;height:100%;object-fit:contain;padding:3px}
+.sh-mini .t img,.sh-mini .t svg{width:100%;height:100%;object-fit:contain;padding:3px}
 .sh-mini .conn{display:flex;gap:3px}
 .sh-mini .conn i{width:4px;height:4px;border-radius:50%;background:var(--energy-1);box-shadow:0 0 6px var(--energy-1);animation:blink 1.4s var(--ease) infinite}
 .sh-mini .conn i:nth-child(2){animation-delay:.2s}.sh-mini .conn i:nth-child(3){animation-delay:.4s}
@@ -321,9 +322,9 @@ html.app .wincontrols{display:none}
 <script>
 const DEFAULT_API="https://api.bridge.chaos-realms.cc";
 if(window.ipc)document.documentElement.classList.add("app");
+const ICON_BURN=`<svg xmlns="http://www.w3.org/2000/svg" width="1254" height="1254" viewBox="0 0 1254 1254" role="img" aria-labelledby="title desc"><title id="title">Burn Token Mark</title><desc id="desc">Pure vector burn-token mark traced from foreground geometry. No raster image is embedded.</desc><defs><linearGradient id="burnGradient" x1="0" y1="120" x2="0" y2="1090" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#ffc400"/><stop offset="0.36" stop-color="#ff9300"/><stop offset="0.66" stop-color="#ff5a00"/><stop offset="1" stop-color="#f20b1f"/></linearGradient><radialGradient id="emberGradient" cx="32%" cy="24%" r="72%"><stop offset="0" stop-color="#fff3a5"/><stop offset="0.42" stop-color="#ff6e00"/><stop offset="1" stop-color="#f0081c"/></radialGradient><filter id="softLift" x="-18%" y="-18%" width="136%" height="136%"><feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#ff5a00" flood-opacity="0.10"/></filter></defs><path d="M 846 790.5 L 844.5 789 L 844.5 769 L 840.5 740 L 831.5 711 L 814.5 677 L 784.5 637 L 759 612.5 L 733 594.5 L 711 583.5 L 688 575.5 L 646 567.5 L 609 567.5 L 578 572.5 L 545 583.5 L 503 607.5 L 467.5 640 L 451.5 660 L 434.5 686 L 423.5 708 L 414.5 735 L 409.5 763 L 408.5 788 L 407 789.5 L 398.5 779 L 383.5 750 L 373.5 710 L 374.5 674 L 380.5 650 L 385.5 639 L 388 637.5 L 391.5 652 L 395.5 659 L 400 663.5 L 409 666.5 L 415 664.5 L 419.5 660 L 423.5 649 L 423.5 626 L 413.5 565 L 414.5 538 L 421.5 508 L 430.5 488 L 443 470.5 L 444.5 473 L 439.5 498 L 443.5 525 L 453.5 546 L 477 574.5 L 489.5 557 L 493.5 538 L 491.5 515 L 479.5 480 L 473.5 453 L 472.5 426 L 477.5 396 L 487.5 369 L 505.5 339 L 531 311.5 L 549 299.5 L 551.5 301 L 542.5 313 L 533.5 332 L 527.5 358 L 527.5 384 L 531.5 406 L 544.5 439 L 564.5 469 L 592 495.5 L 608 506.5 L 614 509.5 L 615.5 508 L 590.5 480 L 571.5 446 L 563.5 422 L 561.5 410 L 560.5 379 L 563.5 360 L 571.5 336 L 582.5 314 L 622.5 254 L 635.5 223 L 639.5 199 L 638.5 177 L 631.5 151 L 622.5 134 L 624 132.5 L 636 141.5 L 655.5 161 L 673.5 185 L 689.5 217 L 696.5 244 L 697.5 271 L 695.5 288 L 687.5 316 L 673.5 352 L 668.5 376 L 668.5 404 L 671.5 420 L 683.5 450 L 698.5 472 L 719 490.5 L 720.5 489 L 712.5 475 L 706.5 454 L 706.5 426 L 711.5 409 L 718.5 395 L 734.5 372 L 742.5 354 L 744.5 345 L 744.5 326 L 740.5 313 L 742 311.5 L 748.5 318 L 758.5 336 L 764.5 357 L 764.5 381 L 753.5 429 L 754.5 454 L 762.5 482 L 785.5 526 L 790.5 540 L 793.5 554 L 792.5 581 L 794 582.5 L 803.5 565 L 808.5 550 L 812.5 523 L 811.5 503 L 807.5 485 L 802.5 471 L 793.5 455 L 795 453.5 L 803.5 460 L 827.5 486 L 839.5 506 L 847.5 525 L 853.5 550 L 853.5 584 L 845.5 616 L 829.5 652 L 828.5 663 L 830.5 671 L 835 676.5 L 840 678.5 L 848 676.5 L 855.5 669 L 860.5 659 L 863.5 641 L 866 637.5 L 873.5 653 L 878.5 672 L 880.5 699 L 878.5 719 L 872.5 742 L 861.5 767 L 846 790.5 Z M 777 912.5 L 768 912.5 L 764 910.5 L 758.5 905 L 755.5 895 L 756.5 890 L 764.5 878 L 776.5 853 L 786.5 813 L 786.5 774 L 783.5 757 L 775.5 732 L 764.5 710 L 751.5 691 L 724 663.5 L 706 651.5 L 688 642.5 L 671 636.5 L 645 631.5 L 622 630.5 L 603 632.5 L 565 643.5 L 529 665.5 L 503.5 691 L 493.5 705 L 480.5 729 L 472.5 751 L 467.5 773 L 467.5 818 L 473.5 845 L 476.5 851 L 476.5 860 L 469 869.5 L 464 871.5 L 456 871.5 L 450 868.5 L 444.5 861 L 435.5 827 L 432.5 798 L 433.5 775 L 437.5 752 L 446.5 723 L 461.5 693 L 477.5 670 L 506 640.5 L 536 619.5 L 570 604.5 L 605 596.5 L 650 596.5 L 676 601.5 L 712 615.5 L 748 639.5 L 775.5 668 L 794.5 696 L 807.5 723 L 812.5 738 L 819.5 773 L 819.5 814 L 812.5 849 L 805.5 869 L 793.5 894 L 785.5 907 L 777 912.5 Z M 700 762.5 L 552 762.5 L 547 760.5 L 541.5 755 L 538.5 743 L 541.5 735 L 552 727.5 L 701 727.5 L 708 731.5 L 712.5 737 L 714.5 748 L 711.5 755 L 707 759.5 L 700 762.5 Z M 631 915.5 L 619 914.5 L 613.5 910 L 609.5 902 L 609.5 796 L 611.5 790 L 622 781.5 L 631 781.5 L 635 783.5 L 640.5 789 L 643.5 800 L 642.5 905 L 637 912.5 L 631 915.5 Z" fill="url(#burnGradient)" fill-rule="evenodd" filter="url(#softLift)"/><g id="tokenParticles"><circle cx="458.84" cy="930.55" r="9.96" fill="#fa4515"/><circle cx="508.84" cy="935.75" r="16.53" fill="#f93d14"/><circle cx="431.5" cy="893.58" r="7.68" fill="#fb5516"/><circle cx="487.62" cy="889.25" r="14.25" fill="#fb5411"/><circle cx="585.8" cy="945.1" r="8.03" fill="#f93819"/><circle cx="549.71" cy="915.15" r="7.64" fill="#fc521b"/><circle cx="664.61" cy="948.85" r="5.77" fill="#f93227"/><circle cx="821.93" cy="890.58" r="7.35" fill="#f52820"/><circle cx="743.34" cy="927.56" r="14.9" fill="#f6221d"/><circle cx="798.18" cy="927.93" r="8.38" fill="#f21f21"/><circle cx="704.38" cy="952.55" r="8.43" fill="#f6251e"/><circle cx="765.07" cy="964.17" r="10.6" fill="#f31f21"/><circle cx="732.84" cy="991.67" r="10.24" fill="#f31f21"/><circle cx="630.21" cy="969.2" r="9.52" fill="#f5291c"/><circle cx="675.91" cy="990.16" r="16.04" fill="#f4201f"/><circle cx="701.73" cy="1030.98" r="8.01" fill="#f31e21"/><circle cx="656.32" cy="1063.28" r="7.53" fill="#f42125"/><circle cx="634.73" cy="1022.19" r="12.45" fill="#f31d1e"/><circle cx="595.7" cy="1056.79" r="7.83" fill="#f22122"/><circle cx="592.83" cy="993.18" r="13.33" fill="#f4241c"/><circle cx="553.19" cy="1024.61" r="10.51" fill="#f6271e"/><circle cx="515.12" cy="992.79" r="8.03" fill="#f7321e"/><circle cx="474.98" cy="972.88" r="7.38" fill="#f83b1b"/><circle cx="549.98" cy="967.69" r="13.65" fill="#f7311a"/></g></svg>`;
 const BASE_PRODUCTS=[
-  {id:"bridge-demo",name:"Bridge Demo",origin:"bridge.chaos-realms.cc",web_url:"https://bridge.chaos-realms.cc",initials:"BD",color:"linear-gradient(150deg,#2f7bff,#14a6a6)",accounts:[],connected:false,connection:"offline"},
-  {id:"example-client",name:"Example Client",origin:"example.test",web_url:"https://example.test",initials:"EC",color:"linear-gradient(150deg,#1f9d67,#2374d9)",accounts:[],connected:false,connection:"offline"}
+  {id:"panda-burn",name:"Burn",origin:"https://token-burn.com",web_url:"https://token-burn.com/authorize",initials:"B",color:"linear-gradient(150deg,#201716,#3a1813)",icon:ICON_BURN,accounts:[],connected:false,connection:"offline"}
 ];
 const LANG_OPTIONS=[
   ["auto","跟随系统"],["zh-CN","简体中文"],["zh-TW","繁體中文"],["en","English"],["ja","日本語"]
@@ -338,16 +339,31 @@ Object.assign(TEXT["zh-CN"],{server:"服务器",serverProfile:"服务器 Profile
 Object.assign(TEXT["zh-TW"],{server:"伺服器",serverProfile:"伺服器 Profile",addServer:"新增伺服器",serverUrl:"https://你的 Bridge API",refresh:"重新整理",official:"官方",custom:"自託管",serverAdded:"伺服器已新增",serverSelected:"伺服器已切換",serverRemoved:"伺服器已移除",serverRefreshed:"伺服器已重新整理",general:"一般",cloudGroup:"雲端"});
 Object.assign(TEXT.en,{server:"Server",serverProfile:"Server profile",addServer:"Add server",serverUrl:"https://your Bridge API",refresh:"Refresh",official:"Official",custom:"Self-hosted",serverAdded:"Server added",serverSelected:"Server switched",serverRemoved:"Server removed",serverRefreshed:"Server refreshed",general:"General",cloudGroup:"Cloud"});
 Object.assign(TEXT.ja,{server:"サーバー",serverProfile:"サーバー Profile",addServer:"サーバー追加",serverUrl:"https://your Bridge API",refresh:"更新",official:"公式",custom:"セルフホスト",serverAdded:"サーバーを追加しました",serverSelected:"サーバーを切り替えました",serverRemoved:"サーバーを削除しました",serverRefreshed:"サーバーを更新しました",general:"一般",cloudGroup:"クラウド"});
-Object.assign(TEXT["zh-CN"],{pausedTag:"已暂停"});Object.assign(TEXT["zh-TW"],{pausedTag:"已暫停"});Object.assign(TEXT.en,{pausedTag:"Paused"});Object.assign(TEXT.ja,{pausedTag:"停止中"});
+Object.assign(TEXT["zh-CN"],{pausedTag:"已暂停",engineStarting:"本机引擎 · 启动中…",engineUnavailable:"本机引擎 · 状态读取失败"});
+Object.assign(TEXT["zh-TW"],{pausedTag:"已暫停",engineStarting:"本機引擎 · 啟動中…",engineUnavailable:"本機引擎 · 狀態讀取失敗"});
+Object.assign(TEXT.en,{pausedTag:"Paused",engineStarting:"Local engine · starting…",engineUnavailable:"Local engine · status unavailable"});
+Object.assign(TEXT.ja,{pausedTag:"停止中",engineStarting:"ローカルエンジン · 起動中…",engineUnavailable:"ローカルエンジン · 状態を取得できません"});
 const OFFICIAL_PROFILE={id:"official",name:"Official Bridge Cloud",api_base:DEFAULT_API,web_origin:"https://bridge.chaos-realms.cc",source:"official",products:BASE_PRODUCTS.map(clone)};
-const ui={view:"product",selected:"bridge-demo",products:BASE_PRODUCTS.map(clone),settings:{launch_at_login:true,appearance:"auto",language:"auto",api_base:DEFAULT_API,cloud_profiles:[clone(OFFICIAL_PROFILE)],selected_cloud_profile_id:"official"},pending:null,status:null};
+const ui={view:"product",selected:"panda-burn",products:BASE_PRODUCTS.map(clone),settings:{launch_at_login:true,appearance:"auto",language:"auto",api_base:DEFAULT_API,cloud_profiles:[clone(OFFICIAL_PROFILE)],selected_cloud_profile_id:"official"},pending:null,status:null,booting:true,statusError:null};
 const mq=window.matchMedia("(prefers-color-scheme: dark)");
 const ipcState={seq:0,calls:new Map()};
 window.PandaBridge={
   call(command,params={}){
     const id=String(++ipcState.seq);
-    window.ipc.postMessage(JSON.stringify({id,command,params}));
-    return new Promise((resolve,reject)=>ipcState.calls.set(id,{resolve,reject}));
+    const timeoutMs=command==="status"?5000:15000;
+    return new Promise((resolve,reject)=>{
+      const timer=setTimeout(()=>{
+        const item=ipcState.calls.get(id); if(!item)return;
+        ipcState.calls.delete(id);
+        item.reject(new Error(`${command} timed out`));
+      },timeoutMs);
+      ipcState.calls.set(id,{
+        resolve(value){clearTimeout(timer);resolve(value)},
+        reject(error){clearTimeout(timer);reject(error)}
+      });
+      try{window.ipc.postMessage(JSON.stringify({id,command,params}))}
+      catch(error){ipcState.calls.delete(id);clearTimeout(timer);reject(error)}
+    });
   },
   receive(message){
     if(message.type==="response"){
@@ -426,6 +442,8 @@ function render(){
   applyTheme();
 }
 function engineHtml(){
+  if(ui.statusError)return`<span class="e-dot off"></span><span>${t("engineUnavailable")}</span>`;
+  if(ui.booting&&!ui.status)return`<span class="e-dot off"></span><span>${t("engineStarting")}</span>`;
   const reconnect=!!(ui.status&&ui.status.worker_running&&!ui.status.realtime_connected);
   return reconnect?`<span class="e-dot off"></span><span>${t("engineReconnect")}</span>`:`<span class="e-dot"></span><span>${t("engineRunning")}</span>`;
 }
@@ -439,7 +457,8 @@ function tabHtml(p){
   const st=productState(p);
   const dot=st==="live"?"live":st==="retry"?"retry":((p.accounts||[]).some(a=>a.authorized==="paused")?"warn":"");
   const style=productStyle(p);
-  const tile=style.iconSrc?`<span class="ptile" style="background:${style.color}"><img src="${esc(style.iconSrc)}" alt=""></span>`:`<span class="ptile" style="background:${style.color}">${esc(p.initials||style.initials)}</span>`;
+  const icon=productIconHtml(style);
+  const tile=icon?`<span class="ptile" style="background:${style.color}">${icon}</span>`:`<span class="ptile" style="background:${style.color}">${esc(p.initials||style.initials)}</span>`;
   return `<button class="pnode" aria-current="${ui.view==="product"&&ui.selected===p.id}" onclick="pick('${p.id}')">
     ${tile}
     <span class="pmeta"><span class="pname">${esc(p.name)}</span></span>
@@ -460,7 +479,8 @@ function productHtml(p){
 }
 function emptyHtml(p){
   const style=productStyle(p);
-  const tile=style.iconSrc?`<span class="elogo" style="background:${style.color}"><img src="${esc(style.iconSrc)}" alt=""></span>`:`<span class="elogo" style="background:${style.color}">${esc(p.initials||style.initials)}</span>`;
+  const icon=productIconHtml(style);
+  const tile=icon?`<span class="elogo" style="background:${style.color}">${icon}</span>`:`<span class="elogo" style="background:${style.color}">${esc(p.initials||style.initials)}</span>`;
   return `<div class="ptop"><span class="ptlab"></span><div class="ptend"><button class="btn mini" onclick="openProduct('${p.id}')">${t("open")} ${I.arrow}</button></div></div>
   <div class="empty">
     ${tile}
@@ -519,10 +539,12 @@ function modalHtml(){
   const crit=!!d&&d.tier==="critical";
   const ready=!d||dangerReady(d);
   const av=avatarFor(ui.pending.account);
+  const pendingStyle=productStyle(ui.pending);
+  const pendingIcon=productIconHtml(pendingStyle)||esc((ui.pending.product_name||"PB").slice(0,2).toUpperCase());
   return `<div class="sheetwrap on" id="sheetwrap"><div class="sheet${d?" haz":""}"><div class="sh-glow"></div>
     <div class="sh-top">
       <div class="sh-mini">
-        <span class="t" style="background:${productStyle(ui.pending).color}">${esc((ui.pending.product_name||"PB").slice(0,2).toUpperCase())}</span>
+        <span class="t" style="background:${pendingStyle.color}">${pendingIcon}</span>
         <span class="conn"><i></i><i></i><i></i></span>
         <span class="mac">${I.mac}</span>
       </div>
@@ -618,9 +640,10 @@ async function removeCloudProfile(id){
 }
 async function refresh(){
   const status=await window.PandaBridge.call("status");
+  ui.booting=false;ui.statusError=null;
   ui.status=status;ui.settings={...ui.settings,...(status.settings||{})};
   ui.products=normalizeProducts(status.products||[]);
-  if(!productById(ui.selected))ui.selected=ui.products[0]?.id||"bridge-demo";
+  if(!productById(ui.selected))ui.selected=ui.products[0]?.id||"panda-burn";
   render();return status;
 }
 function normalizeProducts(items){
@@ -631,17 +654,26 @@ function normalizeProducts(items){
     const accounts=Array.isArray(src.accounts)?src.accounts.map(a=>({
       id:a.id||null,email:a.email||"Panda Account",authorized:a.authorized||"active",connected:!!a.connected,connection:a.connection||"reconnecting"
     })):[];
-    return {...clone(base),...src,origin:src.origin||base.origin||hostOnly(src.web_url),web_url:src.web_url||base.web_url||src.origin||"",initials:style.initials,color:style.color,iconSrc:style.iconSrc,accounts,connected:!!src.connected,connection:src.connection||"offline"};
+    return {...clone(base),...src,origin:src.origin||base.origin||hostOnly(src.web_url),web_url:src.web_url||base.web_url||src.origin||"",initials:style.initials,color:style.color,icon:style.icon,accounts,connected:!!src.connected,connection:src.connection||"offline"};
   });
 }
+let svgIconSeq=0;
+function productIconHtml(style){
+  if(!style?.icon)return"";
+  const suffix=`_${++svgIconSeq}`;
+  return String(style.icon)
+    .replace(/\b(burnGradient|emberGradient|softLift|tokenParticles|title|desc)\b/g,`$1${suffix}`)
+    .replace("<svg ","<svg aria-hidden=\"true\" focusable=\"false\" ");
+}
 function productStyle(p,index=0){
-  const base=BASE_PRODUCTS.find(x=>x.id===p?.id);
-  if(base)return {initials:base.initials,color:base.color};
-  const name=String(p?.name||p?.id||"PB").trim();
+  const productId=p?.id||p?.product_id;
+  const base=BASE_PRODUCTS.find(x=>x.id===productId);
+  if(base)return {initials:base.initials,color:base.color,icon:base.icon||null};
+  const name=String(p?.name||p?.product_name||productId||"PB").trim();
   const initials=name.split(/[\s_-]+/).filter(Boolean).slice(0,2).map(x=>x[0]).join("").toUpperCase()||name.slice(0,2).toUpperCase()||"PB";
   const colors=["linear-gradient(150deg,#2f7bff,#14a6a6)","linear-gradient(150deg,#4d8dff,#7857d9)","linear-gradient(150deg,#1f9d67,#2374d9)","linear-gradient(150deg,#e46b4c,#7b61ff)"];
-  let hash=index;for(const ch of String(p?.id||name))hash=(hash*31+ch.charCodeAt(0))>>>0;
-  return {initials,color:colors[hash%colors.length]};
+  let hash=index;for(const ch of String(productId||name))hash=(hash*31+ch.charCodeAt(0))>>>0;
+  return {initials,color:colors[hash%colors.length],icon:p?.icon||null};
 }
 async function handleDeepLink(raw){
   const url=new URL(raw);const intent=url.searchParams.get("intent");if(!intent)return;
@@ -664,9 +696,6 @@ function knownFrom(id,name,origin){
   const norm=normalizeProductKey(id);
   const existing=ui.products.find(p=>normalizeProductKey(p.id)===norm||normalizeProductKey(p.name)===norm);
   if(existing)return existing;
-  const hay=[id,name,origin].join(" ").toLowerCase();
-  if(hay.includes("bridge"))return BASE_PRODUCTS[0];
-  if(hay.includes("example"))return BASE_PRODUCTS[1];
   const dynamic={id:id||normalizeProductKey(name)||"custom",name:name||id||"Custom Product",origin:origin||hostOnly(DEFAULT_API),web_url:origin||""};
   return {...dynamic,...productStyle(dynamic)};
 }
@@ -700,8 +729,7 @@ function showError(e){toast(`${t("failed")} · ${String(e?.message||e).slice(0,1
 function installFallback(){
   const emptyDemo=new URLSearchParams(location.search).get("empty");
   const mock={settings:{launch_at_login:true,appearance:new URLSearchParams(location.search).get("theme")||"auto",language:"auto",api_base:DEFAULT_API,cloud_profiles:[clone(OFFICIAL_PROFILE)],selected_cloud_profile_id:"official"},products:normalizeProducts([
-    {id:"bridge-demo",name:"Bridge Demo",origin:"bridge.chaos-realms.cc",web_url:"https://bridge.chaos-realms.cc",accounts:emptyDemo?[]:[{id:"demo_bridge",email:"chaos.realms.ai@gmail.com",authorized:"active",connected:true,connection:"connected"},{id:"demo_dr",email:"dreamsmoke57086",authorized:"active",connected:false,connection:"reconnecting"},{id:"demo_pf",email:"panda-final@bridge.otherline.cc",authorized:"paused",connected:false,connection:"disabled"}],connected:!emptyDemo,connection:emptyDemo?"offline":"connected"},
-    {id:"example-client",name:"Example Client",origin:"example.test",web_url:"https://example.test",accounts:[{id:"demo_client",email:"client@example.test",authorized:"active",connected:true,connection:"connected"}],connected:true,connection:"connected"}
+    {id:"panda-burn",name:"Burn",origin:"https://token-burn.com",web_url:"https://token-burn.com/authorize",accounts:emptyDemo?[]:[{id:"demo_burn",email:"burn-demo@token-burn.com",authorized:"active",connected:true,connection:"connected"}],connected:!emptyDemo,connection:emptyDemo?"offline":"connected"}
   ])};
   window.ipc={postMessage(raw){const req=JSON.parse(raw);const reply=(ok,result,error)=>setTimeout(()=>window.PandaBridge.receive({type:"response",id:req.id,ok,result,error}),50);
     if(req.command==="status")return reply(true,clone(mock));
@@ -714,12 +742,12 @@ function installFallback(){
     if(req.command==="toggle_authorization"){const p=mock.products.find(x=>x.id===req.params.product_id);const a=p?.accounts.find(x=>x.id===req.params.account||x.email===req.params.account);if(a){a.authorized=a.authorized==="paused"?"active":"paused";a.connected=a.authorized==="active";a.connection=a.connected?"connected":"disabled"}return reply(true,{ok:true})}
     if(req.command==="remove_authorization"){const p=mock.products.find(x=>x.id===req.params.product_id);if(p)p.accounts=p.accounts.filter(x=>x.id!==req.params.account_id&&x.email!==req.params.account_id);return reply(true,{ok:true})}
     if(req.command==="preview_intent"){
-      const base={product_id:"bridge-demo",product_name:"Bridge Demo",cloud_origin:"bridge.chaos-realms.cc",user_display_name:"chaos.realms.ai@gmail.com",user_id:"demo_user",capabilities:["relay.envelope","relay.ack"],local_policy:{version:"BRIDGE-RELAY-AUTH-v1",source_origin:"bridge.chaos-realms.cc",capabilities:["relay.envelope","relay.ack"],product_authorization:{owner:"product-adapter",enforcement:"product-adapter",control:"computer-control"}}};
+      const base={product_id:"panda-burn",product_name:"Burn",cloud_origin:"https://token-burn.com",user_display_name:"burn-demo@token-burn.com",user_id:"demo_user",capabilities:["relay.envelope","relay.ack"],local_policy:{version:"BRIDGE-RELAY-AUTH-v1",source_origin:"https://token-burn.com",capabilities:["relay.envelope","relay.ack"],product_authorization:{owner:"product-adapter",enforcement:"product-adapter",control:"computer-control"}}};
       return reply(true,base);
     }
     if(req.command==="pick_local_root")return reply(true,{root_id:req.params.root_id,path_display:req.params.path_display,redacted_path:"[local]/"+(req.params.root_id||"chosen")});
     if(req.command==="claim_intent_preview"||req.command==="claim_intent_pending")return reply(true,{pending_id:"pending_demo",status:"pending"});
-    if(req.command==="confirm_pending_intent"||req.command==="claim_intent"){mock.products[0].accounts.push({id:"team",email:"team-demo@bridge.example",authorized:"active",connected:true,connection:"connected"});return reply(true,{ok:true})}
+    if(req.command==="confirm_pending_intent"||req.command==="claim_intent"){mock.products[0].accounts.push({id:"team",email:"team-demo@token-burn.com",authorized:"active",connected:true,connection:"connected"});return reply(true,{ok:true})}
     if(req.command==="open_web"||req.command==="start_worker")return reply(true,{ok:true});
     reply(false,null,"unknown command");
   }};
@@ -727,7 +755,11 @@ function installFallback(){
   if(new URLSearchParams(location.search).get("sheet"))setTimeout(()=>window.PandaBridge.receive({type:"event",event:"deep_link",url:"panda-bridge://connect?intent=demo&api=https://api.bridge.chaos-realms.cc"}),120);
 }
 if(!window.ipc)installFallback();
-refresh().then(status=>{if((status.products||[]).some(p=>(p.accounts||[]).some(a=>a.authorized==="active")))window.PandaBridge.call("start_worker").catch(()=>{})}).catch(()=>render());
+applyTheme();
+render();
+refresh()
+  .then(status=>{if((status.products||[]).some(p=>(p.accounts||[]).some(a=>a.authorized==="active")))window.PandaBridge.call("start_worker").catch(()=>{})})
+  .catch(error=>{ui.booting=false;ui.statusError=String(error?.message||error);render()});
 </script>
 </body>
 </html>
