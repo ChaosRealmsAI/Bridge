@@ -2,6 +2,7 @@
 import { createHash } from "node:crypto";
 import {
   copyFileSync,
+  cpSync,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -62,6 +63,8 @@ if (!existsSync(releaseBinary)) {
   process.exit(1);
 }
 copyFileSync(releaseBinary, resolve(appDir, exeName));
+const managedAdapters = copyManagedAdapters(appDir);
+const nodeRuntime = copyNodeRuntime(appDir);
 writeFileSync(resolve(appDir, "Install.ps1"), installScript());
 writeFileSync(resolve(appDir, "Uninstall.ps1"), uninstallScript());
 writeFileSync(resolve(appDir, "README.txt"), readmeText());
@@ -91,6 +94,8 @@ console.log(JSON.stringify({
   sha256,
   install: resolve(appDir, "Install.ps1"),
   uninstall: resolve(appDir, "Uninstall.ps1"),
+  managed_adapters: managedAdapters,
+  node_runtime: nodeRuntime,
 }, null, 2));
 
 function manifest() {
@@ -102,7 +107,42 @@ function manifest() {
     startup_registry_value: appName,
     install_dir: "%LOCALAPPDATA%\\Panda Bridge",
     webview: "Microsoft Edge WebView2 Evergreen Runtime",
+    managed_adapters: {
+      directory: "adapters",
+      burn_manifest: "adapters\\panda-burn\\adapter.manifest.json",
+    },
+    node_runtime: "runtime\\node\\node.exe",
   };
+}
+
+function copyManagedAdapters(targetRoot) {
+  const source = process.env.PANDA_BRIDGE_BURN_ADAPTER_DIR
+    ? resolve(process.env.PANDA_BRIDGE_BURN_ADAPTER_DIR)
+    : resolve("../syllo/dist/bridge-adapters/panda-burn");
+  const adaptersDir = resolve(targetRoot, "adapters");
+  const copied = [];
+  if (!existsSync(source)) return copied;
+  mkdirSync(adaptersDir, { recursive: true });
+  cpSync(source, resolve(adaptersDir, "panda-burn"), { recursive: true, force: true });
+  copied.push(resolve(adaptersDir, "panda-burn"));
+  const bridgeRuntime = resolve(source, "..", "panda-bridge");
+  if (existsSync(bridgeRuntime)) {
+    cpSync(bridgeRuntime, resolve(adaptersDir, "panda-bridge"), { recursive: true, force: true });
+    copied.push(resolve(adaptersDir, "panda-bridge"));
+  }
+  return copied;
+}
+
+function copyNodeRuntime(targetRoot) {
+  const source = process.env.PANDA_BRIDGE_NODE_RUNTIME_DIR;
+  if (!source) return null;
+  const resolved = resolve(source);
+  if (!existsSync(resolved)) {
+    throw new Error(`PANDA_BRIDGE_NODE_RUNTIME_DIR not found: ${resolved}`);
+  }
+  const target = resolve(targetRoot, "runtime", "node");
+  cpSync(resolved, target, { recursive: true, force: true });
+  return target;
 }
 
 function installScript() {
@@ -208,6 +248,9 @@ function assertTemplateContracts() {
   const data = manifest();
   if (data.protocol !== "panda-bridge" || data.binary !== exeName) {
     throw new Error("manifest does not match Windows protocol/binary contract");
+  }
+  if (data.managed_adapters?.burn_manifest !== "adapters\\panda-burn\\adapter.manifest.json" || data.node_runtime !== "runtime\\node\\node.exe") {
+    throw new Error("manifest does not advertise managed adapter/runtime contract");
   }
 }
 

@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, cpSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
@@ -31,6 +31,8 @@ export function createMacAppBundle(appPath, options = {}) {
   mkdirSync(resources, { recursive: true });
   copyFileSync(releaseBinary, resolve(macos, appName));
   copyFileSync(iconPath, resolve(resources, iconFileName));
+  const managedAdapters = copyManagedAdapters(resources);
+  const nodeRuntime = copyNodeRuntime(resources);
   writeFileSync(resolve(contents, "PkgInfo"), "APPLPBRG\n");
   writeFileSync(resolve(contents, "Info.plist"), plist());
   run("chmod", ["755", resolve(macos, appName)]);
@@ -38,6 +40,8 @@ export function createMacAppBundle(appPath, options = {}) {
     appPath,
     executable: resolve(macos, appName),
     icon: resolve(resources, iconFileName),
+    managedAdapters,
+    nodeRuntime,
   };
 }
 
@@ -149,6 +153,36 @@ export function run(command, args, options = {}) {
   const result = spawnSync(command, args, { stdio: options.stdio ?? "inherit" });
   if (result.status !== 0 && !options.optional) process.exit(result.status || 1);
   return result;
+}
+
+function copyManagedAdapters(resources) {
+  const source = process.env.PANDA_BRIDGE_BURN_ADAPTER_DIR
+    ? resolve(process.env.PANDA_BRIDGE_BURN_ADAPTER_DIR)
+    : resolve("../syllo/dist/bridge-adapters/panda-burn");
+  const adaptersDir = resolve(resources, "adapters");
+  const copied = [];
+  if (!existsSync(source)) return copied;
+  mkdirSync(adaptersDir, { recursive: true });
+  cpSync(source, resolve(adaptersDir, "panda-burn"), { recursive: true, force: true });
+  copied.push(resolve(adaptersDir, "panda-burn"));
+  const bridgeRuntime = resolve(source, "..", "panda-bridge");
+  if (existsSync(bridgeRuntime)) {
+    cpSync(bridgeRuntime, resolve(adaptersDir, "panda-bridge"), { recursive: true, force: true });
+    copied.push(resolve(adaptersDir, "panda-bridge"));
+  }
+  return copied;
+}
+
+function copyNodeRuntime(resources) {
+  const source = process.env.PANDA_BRIDGE_NODE_RUNTIME_DIR;
+  if (!source) return null;
+  const resolved = resolve(source);
+  if (!existsSync(resolved)) {
+    throw new Error(`PANDA_BRIDGE_NODE_RUNTIME_DIR not found: ${resolved}`);
+  }
+  const target = resolve(resources, "runtime", "node");
+  cpSync(resolved, target, { recursive: true, force: true });
+  return target;
 }
 
 function plist() {

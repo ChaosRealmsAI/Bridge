@@ -8,10 +8,10 @@ use std::os::unix::fs::PermissionsExt;
 use std::{
     collections::{HashMap, HashSet},
     env, fs,
-    io::{BufWriter, Read, Write},
+    io::{BufRead, BufReader, BufWriter, Read, Write},
     net::{TcpListener, TcpStream},
     path::{Path, PathBuf},
-    process::Command,
+    process::{Child, Command, Stdio},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex, OnceLock,
@@ -19,10 +19,6 @@ use std::{
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
-// BufRead/BufReader are only used by the Windows single-instance IPC handler
-// and by tests; keep the import scoped so the macOS release build stays clean.
-#[cfg(any(test, windows))]
-use std::io::{BufRead, BufReader};
 use tao::{
     dpi::LogicalSize,
     event::{Event, StartCause, WindowEvent},
@@ -541,6 +537,34 @@ struct RelayEnvelope {
 struct AdapterRelayResponse {
     #[serde(default)]
     response_envelope: Option<Value>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ManagedAdapterManifest {
+    product_id: String,
+    #[serde(default)]
+    product_name: Option<String>,
+    runtime: ManagedAdapterRuntime,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct ManagedAdapterRuntime {
+    #[serde(default, rename = "type")]
+    runtime_type: String,
+    entry: String,
+    #[serde(default)]
+    args: Vec<String>,
+    #[serde(default)]
+    cwd: Option<String>,
+}
+
+struct ManagedAdapterProcess {
+    product_id: String,
+    endpoint: String,
+    manifest_path: PathBuf,
+    product_name: Option<String>,
+    child: Child,
+    started_at: Instant,
 }
 
 #[derive(Debug, Deserialize)]
@@ -4746,6 +4770,11 @@ fn post_connector_relay_envelope(
 }
 
 fn adapter_endpoint_for_product(product_id: &str) -> Option<String> {
+    external_adapter_endpoint_for_product(product_id)
+        .or_else(|| managed_adapter_endpoint_for_product(product_id))
+}
+
+fn external_adapter_endpoint_for_product(product_id: &str) -> Option<String> {
     let specific = format!(
         "PANDA_BRIDGE_ADAPTER_{}_URL",
         product_id
@@ -4763,6 +4792,196 @@ fn adapter_endpoint_for_product(product_id: &str) -> Option<String> {
         .or_else(|| env::var("PANDA_BRIDGE_ADAPTER_URL").ok())
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+}
+
+fn managed_adapter_endpoint_for_product(product_id: &str) -> Option<String> {
+    let product_id = product_id.trim();
+    if product_id.is_empty() {
+        return None;
+    }
+    {
+        let mut processes = managed_adapters().lock().ok()?;
+        if let Some(process) = processes.get_mut(product_id) {
+            match process.child.try_wait() {
+                Ok(None) => return Some(process.endpoint.clone()),
+                Ok(Some(_)) | Err(_) => {
+                    processes.remove(product_id);
+                }
+            }
+        }
+    }
+    let manifest_path = find_managed_adapter_manifest(product_id)?;
+    let mut started = start_managed_adapter(&manifest_path).ok()?;
+    if started.product_id != product_id {
+        let _ = started.child.kill();
+        return None;
+    }
+    let endpoint = started.endpoint.clone();
+    let mut processes = managed_adapters().lock().ok()?;
+    processes.insert(product_id.to_string(), started);
+    Some(endpoint)
+}
+
+fn managed_adapters() -> &'static Mutex<HashMap<String, ManagedAdapterProcess>> {
+    static MANAGED: OnceLock<Mutex<HashMap<String, ManagedAdapterProcess>>> = OnceLock::new();
+    MANAGED.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn find_managed_adapter_manifest(product_id: &str) -> Option<PathBuf> {
+    let mut roots = Vec::new();
+    for key in [
+        "PANDA_BRIDGE_MANAGED_ADAPTERS_DIR",
+        "PANDA_BRIDGE_ADAPTERS_DIR",
+    ] {
+        if let Ok(value) = env::var(key) {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                roots.push(PathBuf::from(trimmed));
+            }
+        }
+    }
+    roots.extend(default_managed_adapter_roots());
+    for root in roots {
+        let manifest = root.join(product_id).join("adapter.manifest.json");
+        if manifest.is_file() {
+            return Some(manifest);
+        }
+    }
+    None
+}
+
+fn default_managed_adapter_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Ok(exe) = env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            roots.push(dir.join("adapters"));
+            if cfg!(target_os = "macos") {
+                if let Some(contents) = dir.parent() {
+                    roots.push(contents.join("Resources").join("adapters"));
+                }
+            }
+        }
+    }
+    if let Ok(cwd) = env::current_dir() {
+        roots.push(cwd.join("adapters"));
+        roots.push(cwd.join("dist").join("bridge-adapters"));
+    }
+    roots
+}
+
+fn start_managed_adapter(manifest_path: &Path) -> Result<ManagedAdapterProcess, String> {
+    let text = fs::read_to_string(manifest_path)
+        .map_err(|error| format!("adapter_manifest_read_failed: {error}"))?;
+    let manifest: ManagedAdapterManifest = serde_json::from_str(&text)
+        .map_err(|error| format!("adapter_manifest_invalid: {error}"))?;
+    if manifest.runtime.runtime_type != "node" {
+        return Err(format!(
+            "adapter_runtime_unsupported: {}",
+            manifest.runtime.runtime_type
+        ));
+    }
+    let manifest_dir = manifest_path
+        .parent()
+        .ok_or_else(|| "adapter_manifest_parent_missing".to_string())?;
+    let cwd = manifest
+        .runtime
+        .cwd
+        .as_ref()
+        .map(|value| manifest_dir.join(value))
+        .unwrap_or_else(|| manifest_dir.to_path_buf());
+    let entry = manifest_dir.join(&manifest.runtime.entry);
+    if !entry.is_file() {
+        return Err(format!("adapter_entry_missing: {}", entry.display()));
+    }
+    let mut command = Command::new(node_runtime_command());
+    command
+        .arg(entry)
+        .args(&manifest.runtime.args)
+        .current_dir(cwd)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("adapter_spawn_failed: {error}"))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "adapter_stdout_missing".to_string())?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    thread::spawn(move || {
+        let mut reader = BufReader::new(stdout);
+        let mut line = String::new();
+        let result = reader.read_line(&mut line).map(|_| line);
+        let _ = tx.send(result);
+    });
+    let ready_line = match rx.recv_timeout(Duration::from_secs(8)) {
+        Ok(Ok(line)) => line,
+        Ok(Err(error)) => {
+            let _ = child.kill();
+            return Err(format!("adapter_ready_read_failed: {error}"));
+        }
+        Err(_) => {
+            let _ = child.kill();
+            return Err("adapter_ready_timeout".to_string());
+        }
+    };
+    let ready: Value = serde_json::from_str(ready_line.trim()).map_err(|error| {
+        let _ = child.kill();
+        format!("adapter_ready_invalid_json: {error}")
+    })?;
+    let endpoint = ready
+        .get("url")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            let _ = child.kill();
+            "adapter_ready_url_missing".to_string()
+        })?
+        .to_string();
+    Ok(ManagedAdapterProcess {
+        product_id: manifest.product_id,
+        endpoint,
+        manifest_path: manifest_path.to_path_buf(),
+        product_name: manifest.product_name,
+        child,
+        started_at: Instant::now(),
+    })
+}
+
+fn node_runtime_command() -> PathBuf {
+    if let Ok(value) = env::var("PANDA_BRIDGE_NODE") {
+        let trimmed = value.trim();
+        if !trimmed.is_empty() {
+            return PathBuf::from(trimmed);
+        }
+    }
+    if let Ok(exe) = env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            if cfg!(target_os = "macos") {
+                if let Some(contents) = dir.parent() {
+                    let candidate = contents
+                        .join("Resources")
+                        .join("runtime")
+                        .join("node")
+                        .join("bin")
+                        .join("node");
+                    if candidate.is_file() {
+                        return candidate;
+                    }
+                }
+            }
+            let candidate = if cfg!(windows) {
+                dir.join("runtime").join("node").join("node.exe")
+            } else {
+                dir.join("runtime").join("node").join("bin").join("node")
+            };
+            if candidate.is_file() {
+                return candidate;
+            }
+        }
+    }
+    PathBuf::from("node")
 }
 
 fn adapter_url_for_product_path(product_id: &str, path: &str) -> Option<String> {
@@ -4883,7 +5102,7 @@ fn parse_response<T: for<'de> Deserialize<'de>>(
 fn capabilities() -> Value {
     json!({
         "relay": ["relay.envelope", "relay.ack"],
-        "adapter_router": { "mode": "external_http" },
+        "adapter_router": { "mode": "external_http", "managed_processes": true },
         "desktop": "tao-wry",
         "platform": env::consts::OS
     })
@@ -4910,6 +5129,7 @@ fn local_state_for_products(product_ids: &[String]) -> Value {
         "relay": { "envelopes": true, "ack": true },
         "adapter_router": {
             "mode": "external_http",
+            "managed_processes": true,
             "configured": adapter_configured
         }
     });
@@ -4938,14 +5158,39 @@ fn adapter_state_for_products(product_ids: &[String]) -> Map<String, Value> {
         if products.contains_key(product_id) {
             continue;
         }
+        let external = external_adapter_endpoint_for_product(product_id).is_some();
         let configured = adapter_endpoint_for_product(product_id).is_some();
-        let mut product = json!({ "configured": configured });
+        let mut product = json!({
+            "configured": configured,
+            "endpoint_source": if external {
+                "external_env"
+            } else if managed_adapter_info(product_id).is_some() {
+                "managed_process"
+            } else {
+                "missing"
+            }
+        });
+        if let Some(info) = managed_adapter_info(product_id) {
+            product["managed"] = info;
+        }
         if let Some(exchange) = adapter_relay_key_exchange_for_product(product_id) {
             product["relay_key_exchange"] = exchange;
         }
         products.insert(product_id.to_string(), product);
     }
     products
+}
+
+fn managed_adapter_info(product_id: &str) -> Option<Value> {
+    let processes = managed_adapters().lock().ok()?;
+    let process = processes.get(product_id)?;
+    Some(json!({
+        "running": true,
+        "product_id": process.product_id.clone(),
+        "manifest_path": process.manifest_path.display().to_string(),
+        "product_name": process.product_name.clone(),
+        "uptime_ms": process.started_at.elapsed().as_millis(),
+    }))
 }
 
 #[cfg(test)]
@@ -7180,6 +7425,63 @@ mod tests {
         );
         assert_eq!(local_state()["commands"], Value::Null);
         assert_eq!(local_state()["workspaces"], Value::Null);
+    }
+
+    #[test]
+    fn managed_adapter_manifest_starts_node_runtime_and_returns_endpoint() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        if Command::new(node_runtime_command())
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            return;
+        }
+        env::remove_var("PANDA_BRIDGE_ADAPTER_PANDA_BURN_URL");
+        env::remove_var("PANDA_BRIDGE_ADAPTER_URL");
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+        let tmp = env::temp_dir().join(format!("panda-bridge-managed-adapter-{suffix}"));
+        let adapter_dir = tmp.join("adapters").join("panda-burn");
+        fs::create_dir_all(&adapter_dir).unwrap();
+        fs::write(adapter_dir.join("adapter.mjs"), r#"
+import { createServer } from "node:http";
+const server = createServer((req, res) => {
+  res.writeHead(200, { "content-type": "application/json" });
+  res.end(JSON.stringify({ ok: true, path: req.url }));
+});
+server.listen(0, "127.0.0.1", () => {
+  const address = server.address();
+  console.log(JSON.stringify({ ok: true, product_id: "panda-burn", url: `http://127.0.0.1:${address.port}/v1/relay-envelope` }));
+});
+setInterval(() => {}, 1000);
+"#).unwrap();
+        fs::write(
+            adapter_dir.join("adapter.manifest.json"),
+            r#"{
+  "schema": "panda.bridge.managed-adapter.v1",
+  "product_id": "panda-burn",
+  "product_name": "Burn",
+  "runtime": { "type": "node", "entry": "adapter.mjs", "args": [], "cwd": "." }
+}
+"#,
+        )
+        .unwrap();
+        env::set_var("PANDA_BRIDGE_MANAGED_ADAPTERS_DIR", tmp.join("adapters"));
+        let endpoint = adapter_endpoint_for_product("panda-burn").unwrap();
+        assert!(endpoint.contains("/v1/relay-envelope"));
+        let info = managed_adapter_info("panda-burn").unwrap();
+        assert_eq!(info["running"], true);
+        assert_eq!(info["endpoint_source"], Value::Null);
+        if let Ok(mut processes) = managed_adapters().lock() {
+            if let Some(mut process) = processes.remove("panda-burn") {
+                let _ = process.child.kill();
+            }
+        }
+        env::remove_var("PANDA_BRIDGE_MANAGED_ADAPTERS_DIR");
+        let _ = fs::remove_dir_all(tmp);
     }
 
     #[test]
