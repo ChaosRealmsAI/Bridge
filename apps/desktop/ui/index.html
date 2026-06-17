@@ -54,15 +54,16 @@ body{
 .lights i{width:12px;height:12px;border-radius:50%}
 .lights i:nth-child(1){background:#ff5f57}.lights i:nth-child(2){background:#febc2e}.lights i:nth-child(3){background:#28c840}
 .brand{display:flex;align-items:center;gap:8px;padding:0 8px 14px}
-.logo{width:26px;height:26px;border-radius:7px;display:grid;place-items:center;color:#fff;background:linear-gradient(150deg,#3a3a44,#17171d);box-shadow:inset 0 1px 0 rgba(255,255,255,.18),0 1px 3px rgba(0,0,0,.25);flex:none}
+.logo{width:26px;height:26px;border-radius:7px;display:grid;place-items:center;color:#fff;background:#071a3a;box-shadow:inset 0 1px 0 rgba(255,255,255,.18),0 1px 3px rgba(0,0,0,.25);flex:none;overflow:hidden}
+.logo svg{width:100%;height:100%;display:block}
 .brand b{font-size:13px;font-weight:650}
 .lab{font-size:10.5px;font-weight:600;color:var(--ink-3);padding:0 8px 6px;letter-spacing:.02em}
 .ptab{display:flex;align-items:center;gap:9px;padding:7px 9px;border-radius:8px;text-align:left;transition:background var(--dur) var(--ease);width:100%;animation:enter .24s var(--ease)}
 .ptab:hover{background:var(--line-soft)}
 .ptab[aria-current="true"]{background:var(--surface);box-shadow:var(--card-shadow),0 0 0 1px var(--line-soft)}
 .pico{width:28px;height:28px;border-radius:7px;flex:none;display:grid;place-items:center;color:#fff;font-size:10.5px;font-weight:700;box-shadow:inset 0 1px 0 rgba(255,255,255,.3),0 1px 3px rgba(0,0,0,.15);overflow:hidden}
-.pico.icon{background:#fff!important}
-.pico.icon img{width:100%;height:100%;display:block;object-fit:contain;padding:3px}
+.pico.icon{background:linear-gradient(150deg,#fff8e6,#ffd0a0)}
+.pico.icon img{width:100%;height:100%;display:block;object-fit:contain;padding:1px;border-radius:6px}
 .pt-main{min-width:0}
 .pn{font-size:12.5px;font-weight:550;line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .pm{font-size:10px;color:var(--ink-3)}
@@ -194,7 +195,7 @@ html.app .lights{display:none}
   <aside class="rail">
     <div class="lights"><i></i><i></i><i></i></div>
     <div class="brand">
-      <div class="logo"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M4 15a4 4 0 0 1 4-4h8a4 4 0 0 1 4 4"/><circle cx="6.2" cy="17.6" r="2.2"/><circle cx="17.8" cy="17.6" r="2.2"/><path d="M12 11V5.5"/><circle cx="12" cy="4.4" r="1.3"/></svg></div>
+      <div class="logo"><svg viewBox="0 0 64 64" role="img" aria-label="Panda Bridge"><defs><linearGradient id="bridgeMiniBg" x1="10" y1="5" x2="54" y2="59" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#082451"/><stop offset=".55" stop-color="#0b4db4"/><stop offset="1" stop-color="#03142d"/></linearGradient><linearGradient id="bridgeMiniStroke" x1="12" y1="32" x2="52" y2="32" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#62e7ff"/><stop offset=".5" stop-color="#7df8ff"/><stop offset="1" stop-color="#61d6ff"/></linearGradient></defs><rect width="64" height="64" rx="15" fill="url(#bridgeMiniBg)"/><path d="M12 32c0-8.5 5.9-12 12.5-12 5.8 0 9.9 5.8 7.5 12-2.4 6.2 1.7 12 7.5 12C46.1 44 52 40.5 52 32s-5.9-12-12.5-12c-5.8 0-9.9 5.8-7.5 12 2.4 6.2-1.7 12-7.5 12C17.9 44 12 40.5 12 32Z" fill="none" stroke="url(#bridgeMiniStroke)" stroke-width="5.4" stroke-linecap="round" stroke-linejoin="round"/><rect x="22" y="29" width="20" height="6" rx="3" fill="url(#bridgeMiniStroke)"/><circle cx="22" cy="32" r="5.7" fill="#082451" stroke="#9af3ff" stroke-width="2.7"/><circle cx="42" cy="32" r="5.7" fill="#082451" stroke="#9af3ff" stroke-width="2.7"/><circle cx="22" cy="32" r="1.9" fill="#d8fbff"/><circle cx="42" cy="32" r="1.9" fill="#d8fbff"/></svg></div>
       <b>Panda Bridge</b>
     </div>
     <div class="lab" id="productLabel">产品</div>
