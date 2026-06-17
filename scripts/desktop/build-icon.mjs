@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-import { existsSync, mkdirSync, rmSync } from "node:fs";
-import { resolve } from "node:path";
+import { copyFileSync, existsSync, mkdirSync, rmSync } from "node:fs";
+import { basename, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
 if (process.platform !== "darwin") {
@@ -27,20 +27,34 @@ for (const size of sizes) {
 }
 
 run("iconutil", ["-c", "icns", iconset, "-o", output]);
+rmSync(iconset, { recursive: true, force: true });
 console.log(JSON.stringify({ ok: true, icon: output }, null, 2));
 
 function renderPng(size, outputPath) {
-  run("magick", [
-    "-background",
-    "none",
-    source,
-    "-resize",
-    `${size}x${size}`,
-    outputPath,
-  ]);
+  if (commandAvailable("magick")) {
+    run("magick", [
+      "-background",
+      "none",
+      source,
+      "-resize",
+      `${size}x${size}`,
+      outputPath,
+    ]);
+    return;
+  }
+  const qlOutput = resolve(iconset, `.quicklook-${size}`);
+  rmSync(qlOutput, { recursive: true, force: true });
+  mkdirSync(qlOutput, { recursive: true });
+  run("qlmanage", ["-t", "-s", String(size), "-o", qlOutput, source]);
+  copyFileSync(resolve(qlOutput, `${basename(source)}.png`), outputPath);
+  rmSync(qlOutput, { recursive: true, force: true });
 }
 
 function run(command, args) {
   const result = spawnSync(command, args, { stdio: "inherit" });
   if (result.status !== 0) process.exit(result.status || 1);
+}
+
+function commandAvailable(command) {
+  return spawnSync(command, ["-version"], { stdio: "ignore" }).status === 0;
 }
