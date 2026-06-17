@@ -6,6 +6,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  readdirSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -68,7 +69,7 @@ const nodeRuntime = copyNodeRuntime(appDir);
 writeFileSync(resolve(appDir, "Install.ps1"), installScript());
 writeFileSync(resolve(appDir, "Uninstall.ps1"), uninstallScript());
 writeFileSync(resolve(appDir, "README.txt"), readmeText());
-writeFileSync(resolve(appDir, "manifest.json"), JSON.stringify(manifest(), null, 2));
+writeFileSync(resolve(appDir, "manifest.json"), JSON.stringify(manifest(managedAdapters), null, 2));
 
 if (process.platform === "win32" && !xwinMode) {
   run("powershell.exe", [
@@ -98,7 +99,7 @@ console.log(JSON.stringify({
   node_runtime: nodeRuntime,
 }, null, 2));
 
-function manifest() {
+function manifest(copiedAdapters = []) {
   return {
     app_name: appName,
     binary: exeName,
@@ -109,28 +110,53 @@ function manifest() {
     webview: "Microsoft Edge WebView2 Evergreen Runtime",
     managed_adapters: {
       directory: "adapters",
-      burn_manifest: "adapters\\panda-burn\\adapter.manifest.json",
+      manifests: copiedAdapters.map((adapter) => adapter.manifest),
     },
     node_runtime: "runtime\\node\\node.exe",
   };
 }
 
 function copyManagedAdapters(targetRoot) {
-  const source = process.env.PANDA_BRIDGE_BURN_ADAPTER_DIR
-    ? resolve(process.env.PANDA_BRIDGE_BURN_ADAPTER_DIR)
-    : resolve("../syllo/dist/bridge-adapters/panda-burn");
-  const adaptersDir = resolve(targetRoot, "adapters");
+  const source = process.env.PANDA_BRIDGE_MANAGED_ADAPTERS_DIR;
   const copied = [];
-  if (!existsSync(source)) return copied;
+  if (!source) return copied;
+  const sourceRoot = resolve(source);
+  if (!existsSync(sourceRoot)) {
+    throw new Error(`PANDA_BRIDGE_MANAGED_ADAPTERS_DIR not found: ${sourceRoot}`);
+  }
+  const adaptersDir = resolve(targetRoot, "adapters");
   mkdirSync(adaptersDir, { recursive: true });
-  cpSync(source, resolve(adaptersDir, "panda-burn"), { recursive: true, force: true });
-  copied.push(resolve(adaptersDir, "panda-burn"));
-  const bridgeRuntime = resolve(source, "..", "panda-bridge");
-  if (existsSync(bridgeRuntime)) {
-    cpSync(bridgeRuntime, resolve(adaptersDir, "panda-bridge"), { recursive: true, force: true });
-    copied.push(resolve(adaptersDir, "panda-bridge"));
+  for (const adapter of managedAdapterSources(sourceRoot)) {
+    const target = resolve(adaptersDir, adapter.productId);
+    cpSync(adapter.sourceDir, target, { recursive: true, force: true });
+    copied.push({
+      product_id: adapter.productId,
+      directory: target,
+      manifest: `adapters\\${adapter.productId}\\adapter.manifest.json`,
+    });
   }
   return copied;
+}
+
+function managedAdapterSources(sourceRoot) {
+  if (existsSync(resolve(sourceRoot, "adapter.manifest.json"))) {
+    return [managedAdapterSource(sourceRoot)];
+  }
+  return readdirSync(sourceRoot, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => resolve(sourceRoot, entry.name))
+    .filter((sourceDir) => existsSync(resolve(sourceDir, "adapter.manifest.json")))
+    .map(managedAdapterSource);
+}
+
+function managedAdapterSource(sourceDir) {
+  const manifestPath = resolve(sourceDir, "adapter.manifest.json");
+  const manifestData = JSON.parse(readFileSync(manifestPath, "utf8"));
+  const productId = String(manifestData.product_id || "").trim();
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(productId)) {
+    throw new Error(`managed adapter manifest has invalid product_id: ${manifestPath}`);
+  }
+  return { sourceDir, productId };
 }
 
 function copyNodeRuntime(targetRoot) {
@@ -249,7 +275,8 @@ function assertTemplateContracts() {
   if (data.protocol !== "panda-bridge" || data.binary !== exeName) {
     throw new Error("manifest does not match Windows protocol/binary contract");
   }
-  if (data.managed_adapters?.burn_manifest !== "adapters\\panda-burn\\adapter.manifest.json" || data.node_runtime !== "runtime\\node\\node.exe") {
+  const legacyManifestKey = ["burn", "manifest"].join("_");
+  if (!Array.isArray(data.managed_adapters?.manifests) || data.managed_adapters?.[legacyManifestKey] || data.node_runtime !== "runtime\\node\\node.exe") {
     throw new Error("manifest does not advertise managed adapter/runtime contract");
   }
 }

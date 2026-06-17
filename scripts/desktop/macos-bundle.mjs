@@ -1,4 +1,4 @@
-import { copyFileSync, cpSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
@@ -156,21 +156,42 @@ export function run(command, args, options = {}) {
 }
 
 function copyManagedAdapters(resources) {
-  const source = process.env.PANDA_BRIDGE_BURN_ADAPTER_DIR
-    ? resolve(process.env.PANDA_BRIDGE_BURN_ADAPTER_DIR)
-    : resolve("../syllo/dist/bridge-adapters/panda-burn");
-  const adaptersDir = resolve(resources, "adapters");
+  const source = process.env.PANDA_BRIDGE_MANAGED_ADAPTERS_DIR;
   const copied = [];
-  if (!existsSync(source)) return copied;
+  if (!source) return copied;
+  const sourceRoot = resolve(source);
+  if (!existsSync(sourceRoot)) {
+    throw new Error(`PANDA_BRIDGE_MANAGED_ADAPTERS_DIR not found: ${sourceRoot}`);
+  }
+  const adaptersDir = resolve(resources, "adapters");
   mkdirSync(adaptersDir, { recursive: true });
-  cpSync(source, resolve(adaptersDir, "panda-burn"), { recursive: true, force: true });
-  copied.push(resolve(adaptersDir, "panda-burn"));
-  const bridgeRuntime = resolve(source, "..", "panda-bridge");
-  if (existsSync(bridgeRuntime)) {
-    cpSync(bridgeRuntime, resolve(adaptersDir, "panda-bridge"), { recursive: true, force: true });
-    copied.push(resolve(adaptersDir, "panda-bridge"));
+  for (const adapter of managedAdapterSources(sourceRoot)) {
+    const target = resolve(adaptersDir, adapter.productId);
+    cpSync(adapter.sourceDir, target, { recursive: true, force: true });
+    copied.push(target);
   }
   return copied;
+}
+
+function managedAdapterSources(sourceRoot) {
+  if (existsSync(resolve(sourceRoot, "adapter.manifest.json"))) {
+    return [managedAdapterSource(sourceRoot)];
+  }
+  return readdirSync(sourceRoot, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => resolve(sourceRoot, entry.name))
+    .filter((sourceDir) => existsSync(resolve(sourceDir, "adapter.manifest.json")))
+    .map(managedAdapterSource);
+}
+
+function managedAdapterSource(sourceDir) {
+  const manifestPath = resolve(sourceDir, "adapter.manifest.json");
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+  const productId = String(manifest.product_id || "").trim();
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(productId)) {
+    throw new Error(`managed adapter manifest has invalid product_id: ${manifestPath}`);
+  }
+  return { sourceDir, productId };
 }
 
 function copyNodeRuntime(resources) {

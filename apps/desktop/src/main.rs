@@ -46,9 +46,6 @@ const KEYCHAIN_SERVICE: &str = "cc.otherline.panda-bridge";
 const KEYCHAIN_USER: &str = "device";
 const DEFAULT_API: &str = "https://api.bridge.chaos-realms.cc";
 const DEFAULT_WEB: &str = "https://bridge.chaos-realms.cc";
-const BURN_PRODUCT_ID: &str = "panda-burn";
-const BURN_PRODUCT_NAME: &str = "Burn";
-const BURN_PRODUCT_ORIGIN: &str = "https://token-burn.com";
 #[cfg(windows)]
 const WINDOWS_SINGLE_INSTANCE_ADDR: &str = "127.0.0.1:52321";
 #[cfg(windows)]
@@ -2259,52 +2256,13 @@ fn known_product_id_for_grant(product: &ProductGrant) -> &'static str {
     }
 }
 
-fn is_burn_product_alias(value: &str) -> bool {
-    let lower = value.to_ascii_lowercase();
-    let legacy_chat = ["co", "co"].concat();
-    let legacy_app = ["sy", "llo"].concat();
-    lower.contains("burn")
-        || lower.contains(BURN_PRODUCT_ID)
-        || lower.contains("token-burn")
-        || lower.contains(&legacy_chat)
-        || lower.contains(&legacy_app)
-}
-
-fn normalize_product_grant_brand(mut product: ProductGrant) -> ProductGrant {
-    let haystack = format!(
-        "{} {} {}",
-        product.id,
-        product.name,
-        product.origin.clone().unwrap_or_default()
-    );
-    if is_burn_product_alias(&haystack) {
-        product.id = BURN_PRODUCT_ID.to_string();
-        product.name = BURN_PRODUCT_NAME.to_string();
-        product.origin = Some(BURN_PRODUCT_ORIGIN.to_string());
-    }
+fn normalize_product_grant_brand(product: ProductGrant) -> ProductGrant {
     product
 }
 
 fn normalize_catalog_product_brand(
-    mut product: DesktopProductCatalogEntry,
+    product: DesktopProductCatalogEntry,
 ) -> DesktopProductCatalogEntry {
-    let haystack = format!(
-        "{} {} {} {} {} {}",
-        product.id,
-        product.name,
-        product.origin.clone().unwrap_or_default(),
-        product.web_url.clone().unwrap_or_default(),
-        product.official_origin.clone().unwrap_or_default(),
-        product.official_origins.join(" ")
-    );
-    if is_burn_product_alias(&haystack) {
-        product.id = BURN_PRODUCT_ID.to_string();
-        product.name = BURN_PRODUCT_NAME.to_string();
-        product.origin = Some(BURN_PRODUCT_ORIGIN.to_string());
-        product.web_url = Some(BURN_PRODUCT_ORIGIN.to_string());
-        product.official_origin = Some(BURN_PRODUCT_ORIGIN.to_string());
-        product.official_origins = vec![BURN_PRODUCT_ORIGIN.to_string()];
-    }
     product
 }
 

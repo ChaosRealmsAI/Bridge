@@ -162,6 +162,7 @@ for (const marker of publicLegacyJobMarkers) {
 }
 
 const desktopMain = readFileSync(new URL("../../apps/desktop/src/main.rs", import.meta.url), "utf8");
+const desktopProduction = desktopMain.slice(0, desktopMain.indexOf("#[cfg(test)]"));
 assert.ok(desktopMain.includes("/v1/connectors/relay/envelopes"), "Desktop must poll relay envelope endpoint");
 assert.ok(desktopMain.includes("route_relay_envelope_to_adapter"), "Desktop must route relay envelopes to AdapterRouter");
 assert.ok(desktopMain.includes("PANDA_BRIDGE_ADAPTER_URL"), "Desktop must use product adapter endpoint env");
@@ -173,6 +174,9 @@ assert.ok(desktopMain.includes("confirm_pending_intent"), "Desktop must expose e
 assert.ok(desktopMain.includes("pending_authorizations"), "Desktop verify snapshot must expose pending authorization previews");
 assert.ok(desktopMain.includes("PENDING AUTHORIZATION PREVIEW"), "Desktop built-in screenshot must render the pending authorization preview");
 assert.ok(desktopMain.includes("product_authorization"), "Desktop preview must surface product_authorization as product-scoped data");
+for (const marker of ["BURN_PRODUCT", "is_burn_product_alias", "token-burn"]) {
+  assert.equal(desktopProduction.includes(marker), false, `Desktop production code must not contain Burn-specific product branding: ${marker}`);
+}
 const localStateStart = desktopMain.indexOf("fn local_state() -> Value");
 const localStateEnd = desktopMain.indexOf("fn low_tier_capabilities", localStateStart);
 const localState = desktopMain.slice(localStateStart, localStateEnd);
@@ -187,6 +191,19 @@ assert.ok(desktopUi.includes("claim_intent_preview"), "Desktop UI allow flow mus
 assert.ok(desktopUi.includes("confirm_pending_intent"), "Desktop UI allow flow must explicitly confirm pending authorization");
 assert.ok(desktopUi.includes("product_authorization"), "Desktop UI preview must render product_authorization summary");
 assert.ok(desktopUi.includes("policy caps"), "Desktop UI preview must render relay policy capability summary");
+for (const marker of ["BURN_ICON_URL", "token-burn", "panda-burn"]) {
+  assert.equal(desktopUi.includes(marker), false, `Desktop UI must not ship Burn-specific product affordance: ${marker}`);
+}
+
+const macosBundle = readFileSync(new URL("../desktop/macos-bundle.mjs", import.meta.url), "utf8");
+const windowsPackage = readFileSync(new URL("../desktop/package-windows.mjs", import.meta.url), "utf8");
+for (const source of [macosBundle, windowsPackage]) {
+  for (const marker of ["PANDA_BRIDGE_BURN_ADAPTER_DIR", "../syllo", "burn_manifest", "panda-burn"]) {
+    assert.equal(source.includes(marker), false, `desktop package scripts must not contain product-specific managed adapter marker: ${marker}`);
+  }
+  assert.ok(source.includes("PANDA_BRIDGE_MANAGED_ADAPTERS_DIR"), "desktop package scripts must use the generic managed adapter directory env");
+  assert.ok(source.includes("adapter.manifest.json"), "desktop package scripts must discover adapters by manifest");
+}
 
 const workerMain = readFileSync(new URL("../../apps/cloud-worker/src/index.js", import.meta.url), "utf8");
 const workerLegacyRuntime = readFileSync(new URL("../../apps/cloud-worker/src/legacy-runtime.js", import.meta.url), "utf8");
