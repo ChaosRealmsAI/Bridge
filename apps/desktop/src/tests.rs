@@ -446,6 +446,55 @@ mod tests {
     }
 
     #[test]
+    fn refresh_cloud_profile_persists_probe_failure_marker() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        reset_credentials_env();
+        let old_home = env::var_os("HOME");
+        let old_userprofile = env::var_os("USERPROFILE");
+        let home = with_settings_home("panda-bridge-refresh-profile-failure");
+        let (api, server) = start_profile_server(json!({
+            "ok": true,
+            "protocol": "not-bridge",
+            "api_base": "http://127.0.0.1:1",
+            "web_origin": "http://127.0.0.1:1",
+            "products": []
+        }));
+        let mut settings = default_settings();
+        upsert_cloud_profile(
+            &mut settings,
+            CloudProfile {
+                id: profile_id_for_api(&api),
+                name: "My Server".to_string(),
+                api_base: api.clone(),
+                web_origin: Some(api.clone()),
+                products: fixed_product_catalog_entries(),
+                source: "selfhost".to_string(),
+                updated_at: "probe:2026-06-20T00:00:00Z".to_string(),
+            },
+            true,
+        );
+        save_settings(&settings).unwrap();
+
+        let error = refresh_cloud_profile(&json!({ "api": api })).unwrap_err();
+        assert!(error.contains("unsupported protocol"));
+        server.join().unwrap();
+        let settings = load_settings_with_api(DEFAULT_API);
+        let profile = selected_cloud_profile(&settings).unwrap();
+        assert!(profile.updated_at.starts_with("probe_error:"));
+        assert!(profile.updated_at.contains("unsupported protocol"));
+        let state = new_app_state();
+        let live = selected_profile_live_status(None, &state, &settings);
+        assert_eq!(live.server.reachable, Some(false));
+        assert_eq!(live.server.compatible, Some(false));
+        assert_eq!(live.server.source, "profile_probe_error");
+
+        restore_env_var("HOME", old_home);
+        restore_env_var("USERPROFILE", old_userprofile);
+        reset_credentials_env();
+        let _ = fs::remove_dir_all(home);
+    }
+
+    #[test]
     fn diagnostics_product_without_web_url_uses_origin_fallback() {
         let product = ProductInfo {
             id: "acme-demo".to_string(),
@@ -1006,8 +1055,13 @@ mod tests {
         let state = new_app_state();
         state.worker_running.store(true, Ordering::SeqCst);
         state.realtime_connected.store(true, Ordering::SeqCst);
+        {
+            let mut registered = state.realtime_connection_keys.lock().unwrap();
+            registered.insert(realtime_connection_key(&official));
+            registered.insert(realtime_connection_key(&selected));
+        }
         state
-            .realtime_connection_keys
+            .realtime_connected_keys
             .lock()
             .unwrap()
             .insert(realtime_connection_key(&official));
@@ -1016,13 +1070,169 @@ mod tests {
 
         assert_eq!(live.profile_id, profile_id_for_api(api));
         assert_eq!(live.api_base, api);
-        assert_eq!(live.server.reachable, Some(true));
+        assert_eq!(live.server.reachable, None);
+        assert_eq!(live.server.compatible, None);
+        assert_eq!(live.server.source, "not_probed");
         assert_eq!(live.device.paired, true);
         assert_eq!(live.device.present, Some(false));
         assert_eq!(live.account.authorized, true);
         assert_eq!(live.transport.realtime_connected, false);
         assert_eq!(live.transport.realtime_state, "degraded");
         assert_eq!(live.transport.polling_state, "active");
+    }
+
+    #[test]
+    fn selected_profile_server_status_requires_fresh_probe_marker_for_custom_profiles() {
+        let api = "http://legacy-profile.test:8787";
+        let mut settings = default_settings();
+        upsert_cloud_profile(
+            &mut settings,
+            CloudProfile {
+                id: profile_id_for_api(api),
+                name: "Legacy Profile".to_string(),
+                api_base: api.to_string(),
+                web_origin: Some(api.to_string()),
+                products: fixed_product_catalog_entries(),
+                source: "selfhost".to_string(),
+                updated_at: now_string(),
+            },
+            true,
+        );
+        let state = new_app_state();
+
+        let legacy = selected_profile_live_status(None, &state, &settings);
+        assert_eq!(legacy.server.reachable, None);
+        assert_eq!(legacy.server.compatible, None);
+        assert_eq!(legacy.server.last_probe_at, None);
+        assert_eq!(legacy.server.source, "not_probed");
+
+        let probe_at = format!("unix:{}", unix_seconds());
+        settings
+            .cloud_profiles
+            .iter_mut()
+            .find(|profile| profile.api_base == api)
+            .unwrap()
+            .updated_at = format!("probe:{probe_at}");
+        let probed = selected_profile_live_status(None, &state, &settings);
+        assert_eq!(probed.server.reachable, Some(true));
+        assert_eq!(probed.server.compatible, Some(true));
+        assert_eq!(probed.server.last_probe_at, Some(probe_at.clone()));
+        assert_eq!(probed.server.source, "profile_probe");
+
+        let stale_probe_at = format!(
+            "unix:{}",
+            unix_seconds().saturating_sub(PROFILE_PROBE_SUCCESS_TTL_SECONDS + 1)
+        );
+        settings
+            .cloud_profiles
+            .iter_mut()
+            .find(|profile| profile.api_base == api)
+            .unwrap()
+            .updated_at = format!("probe:{stale_probe_at}");
+        let stale = selected_profile_live_status(None, &state, &settings);
+        assert_eq!(stale.server.reachable, None);
+        assert_eq!(stale.server.compatible, None);
+        assert_eq!(stale.server.last_probe_at, Some(stale_probe_at));
+        assert_eq!(
+            stale.server.error,
+            Some("profile probe stale".to_string())
+        );
+        assert_eq!(stale.server.source, "profile_probe_stale");
+    }
+
+    #[test]
+    fn selected_profile_device_heartbeat_does_not_prove_server_compatibility() {
+        let api = "http://heartbeat-only.test:8787";
+        let mut settings = default_settings();
+        upsert_cloud_profile(
+            &mut settings,
+            CloudProfile {
+                id: profile_id_for_api(api),
+                name: "Heartbeat Only".to_string(),
+                api_base: api.to_string(),
+                web_origin: Some(api.to_string()),
+                products: fixed_product_catalog_entries(),
+                source: "selfhost".to_string(),
+                updated_at: now_string(),
+            },
+            true,
+        );
+
+        let mut credentials = test_credentials(vec!["relay.envelope", "relay.ack"]);
+        credentials.api_base = api.to_string();
+        credentials.device_id = "dev_selfhost".to_string();
+        credentials.device_token = "pbd_selfhost".to_string();
+        credentials.product_id = Some("panda-burn".to_string());
+        credentials.product_name = Some("Burn".to_string());
+        credentials.authorized_products[0].id = "panda-burn".to_string();
+        credentials.authorized_products[0].name = "Burn".to_string();
+        credentials.device_online = Some(true);
+        credentials.device_last_seen_at = Some(now_string());
+        let state = new_app_state();
+        let live = selected_profile_live_status(Some(&credentials), &state, &settings);
+
+        assert_eq!(live.server.reachable, None);
+        assert_eq!(live.server.compatible, None);
+        assert_eq!(live.server.last_probe_at, None);
+        assert_eq!(live.server.source, "not_probed");
+        assert_eq!(live.device.paired, true);
+        assert_eq!(live.device.present, Some(true));
+        assert_eq!(live.account.authorized, true);
+        assert_eq!(live.transport.realtime_state, "degraded");
+        assert_eq!(live.transport.polling_state, "stopped");
+        assert_eq!(
+            live.transport.degraded_reason,
+            Some("worker_stopped".to_string())
+        );
+    }
+
+    #[test]
+    fn selected_profile_server_status_reports_latest_probe_failure() {
+        let api = "http://probe-failure.test:8787";
+        let mut settings = default_settings();
+        upsert_cloud_profile(
+            &mut settings,
+            CloudProfile {
+                id: profile_id_for_api(api),
+                name: "Probe Failure Profile".to_string(),
+                api_base: api.to_string(),
+                web_origin: Some(api.to_string()),
+                products: fixed_product_catalog_entries(),
+                source: "selfhost".to_string(),
+                updated_at: "probe:2026-06-20T00:00:00Z".to_string(),
+            },
+            true,
+        );
+
+        let mut credentials = test_credentials(vec!["relay.envelope", "relay.ack"]);
+        credentials.api_base = api.to_string();
+        credentials.device_id = "dev_selfhost".to_string();
+        credentials.device_token = "pbd_selfhost".to_string();
+        credentials.device_online = Some(true);
+        credentials.device_last_seen_at = Some("2026-06-20T00:01:00Z".to_string());
+        let state = new_app_state();
+
+        settings
+            .cloud_profiles
+            .iter_mut()
+            .find(|profile| profile.api_base == api)
+            .unwrap()
+            .updated_at =
+            "probe_error:2026-06-20T00:02:00Z|Bridge Cloud health did not return ok=true"
+                .to_string();
+        let failed = selected_profile_live_status(Some(&credentials), &state, &settings);
+
+        assert_eq!(failed.server.reachable, Some(false));
+        assert_eq!(failed.server.compatible, Some(false));
+        assert_eq!(
+            failed.server.last_probe_at,
+            Some("2026-06-20T00:02:00Z".to_string())
+        );
+        assert_eq!(
+            failed.server.error,
+            Some("Bridge Cloud health did not return ok=true".to_string())
+        );
+        assert_eq!(failed.server.source, "profile_probe_error");
     }
 
     #[test]

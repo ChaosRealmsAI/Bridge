@@ -2,9 +2,9 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { resolve } from "node:path";
+import { relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { chromium } from "playwright";
 
@@ -20,6 +20,8 @@ const PRODUCT_ID = "panda-burn";
 const PRODUCT_NAME = "Burn";
 const DIAGNOSTICS_TEST_PRODUCT_ID = "acme-demo";
 const SELFHOST_ADMIN_TOKEN = "selfhost-admin-test";
+const repoRoot = resolve(".");
+const CONNECT_TOKEN_PATTERN = /\bpbi_[A-Za-z0-9._~-]+/g;
 const evidenceRoot = resolve("spec/L3/evidence");
 const finalEvidenceDir = resolve(evidenceRoot, "personal-selfhost-docker-pairing");
 mkdirSync(evidenceRoot, { recursive: true });
@@ -316,7 +318,7 @@ try {
   assert.equal(status.selected_profile.server.compatible, true);
   assert.equal(status.selected_profile.device.paired, true);
   assert.equal(status.selected_profile.account.authorized, true);
-  assert.ok(["connected", "degraded", "stopped"].includes(status.selected_profile.transport.realtime_state));
+  assert.ok(["connected", "degraded"].includes(status.selected_profile.transport.realtime_state));
   step("bb-v04-deeplink-allow", {
     action: "Allow unknown self-host API deep link",
     expected: "Desktop validates diagnostics, claims intent, saves/selects Profile, and shows fixed Burn tab/account",
@@ -404,10 +406,12 @@ try {
   };
   assert.equal(summary.pairing.desktop_state_contains_original_token, false, "Desktop state stored original Pairing Token");
   assert.equal(summary.relay.server_visible_plaintext, false, "self-host relay leaked product plaintext into server-visible fields");
-  writeFileSync(resolve(evidenceDir, "manifest.json"), `${JSON.stringify({ ok: true, steps }, null, 2)}\n`);
-  writeFileSync(resolve(evidenceDir, "summary.json"), `${JSON.stringify(summary, null, 2)}\n`);
+  writeFileSync(resolve(evidenceDir, "manifest.json"), `${JSON.stringify(sanitizeEvidence({ ok: true, steps }), null, 2)}\n`);
+  writeFileSync(resolve(evidenceDir, "summary.json"), `${JSON.stringify(sanitizeEvidence(summary), null, 2)}\n`);
+  assertDurableEvidenceRedacted(evidenceDir);
   promoteEvidenceDir();
-  console.log(JSON.stringify(summary, null, 2));
+  assertDurableEvidenceRedacted(finalEvidenceDir);
+  console.log(JSON.stringify(sanitizeEvidence(summary), null, 2));
 } finally {
   await adapter.close();
   await workerServer.close();
@@ -416,7 +420,7 @@ try {
 
 function snapshot(name, payload) {
   const relative = `snapshots/${name}.json`;
-  writeFileSync(resolve(evidenceDir, relative), `${JSON.stringify(payload, null, 2)}\n`);
+  writeFileSync(resolve(evidenceDir, relative), `${JSON.stringify(sanitizeEvidence(payload), null, 2)}\n`);
   return relative;
 }
 
@@ -458,9 +462,52 @@ function commandEvidence(child) {
     status: child.status,
     signal: child.signal,
     error: desktopError(child.stderr),
-    stdout: child.stdout.trim(),
-    stderr_tail: child.stderr.trim().split(/\r?\n/).slice(-12),
+    stdout: sanitizeString(child.stdout.trim()),
+    stderr_tail: child.stderr.trim().split(/\r?\n/).slice(-12).map(sanitizeString),
   };
+}
+
+function sanitizeEvidence(value) {
+  if (typeof value === "string") return sanitizeString(value);
+  if (Array.isArray(value)) return value.map(sanitizeEvidence);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, child]) => [key, sanitizeEvidence(child)]),
+    );
+  }
+  return value;
+}
+
+function sanitizeString(value) {
+  let next = value.replace(CONNECT_TOKEN_PATTERN, "[redacted-connect-token]");
+  if (next.startsWith(`${repoRoot}/`)) return relative(repoRoot, next);
+  if (next === repoRoot) return "[repo]";
+  if (next.includes(repoRoot)) next = next.split(repoRoot).join("[repo]");
+  if (next.startsWith(`${temp}/`)) return `[temp]/${relative(temp, next)}`;
+  if (next === temp) return "[temp]";
+  if (next.includes(temp)) next = next.split(temp).join("[temp]");
+  return next;
+}
+
+function assertDurableEvidenceRedacted(dir) {
+  const leaks = [];
+  for (const file of listJsonFiles(dir)) {
+    const text = readFileSync(file, "utf8");
+    if (CONNECT_TOKEN_PATTERN.test(text)) leaks.push(`${relative(repoRoot, file)}: raw connect token`);
+    CONNECT_TOKEN_PATTERN.lastIndex = 0;
+    if (text.includes(repoRoot)) leaks.push(`${relative(repoRoot, file)}: repo root path`);
+    if (text.includes(temp)) leaks.push(`${relative(repoRoot, file)}: temp root path`);
+  }
+  assert.deepEqual(leaks, [], `durable selfhost-profile evidence is not redacted:\n${leaks.join("\n")}`);
+}
+
+function listJsonFiles(dir) {
+  return readdirSync(dir).flatMap((entry) => {
+    const full = resolve(dir, entry);
+    const stat = statSync(full);
+    if (stat.isDirectory()) return listJsonFiles(full);
+    return entry.endsWith(".json") ? [full] : [];
+  });
 }
 
 function desktopError(stderr) {

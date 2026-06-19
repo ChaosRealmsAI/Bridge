@@ -450,6 +450,9 @@ pub(crate) fn toggle_authorization_for_state(
     if !has_selected_profile_authorized_connections(&load_credentials()?) {
         state.worker_running.store(false, Ordering::SeqCst);
         state.realtime_connected.store(false, Ordering::SeqCst);
+        if let Ok(mut keys) = state.realtime_connected_keys.lock() {
+            keys.clear();
+        }
     } else {
         let _ = start_worker(state, proxy);
     }
@@ -598,6 +601,9 @@ pub(crate) fn revoke_authorization_for_state(
     {
         state.worker_running.store(false, Ordering::SeqCst);
         state.realtime_connected.store(false, Ordering::SeqCst);
+        if let Ok(mut keys) = state.realtime_connected_keys.lock() {
+            keys.clear();
+        }
     }
     Ok(payload)
 }

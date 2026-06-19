@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { relative, resolve } from "node:path";
 
 import { chromium } from "playwright";
 
 const root = resolve(new URL("../..", import.meta.url).pathname);
 const evidenceDir = resolve(root, "spec/L3/evidence/desktop-ui-smoke");
 const RAW_EMAIL_LIKE_PATTERN = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/i;
+const CONNECT_TOKEN_PATTERN = /\bpbi_[A-Za-z0-9._~-]+/g;
 mkdirSync(evidenceDir, { recursive: true });
 const indexSource = readFileSync(resolve(root, "apps/desktop/ui/index.html"), "utf8");
 const cssSource = readFileSync(resolve(root, "apps/desktop/ui/styles.css"), "utf8");
@@ -72,9 +73,10 @@ async function inspectScenario(name, options = {}) {
   if (options.action) await options.action(page);
   await page.waitForTimeout(options.waitMs ?? 250);
 
-  const screenshot = resolve(evidenceDir, `${name}.png`);
-  await page.screenshot({ path: screenshot });
-  const screenshotBytes = readFileSync(screenshot).byteLength;
+  const screenshot = `${name}.png`;
+  const screenshotPath = resolve(evidenceDir, screenshot);
+  await page.screenshot({ path: screenshotPath });
+  const screenshotBytes = readFileSync(screenshotPath).byteLength;
   const state = await page.evaluate(() => {
     const text = document.body.innerText;
     const product = document.querySelector(".pnode")?.getBoundingClientRect();
@@ -151,9 +153,17 @@ assert.equal(myServerSettings.state.selectedProfile?.label, "My Server", "select
 assert.equal(myServerSettings.state.selectedProfile?.server?.reachable, true, "My Server should expose a real probe-backed reachable status");
 assert.equal(myServerSettings.state.selectedProfile?.device?.paired, true, "My Server pairing should be shown separately from authorization");
 assert.equal(myServerSettings.state.selectedProfile?.account?.authorized, false, "Pairing alone must not mark the account authorized");
+assert.equal(myServerSettings.state.selectedProfile?.local_engine?.running, false, "unauthorized My Server must not show a running local engine");
+assert.equal(myServerSettings.state.selectedProfile?.transport?.realtime_connected, false, "unauthorized My Server must not show realtime connected");
+assert.equal(myServerSettings.state.selectedProfile?.transport?.polling_active, false, "unauthorized My Server must not show polling active");
+const myServerRowIndex = myServerSettings.state.serverNames.indexOf("My Server");
+assert.notEqual(myServerRowIndex, -1, "My Server should have a detail row");
+const myServerHealth = myServerSettings.state.serverHealth[myServerRowIndex] || "";
+const myServerDetail = myServerSettings.state.serverDetails[myServerRowIndex] || "";
+assert.match(myServerDetail, /\bNot authorized\b/i, "My Server detail should show Not authorized");
 assert.ok(
-  myServerSettings.state.serverHealth.every((item) => !/^Online\b/i.test(item)),
-  "Pairing without account authorization must not render immediate Online health",
+  !/^Online\b/i.test(myServerHealth) && !/\bOnline\b/i.test(myServerDetail),
+  "Pairing without account authorization must not render My Server as full Online",
 );
 
 const authSheet = await inspectScenario("authorization-sheet", {
@@ -203,4 +213,25 @@ const summary = {
   })),
 };
 writeFileSync(resolve(evidenceDir, "summary.json"), `${JSON.stringify(summary, null, 2)}\n`);
+assertDurableEvidenceRedacted(evidenceDir);
 console.log("[desktop-ui-smoke] pass");
+
+function assertDurableEvidenceRedacted(dir) {
+  const leaks = [];
+  for (const file of listJsonFiles(dir)) {
+    const text = readFileSync(file, "utf8");
+    if (CONNECT_TOKEN_PATTERN.test(text)) leaks.push(`${relative(root, file)}: raw connect token`);
+    CONNECT_TOKEN_PATTERN.lastIndex = 0;
+    if (text.includes(root)) leaks.push(`${relative(root, file)}: repo root path`);
+  }
+  assert.deepEqual(leaks, [], `durable desktop-ui-smoke evidence is not redacted:\n${leaks.join("\n")}`);
+}
+
+function listJsonFiles(dir) {
+  return readdirSync(dir).flatMap((entry) => {
+    const full = resolve(dir, entry);
+    const stat = statSync(full);
+    if (stat.isDirectory()) return listJsonFiles(full);
+    return entry.endsWith(".json") ? [full] : [];
+  });
+}

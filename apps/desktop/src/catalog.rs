@@ -286,36 +286,43 @@ pub(crate) fn selected_profile_grants(
 
 fn selected_server_status(
     profile: &CloudProfile,
-    selected_connections: &[Credentials],
+    _selected_connections: &[Credentials],
 ) -> SelectedServerLiveStatus {
     let updated_at = profile.updated_at.trim();
-    let last_probe_at = if updated_at.is_empty() || updated_at == "builtin" {
-        None
-    } else {
-        Some(updated_at.to_string())
-    };
-    let heartbeat_seen = selected_connections.iter().any(|connection| {
-        connection.device_online == Some(true) || connection.device_last_seen_at.is_some()
-    });
+    if let Some(failure) = profile_probe_error(updated_at) {
+        return SelectedServerLiveStatus {
+            reachable: Some(false),
+            compatible: Some(false),
+            last_probe_at: Some(failure.at),
+            error: Some(failure.error),
+            source: "profile_probe_error".to_string(),
+        };
+    }
+    let probe = profile_probe_success(updated_at);
+    if let Some(probe) = probe.as_ref().filter(|probe| !probe.fresh) {
+        return SelectedServerLiveStatus {
+            reachable: None,
+            compatible: None,
+            last_probe_at: Some(probe.at.clone()),
+            error: Some("profile probe stale".to_string()),
+            source: "profile_probe_stale".to_string(),
+        };
+    }
+    let last_probe_at = probe.map(|probe| probe.at);
     let reachable = if last_probe_at.is_some() {
         Some(true)
-    } else if heartbeat_seen {
+    } else {
+        None
+    };
+    let compatible = if profile.id == "official" || last_probe_at.is_some() {
         Some(true)
     } else {
         None
     };
-    let compatible =
-        if profile.id == "official" || last_probe_at.is_some() || reachable == Some(true) {
-            Some(true)
-        } else {
-            None
-        };
-    let source = if last_probe_at.is_some() {
-        "profile_probe"
-    } else if heartbeat_seen {
-        "device_heartbeat"
-    } else if profile.id == "official" {
+    let source = if profile.id == "official" {
         "builtin_profile"
+    } else if last_probe_at.is_some() {
+        "profile_probe"
     } else {
         "not_probed"
     };
@@ -478,14 +485,18 @@ fn selected_transport_status(
         .lock()
         .map(|keys| selected_keys.iter().any(|key| keys.contains(key)))
         .unwrap_or(false);
-    let realtime_connected = state.realtime_connected.load(Ordering::SeqCst)
-        && selected_realtime_registered
-        && account.authorized;
+    let selected_realtime_connected = state
+        .realtime_connected_keys
+        .lock()
+        .map(|keys| selected_keys.iter().any(|key| keys.contains(key)))
+        .unwrap_or(false);
+    let realtime_connected =
+        selected_realtime_connected && selected_realtime_registered && account.authorized;
     let polling_active = worker_running && account.authorized;
     let realtime_state = if !account.authorized {
         "idle"
     } else if !worker_running {
-        "stopped"
+        "degraded"
     } else if realtime_connected {
         "connected"
     } else if selected_realtime_registered {

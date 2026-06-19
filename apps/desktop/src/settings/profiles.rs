@@ -169,13 +169,103 @@ pub(crate) fn refresh_cloud_profile(params: &Value) -> Result<DesktopSettings, S
         .find(|profile| profile.id == target)
         .cloned()
         .ok_or_else(|| format!("unknown cloud profile: {target}"))?;
-    let mut profile = fetch_cloud_profile(&existing.api_base, Some(&existing.name))?;
+    let mut profile = match fetch_cloud_profile(&existing.api_base, Some(&existing.name)) {
+        Ok(profile) => profile,
+        Err(error) => {
+            if existing.id != "official" {
+                if let Some(profile) = settings
+                    .cloud_profiles
+                    .iter_mut()
+                    .find(|profile| profile.id == target)
+                {
+                    profile.updated_at = profile_probe_error_marker(&error);
+                }
+                save_settings(&settings).map_err(|save_error| {
+                    format!(
+                        "{}; failed to persist profile probe failure: {}",
+                        redact_error_text(&error),
+                        redact_error_text(&save_error)
+                    )
+                })?;
+            }
+            return Err(error);
+        }
+    };
     profile.id = existing.id;
     profile.source = existing.source;
     let keep_selected = settings.selected_cloud_profile_id == target;
     upsert_cloud_profile(&mut settings, profile, keep_selected);
     save_settings(&settings)?;
     Ok(settings)
+}
+
+pub(crate) struct ProfileProbeFailure {
+    pub(crate) at: String,
+    pub(crate) error: String,
+}
+
+pub(crate) const PROFILE_PROBE_SUCCESS_TTL_SECONDS: u64 = 120;
+
+pub(crate) struct ProfileProbeSuccess {
+    pub(crate) at: String,
+    pub(crate) fresh: bool,
+}
+
+pub(crate) fn profile_probe_at(updated_at: &str) -> Option<String> {
+    updated_at
+        .trim()
+        .strip_prefix("probe:")
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+pub(crate) fn profile_probe_success(updated_at: &str) -> Option<ProfileProbeSuccess> {
+    let at = profile_probe_at(updated_at)?;
+    let fresh = unix_marker_age_seconds(&at)
+        .map(|age| age <= PROFILE_PROBE_SUCCESS_TTL_SECONDS)
+        .unwrap_or(false);
+    Some(ProfileProbeSuccess { at, fresh })
+}
+
+fn unix_marker_age_seconds(marker: &str) -> Option<u64> {
+    let then = marker.trim().strip_prefix("unix:")?.parse::<u64>().ok()?;
+    Some(unix_seconds().saturating_sub(then))
+}
+
+pub(crate) fn profile_probe_error(updated_at: &str) -> Option<ProfileProbeFailure> {
+    let value = updated_at.trim().strip_prefix("probe_error:")?;
+    let (at, error) = value.split_once('|')?;
+    let at = at.trim();
+    if at.is_empty() {
+        return None;
+    }
+    Some(ProfileProbeFailure {
+        at: at.to_string(),
+        error: sanitize_profile_probe_error(error),
+    })
+}
+
+pub(crate) fn profile_probe_error_marker(error: &str) -> String {
+    format!(
+        "probe_error:{}|{}",
+        now_string(),
+        sanitize_profile_probe_error(error)
+    )
+}
+
+fn sanitize_profile_probe_error(error: &str) -> String {
+    let redacted = redact_error_text(error);
+    let sanitized = redacted
+        .replace(['\n', '\r', '|'], " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if sanitized.is_empty() {
+        "probe failed".to_string()
+    } else {
+        sanitized
+    }
 }
 
 pub(crate) fn normalize_settings(settings: &mut DesktopSettings, active_api: &str) {
@@ -287,7 +377,7 @@ pub(crate) fn minimal_cloud_profile(api_base: &str, name: Option<&str>) -> Cloud
         web_origin: None,
         products: fixed_product_catalog_entries(),
         source: "user".to_string(),
-        updated_at: now_string(),
+        updated_at: String::new(),
     }
 }
 
@@ -313,7 +403,7 @@ pub(crate) fn fetch_cloud_profile(
         web_origin: diagnostics.web_origin,
         products: fixed_product_catalog_entries(),
         source: "user".to_string(),
-        updated_at: now_string(),
+        updated_at: format!("probe:{}", now_string()),
     })
 }
 

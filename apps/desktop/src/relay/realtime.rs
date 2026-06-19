@@ -85,7 +85,6 @@ pub(crate) fn spawn_missing_realtime_workers(
         }
         spawned += 1;
         let running = state.worker_running.clone();
-        let realtime_connected = state.realtime_connected.clone();
         let thread_state = state.clone();
         let thread_proxy = proxy.clone();
         thread::spawn(move || {
@@ -96,15 +95,10 @@ pub(crate) fn spawn_missing_realtime_workers(
             );
             let mut backoff = ReconnectBackoff::new();
             while running.load(Ordering::SeqCst) {
-                let result = run_realtime_worker(
-                    &connection,
-                    &running,
-                    &realtime_connected,
-                    &thread_state,
-                    &thread_proxy,
-                );
+                let result =
+                    run_realtime_worker(&connection, &running, &thread_state, &thread_proxy);
                 if let Err(error) = result {
-                    realtime_connected.store(false, Ordering::SeqCst);
+                    mark_realtime_key_disconnected(&thread_state, &key);
                     let delay_ms = backoff.next_delay_ms();
                     push_event(
                         &thread_state,
@@ -135,13 +129,31 @@ pub(crate) fn spawn_missing_realtime_workers(
             }
             if let Ok(mut keys) = thread_state.realtime_connection_keys.lock() {
                 keys.remove(&key);
-                if keys.is_empty() {
-                    realtime_connected.store(false, Ordering::SeqCst);
-                }
             }
+            mark_realtime_key_disconnected(&thread_state, &key);
         });
     }
     Ok(spawned)
+}
+
+pub(crate) fn mark_realtime_key_connected(state: &AppState, key: &str) {
+    if let Ok(mut keys) = state.realtime_connected_keys.lock() {
+        keys.insert(key.to_string());
+        state
+            .realtime_connected
+            .store(!keys.is_empty(), Ordering::SeqCst);
+    }
+}
+
+pub(crate) fn mark_realtime_key_disconnected(state: &AppState, key: &str) {
+    if let Ok(mut keys) = state.realtime_connected_keys.lock() {
+        keys.remove(key);
+        state
+            .realtime_connected
+            .store(!keys.is_empty(), Ordering::SeqCst);
+    } else {
+        state.realtime_connected.store(false, Ordering::SeqCst);
+    }
 }
 
 pub(crate) fn realtime_connection_key(credentials: &Credentials) -> String {
@@ -172,7 +184,6 @@ pub(crate) fn realtime_connection_payload(credentials: &Credentials) -> Value {
 pub(crate) fn run_realtime_worker(
     credentials: &Credentials,
     running: &Arc<AtomicBool>,
-    realtime_connected: &Arc<AtomicBool>,
     state: &AppState,
     proxy: &EventLoopProxy<UserEvent>,
 ) -> Result<(), String> {
@@ -193,7 +204,8 @@ pub(crate) fn run_realtime_worker(
     }
     let (mut socket, _) =
         connect(request).map_err(|error| format!("realtime connect failed: {error}"))?;
-    realtime_connected.store(true, Ordering::SeqCst);
+    let key = realtime_connection_key(credentials);
+    mark_realtime_key_connected(state, &key);
     push_event(
         state,
         "realtime_connected",

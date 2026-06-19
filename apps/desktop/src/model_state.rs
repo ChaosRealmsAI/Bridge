@@ -16,6 +16,7 @@ struct AppState {
     worker_running: Arc<AtomicBool>,
     realtime_connected: Arc<AtomicBool>,
     realtime_connection_keys: Arc<Mutex<HashSet<String>>>,
+    realtime_connected_keys: Arc<Mutex<HashSet<String>>>,
     events: Arc<Mutex<Vec<Value>>>,
     pending_authorizations: Arc<Mutex<Vec<PendingIntentClaim>>>,
 }
@@ -619,6 +620,7 @@ fn new_app_state() -> AppState {
         worker_running: Arc::new(AtomicBool::new(false)),
         realtime_connected: Arc::new(AtomicBool::new(false)),
         realtime_connection_keys: Arc::new(Mutex::new(HashSet::new())),
+        realtime_connected_keys: Arc::new(Mutex::new(HashSet::new())),
         events: Arc::new(Mutex::new(Vec::new())),
         pending_authorizations: Arc::new(Mutex::new(Vec::new())),
     }

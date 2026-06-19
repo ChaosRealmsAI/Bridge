@@ -3,25 +3,31 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:http";
 import {
+  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { resolve } from "node:path";
+import { relative, resolve } from "node:path";
 
 import worker from "../../apps/cloud-worker/src/index.js";
 
 const PRODUCT_ID = "panda-burn";
 const PRODUCT_NAME = "Burn";
 const TOKEN_BURN_ORIGIN = "https://token-burn.com";
+const repoRoot = resolve(".");
+const CONNECT_TOKEN_PATTERN = /\bpbi_[A-Za-z0-9._~-]+/g;
 const evidenceDir = resolve("spec/L3/evidence/desktop-ai-control");
 rmSync(evidenceDir, { recursive: true, force: true });
 mkdirSync(evidenceDir, { recursive: true });
 mkdirSync(resolve(evidenceDir, "snapshots"), { recursive: true });
+mkdirSync(resolve(evidenceDir, "screenshots"), { recursive: true });
 
 const temp = mkdtempSync(resolve(tmpdir(), "panda-bridge-desktop-ai-control-"));
 const desktopStatePath = resolve(temp, "desktop-state.json");
@@ -81,7 +87,7 @@ try {
     action: "Create connect intent as Token Burn",
     expected: "Bridge Cloud binds source_origin to https://token-burn.com",
     actual: `product=${intent.connect_intent.product_id}; source_origin=${intent.connect_intent.source_origin}`,
-    evidence: snapshot("connect-intent", intent),
+    evidence: snapshot("connect-intent", redactConnectIntent(intent)),
   });
 
   const build = spawnSync("cargo", ["build", "--manifest-path", "apps/desktop/Cargo.toml"], {
@@ -154,13 +160,14 @@ try {
   assert.equal(previewScreenshot.ok, true);
   assert.ok(existsSync(previewScreenshot.path), "preview screenshot file must exist");
   assert.match(JSON.stringify(previewScreenshot.snapshot), /pending_authorizations/);
+  const previewScreenshotEvidence = durableScreenshot("preview-screenshot", previewScreenshot);
   step("ai-control-preview-screenshot", {
     action: "AI captures Desktop screenshot after preview",
     expected: "built-in desktop screenshot captures pending authorization state",
-    actual: previewScreenshot.path,
+    actual: previewScreenshotEvidence.path,
     evidence: snapshot("preview-screenshot", {
-      path: previewScreenshot.path,
-      bytes: readFileSync(previewScreenshot.path).byteLength,
+      path: previewScreenshotEvidence.path,
+      bytes: previewScreenshotEvidence.bytes,
       pending_count: previewScreenshot.snapshot.pending_authorizations.length,
     }),
   });
@@ -196,7 +203,7 @@ try {
   assert.equal(finalStatus.selected_profile.server.compatible, true);
   assert.equal(finalStatus.selected_profile.device.paired, true);
   assert.equal(finalStatus.selected_profile.account.authorized, true);
-  assert.ok(["connected", "degraded", "stopped"].includes(finalStatus.selected_profile.transport.realtime_state));
+  assert.ok(["connected", "degraded"].includes(finalStatus.selected_profile.transport.realtime_state));
   step("ai-control-final-status", {
     action: "Read final Desktop connection state through AI control",
     expected: "Burn shows one authorized account after confirm",
@@ -207,13 +214,14 @@ try {
   const finalScreenshot = await controlJson(control, "GET", "/v1/screenshot");
   assert.equal(finalScreenshot.ok, true);
   assert.ok(existsSync(finalScreenshot.path), "final screenshot file must exist");
+  const finalScreenshotEvidence = durableScreenshot("final-screenshot", finalScreenshot);
   step("ai-control-final-screenshot", {
     action: "AI captures Desktop screenshot after authorization",
     expected: "built-in desktop renderer captures final status",
-    actual: finalScreenshot.path,
+    actual: finalScreenshotEvidence.path,
     evidence: snapshot("final-screenshot", {
-      path: finalScreenshot.path,
-      bytes: readFileSync(finalScreenshot.path).byteLength,
+      path: finalScreenshotEvidence.path,
+      bytes: finalScreenshotEvidence.bytes,
       authorized_products: finalScreenshot.snapshot.status.authorized_products.map((product) => product.id),
     }),
   });
@@ -234,7 +242,7 @@ try {
     api_base: apiBase,
     token_burn_origin: TOKEN_BURN_ORIGIN,
     product_id: PRODUCT_ID,
-    desktop_state_path: desktopStatePath,
+    desktop_state_path: sanitizeString(desktopStatePath),
     verify_control: redactControl(control),
     device_id: confirmed.device_id,
     final_connection: finalBurn.connection,
@@ -244,8 +252,9 @@ try {
     },
     checked_at: new Date().toISOString(),
   };
-  writeFileSync(resolve(evidenceDir, "manifest.json"), `${JSON.stringify({ ok: true, steps }, null, 2)}\n`);
-  writeFileSync(resolve(evidenceDir, "summary.json"), `${JSON.stringify(summary, null, 2)}\n`);
+  writeFileSync(resolve(evidenceDir, "manifest.json"), `${JSON.stringify(sanitizeEvidence({ ok: true, steps }), null, 2)}\n`);
+  writeFileSync(resolve(evidenceDir, "summary.json"), `${JSON.stringify(sanitizeEvidence(summary), null, 2)}\n`);
+  assertDurableEvidenceRedacted(evidenceDir);
   console.log(JSON.stringify(summary, null, 2));
 } finally {
   if (desktop) {
@@ -266,7 +275,7 @@ try {
 
 function snapshot(name, payload) {
   const relative = `snapshots/${name}.json`;
-  writeFileSync(resolve(evidenceDir, relative), `${JSON.stringify(payload, null, 2)}\n`);
+  writeFileSync(resolve(evidenceDir, relative), `${JSON.stringify(sanitizeEvidence(payload), null, 2)}\n`);
   return relative;
 }
 
@@ -289,6 +298,67 @@ function redactControl(control) {
     pid: control.pid,
     created_at: control.created_at,
   };
+}
+
+function redactConnectIntent(payload) {
+  const redacted = sanitizeEvidence(payload);
+  if (redacted?.token) redacted.token = "[redacted-connect-token]";
+  if (redacted?.deep_link) redacted.deep_link = "[redacted-connect-link]";
+  if (redacted?.connect_intent?.token) redacted.connect_intent.token = "[redacted-connect-token]";
+  if (redacted?.connect_intent?.deep_link) redacted.connect_intent.deep_link = "[redacted-connect-link]";
+  return redacted;
+}
+
+function durableScreenshot(name, screenshot) {
+  const target = `screenshots/${name}.png`;
+  copyFileSync(screenshot.path, resolve(evidenceDir, target));
+  return {
+    path: target,
+    bytes: readFileSync(resolve(evidenceDir, target)).byteLength,
+  };
+}
+
+function sanitizeEvidence(value) {
+  if (typeof value === "string") return sanitizeString(value);
+  if (Array.isArray(value)) return value.map(sanitizeEvidence);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, child]) => [key, sanitizeEvidence(child)]),
+    );
+  }
+  return value;
+}
+
+function sanitizeString(value) {
+  let next = value.replace(CONNECT_TOKEN_PATTERN, "[redacted-connect-token]");
+  if (next.startsWith(`${repoRoot}/`)) return relative(repoRoot, next);
+  if (next === repoRoot) return "[repo]";
+  if (next.includes(repoRoot)) next = next.split(repoRoot).join("[repo]");
+  if (next.startsWith(`${temp}/`)) return `[temp]/${relative(temp, next)}`;
+  if (next === temp) return "[temp]";
+  if (next.includes(temp)) next = next.split(temp).join("[temp]");
+  return next;
+}
+
+function assertDurableEvidenceRedacted(dir) {
+  const leaks = [];
+  for (const file of listJsonFiles(dir)) {
+    const text = readFileSync(file, "utf8");
+    if (CONNECT_TOKEN_PATTERN.test(text)) leaks.push(`${relative(repoRoot, file)}: raw connect token`);
+    CONNECT_TOKEN_PATTERN.lastIndex = 0;
+    if (text.includes(repoRoot)) leaks.push(`${relative(repoRoot, file)}: repo root path`);
+    if (text.includes(temp)) leaks.push(`${relative(repoRoot, file)}: temp root path`);
+  }
+  assert.deepEqual(leaks, [], `durable desktop-ai-control evidence is not redacted:\n${leaks.join("\n")}`);
+}
+
+function listJsonFiles(dir) {
+  return readdirSync(dir).flatMap((entry) => {
+    const full = resolve(dir, entry);
+    const stat = statSync(full);
+    if (stat.isDirectory()) return listJsonFiles(full);
+    return entry.endsWith(".json") ? [full] : [];
+  });
 }
 
 async function waitForAuthorizedStatus(control) {

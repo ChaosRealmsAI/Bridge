@@ -10,6 +10,10 @@ pub(crate) fn start_worker(
         if let Ok(mut keys) = state.realtime_connection_keys.lock() {
             keys.clear();
         }
+        if let Ok(mut keys) = state.realtime_connected_keys.lock() {
+            keys.clear();
+        }
+        state.realtime_connected.store(false, Ordering::SeqCst);
     }
     let spawned_realtime_connections = spawn_missing_realtime_workers(state, &proxy)?;
     if already_running {
@@ -106,6 +110,9 @@ pub(crate) fn prepare_connections_for_worker(
     {
         state.worker_running.store(false, Ordering::SeqCst);
         state.realtime_connected.store(false, Ordering::SeqCst);
+        if let Ok(mut keys) = state.realtime_connected_keys.lock() {
+            keys.clear();
+        }
         return Err("no_authorized_products".to_string());
     }
     let mut changed = false;
