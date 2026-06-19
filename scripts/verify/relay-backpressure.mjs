@@ -338,7 +338,7 @@ const results = {
   direction_shared_device: await runDirectionSharedDeviceLimit(),
 };
 
-const evidenceDir = resolve("spec/verification/evidence/relay-backpressure");
+const evidenceDir = resolve("spec/L3/evidence/relay-backpressure");
 mkdirSync(evidenceDir, { recursive: true });
 writeFileSync(resolve(evidenceDir, "summary.json"), `${JSON.stringify({
   ok: true,

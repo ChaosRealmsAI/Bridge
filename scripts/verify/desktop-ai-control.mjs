@@ -18,7 +18,7 @@ import worker from "../../apps/cloud-worker/src/index.js";
 const PRODUCT_ID = "panda-burn";
 const PRODUCT_NAME = "Burn";
 const TOKEN_BURN_ORIGIN = "https://token-burn.com";
-const evidenceDir = resolve("spec/verification/evidence/desktop-ai-control");
+const evidenceDir = resolve("spec/L3/evidence/desktop-ai-control");
 rmSync(evidenceDir, { recursive: true, force: true });
 mkdirSync(evidenceDir, { recursive: true });
 mkdirSync(resolve(evidenceDir, "snapshots"), { recursive: true });
@@ -123,6 +123,8 @@ try {
   assert.ok(initialBurn, "AI control status must expose Burn product");
   assert.equal(initialBurn.web_url, "https://token-burn.com/authorize");
   assert.equal(initialBurn.accounts.length, 0);
+  assert.equal(initialStatus.selected_profile.profile_id, "official");
+  assert.equal(initialStatus.selected_profile.account.authorized, false);
   step("ai-control-status-initial", {
     action: "Read Desktop status through AI control interface",
     expected: "Burn is visible, has token-burn authorize URL, and no account is authorized yet",
@@ -189,6 +191,12 @@ try {
   assert.equal(finalBurn.accounts.length, 1);
   assert.match(finalBurn.accounts[0].email, /Token Burn User|token burn|burn/i);
   assert.ok(["connected", "reconnecting", "offline"].includes(finalBurn.connection));
+  assert.equal(finalStatus.selected_profile.api_base, apiBase);
+  assert.equal(finalStatus.selected_profile.server.reachable, true);
+  assert.equal(finalStatus.selected_profile.server.compatible, true);
+  assert.equal(finalStatus.selected_profile.device.paired, true);
+  assert.equal(finalStatus.selected_profile.account.authorized, true);
+  assert.ok(["connected", "degraded", "stopped"].includes(finalStatus.selected_profile.transport.realtime_state));
   step("ai-control-final-status", {
     action: "Read final Desktop connection state through AI control",
     expected: "Burn shows one authorized account after confirm",

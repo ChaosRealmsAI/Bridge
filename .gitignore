@@ -6,7 +6,9 @@ node_modules/
 dist/
 target/
 apps/desktop/target/
+adapters/panda-burn/local-tools/backend/bin/
 .tmp/
+.burn/
 spec/
 apps/web-chat/public/sdk/
 *.log

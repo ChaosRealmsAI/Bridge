@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "no
 import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
-const evidenceDir = resolve("spec/verification/evidence/desktop-windows");
+const evidenceDir = resolve("spec/L3/evidence/desktop-windows");
 const summaryPath = resolve(evidenceDir, "summary.json");
 const args = new Set(process.argv.slice(2));
 const xwinEnabled = args.has("--xwin") || process.env.PANDA_BRIDGE_WINDOWS_XWIN === "1";

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 
 import {
   BRIDGE_RUNTIME_CAPABILITIES,
@@ -164,35 +164,34 @@ for (const marker of publicLegacyJobMarkers) {
   assert.equal(sdkServerTypes.includes(marker), false, `server SDK types must not expose legacy job marker: ${marker}`);
 }
 
-const desktopMain = readFileSync(new URL("../../apps/desktop/src/main.rs", import.meta.url), "utf8");
-const desktopProduction = desktopMain.slice(0, desktopMain.indexOf("#[cfg(test)]"));
-assert.ok(desktopMain.includes("/v1/connectors/relay/envelopes"), "Desktop must poll relay envelope endpoint");
-assert.ok(desktopMain.includes("route_relay_envelope_to_adapter"), "Desktop must route relay envelopes to AdapterRouter");
-assert.ok(desktopMain.includes("PANDA_BRIDGE_ADAPTER_URL"), "Desktop must use product adapter endpoint env");
-assert.equal(desktopMain.includes("ConnectorRegistry"), false, "Desktop core must not retain a vertical connector registry");
-assert.equal(desktopMain.includes("execution_registry"), false, "Desktop core must not retain a vertical execution registry");
-assert.equal(/\bmod connector\b/.test(desktopMain), false, "Desktop core must not retain the vertical connector module");
-assert.ok(desktopMain.includes("claim_intent_pending"), "Desktop must expose claim without immediate confirm for authorization preview");
-assert.ok(desktopMain.includes("confirm_pending_intent"), "Desktop must expose explicit pending authorization confirm");
-assert.ok(desktopMain.includes("pending_authorizations"), "Desktop verify snapshot must expose pending authorization previews");
-assert.ok(desktopMain.includes("PENDING AUTHORIZATION PREVIEW"), "Desktop built-in screenshot must render the pending authorization preview");
-assert.ok(desktopMain.includes("product_authorization"), "Desktop preview must surface product_authorization as product-scoped data");
+const desktopProduction = readDesktopProductionSource();
+assert.ok(desktopProduction.includes("/v1/connectors/relay/envelopes"), "Desktop must poll relay envelope endpoint");
+assert.ok(desktopProduction.includes("route_relay_envelope_to_adapter"), "Desktop must route relay envelopes to AdapterRouter");
+assert.ok(desktopProduction.includes("PANDA_BRIDGE_ADAPTER_URL"), "Desktop must use product adapter endpoint env");
+assert.equal(desktopProduction.includes("ConnectorRegistry"), false, "Desktop core must not retain a vertical connector registry");
+assert.equal(desktopProduction.includes("execution_registry"), false, "Desktop core must not retain a vertical execution registry");
+assert.equal(/\bmod connector\b/.test(desktopProduction), false, "Desktop core must not retain the vertical connector module");
+assert.ok(desktopProduction.includes("claim_intent_pending"), "Desktop must expose claim without immediate confirm for authorization preview");
+assert.ok(desktopProduction.includes("confirm_pending_intent"), "Desktop must expose explicit pending authorization confirm");
+assert.ok(desktopProduction.includes("pending_authorizations"), "Desktop verify snapshot must expose pending authorization previews");
+assert.ok(desktopProduction.includes("PENDING AUTHORIZATION PREVIEW"), "Desktop built-in screenshot must render the pending authorization preview");
+assert.ok(desktopProduction.includes("product_authorization"), "Desktop preview must surface product_authorization as product-scoped data");
 for (const marker of ["BURN_PRODUCT", "is_burn_product_alias"]) {
   assert.equal(desktopProduction.includes(marker), false, `Desktop production code must not contain Burn-specific product branding: ${marker}`);
 }
 for (const marker of ['product.id == "panda-burn"', 'product_id == "panda-burn"', 'product.id == "burn"', 'product_id == "burn"']) {
   assert.equal(desktopProduction.includes(marker), false, `Desktop production code must not branch on Burn product identity: ${marker}`);
 }
-const localStateStart = desktopMain.indexOf("fn local_state() -> Value");
-const localStateEnd = desktopMain.indexOf("fn low_tier_capabilities", localStateStart);
-const localState = desktopMain.slice(localStateStart, localStateEnd);
+const localStateStart = desktopProduction.indexOf("fn local_state() -> Value");
+const localStateEnd = desktopProduction.indexOf("fn low_tier_capabilities", localStateStart);
+const localState = desktopProduction.slice(localStateStart, localStateEnd);
 assert.equal(localState.includes("commands"), false, "local_state must not publish commands");
 assert.equal(localState.includes("workspaces"), false, "local_state must not publish workspaces");
 assert.equal(localState.includes("codex"), false, "local_state must not publish codex state");
 assert.equal(localState.includes('"panda-burn"'), false, "local_state must not hard-code the Burn product");
 assert.ok(localState.includes("adapter_router"), "local_state must publish only generic adapter router status");
 assert.ok(localState.includes("products"), "local_state must support product-scoped adapter status");
-const desktopUi = readFileSync(new URL("../../apps/desktop/ui/index.html", import.meta.url), "utf8");
+const desktopUi = readDesktopUiSource();
 assert.ok(desktopUi.includes("claim_intent_preview"), "Desktop UI allow flow must use two-stage pending claim");
 assert.ok(desktopUi.includes("confirm_pending_intent"), "Desktop UI allow flow must explicitly confirm pending authorization");
 assert.ok(desktopUi.includes("product_authorization"), "Desktop UI preview must render product_authorization summary");
@@ -203,15 +202,26 @@ for (const marker of ["BURN_ICON_URL", "is_burn_product_alias", 'hay.includes("p
 
 const macosBundle = readFileSync(new URL("../desktop/macos-bundle.mjs", import.meta.url), "utf8");
 const windowsPackage = readFileSync(new URL("../desktop/package-windows.mjs", import.meta.url), "utf8");
-for (const source of [macosBundle, windowsPackage]) {
+const managedAdaptersPackageHelper = readFileSync(new URL("../desktop/managed-adapters.mjs", import.meta.url), "utf8");
+for (const source of [macosBundle, windowsPackage, managedAdaptersPackageHelper]) {
   for (const marker of ["PANDA_BRIDGE_BURN_ADAPTER_DIR", "../syllo", "burn_manifest", "panda-burn"]) {
     assert.equal(source.includes(marker), false, `desktop package scripts must not contain product-specific managed adapter marker: ${marker}`);
   }
-  assert.ok(source.includes("PANDA_BRIDGE_MANAGED_ADAPTERS_DIR"), "desktop package scripts must use the generic managed adapter directory env");
-  assert.ok(source.includes("adapter.manifest.json"), "desktop package scripts must discover adapters by manifest");
 }
+for (const source of [macosBundle, windowsPackage]) {
+  assert.ok(source.includes("PANDA_BRIDGE_MANAGED_ADAPTERS_DIR"), "desktop package scripts must use the generic managed adapter directory env");
+}
+assert.ok(
+  `${macosBundle}\n${windowsPackage}\n${managedAdaptersPackageHelper}`.includes("adapter.manifest.json"),
+  "desktop package scripts must discover adapters by manifest",
+);
+assert.ok(
+  `${macosBundle}\n${windowsPackage}`.includes("copyBridgeManagedAdapterNodeModules"),
+  "desktop package scripts must copy managed adapter Node package dependencies",
+);
 
-const workerMain = readFileSync(new URL("../../apps/cloud-worker/src/index.js", import.meta.url), "utf8");
+const workerEntrypoint = readFileSync(new URL("../../apps/cloud-worker/src/index.js", import.meta.url), "utf8");
+const workerMain = readWorkerCoreSource();
 const workerLegacyRuntime = readFileSync(new URL("../../apps/cloud-worker/src/legacy-runtime.js", import.meta.url), "utf8");
 for (const marker of [
   ...verticalKinds,
@@ -233,8 +243,8 @@ assert.ok(workerMain.includes("relayKeyBootstrapAadTexts"), "Worker relay key bo
 assert.ok(workerMain.includes("bridge-relay-key-bootstrap-v1"), "Worker must accept generic Bridge relay-key bootstrap AAD");
 assert.equal(workerMain.includes("burn-relay-key-bootstrap-v1"), false, "Worker must not keep Burn-specific relay-key bootstrap AAD");
 assert.equal(workerMain.includes("async function queueSummary"), false, "Worker must not expose legacy job queue summary implementation");
-assert.ok(workerMain.includes("isLegacyRuntimeRoute(request.method, path)"), "Worker must delegate legacy runtime route matching");
-assert.ok(workerMain.includes("legacyRuntimeApiRemovedPayload()"), "Worker must delegate legacy runtime payload");
+assert.ok(workerEntrypoint.includes("isLegacyRuntimeRoute(request.method, path)"), "Worker must delegate legacy runtime route matching");
+assert.ok(workerEntrypoint.includes("legacyRuntimeApiRemovedPayload()"), "Worker must delegate legacy runtime payload");
 assert.ok(workerLegacyRuntime.includes("legacy_runtime_api_removed"), "legacy-runtime module must return legacy_runtime_api_removed");
 assert.ok(workerLegacyRuntime.includes("\\/v1\\/queue\\/summary"), "legacy-runtime module must cover /v1/queue/summary");
 
@@ -281,3 +291,44 @@ const packageJson = readFileSync(new URL("../../package.json", import.meta.url),
 assert.equal(packageJson.includes('"verify:selfhost-profile"'), true, "package.json missing verify:selfhost-profile script");
 
 console.log("[relay-boundary] pass");
+
+function readDesktopProductionSource() {
+  const base = new URL("../../apps/desktop/src/", import.meta.url);
+  return readSources(base, {
+    include: (name) => name.endsWith(".rs"),
+    exclude: (name) => name === "tests.rs",
+  });
+}
+
+function readDesktopUiSource() {
+  const base = new URL("../../apps/desktop/ui/", import.meta.url);
+  return ["index.html", "styles.css", "app.js"]
+    .map((name) => readFileSync(new URL(name, base), "utf8"))
+    .join("\n");
+}
+
+function readWorkerCoreSource() {
+  const base = new URL("../../apps/cloud-worker/src/", import.meta.url);
+  return readSources(base, {
+    include: (name) => name.endsWith(".js"),
+    exclude: (name) => name === "legacy-runtime.js" || name === "products.js",
+  });
+}
+
+function readSources(base, { include, exclude = () => false }) {
+  return listFiles(base)
+    .filter((file) => include(file.name) && !exclude(file.name))
+    .sort()
+    .map((file) => readFileSync(file.url, "utf8"))
+    .join("\n");
+}
+
+function listFiles(dir) {
+  const out = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const url = new URL(entry.name, dir);
+    if (entry.isDirectory()) out.push(...listFiles(new URL(`${entry.name}/`, dir)));
+    else if (entry.isFile()) out.push({ name: entry.name, url });
+  }
+  return out;
+}

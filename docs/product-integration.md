@@ -12,7 +12,7 @@ Web:    https://bridge.chaos-realms.cc
 Assets: https://assets.bridge.chaos-realms.cc
 ```
 
-如果产品方或用户要自己维护 Bridge Cloud，按 [`docs/self-hosting.md`](./self-hosting.md) 部署 Worker 并配置 `BRIDGE_PRODUCT_REGISTRY_JSON`。桌面端会通过 `/v1/diagnostics` 读取自托管服务器声明的产品列表；Product Adapter 仍按 `PANDA_BRIDGE_ADAPTER_<PRODUCT_ID>_URL` 本机路由。
+如果产品方或用户要自己维护 Bridge Cloud，按 [`docs/self-hosting.md`](./self-hosting.md) 部署 Worker。Desktop 只通过 `/v1/health` 和 `/v1/diagnostics` 验证这是兼容的 Bridge Server；产品目录始终来自固定 Panda 产品列表，不由自托管服务器注册出来。Product Adapter 仍按 `PANDA_BRIDGE_ADAPTER_<PRODUCT_ID>_URL` 本机路由。
 
 ## 0. SDK
 

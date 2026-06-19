@@ -6,13 +6,17 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
-  readdirSync,
   rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
 import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import {
+  copyBridgeManagedAdapterNodeModules,
+  managedAdapterSources,
+  prepareManagedAdapterSources,
+} from "./managed-adapters.mjs";
 
 const appName = "Panda Bridge";
 const exeName = "PandaBridge.exe";
@@ -65,11 +69,12 @@ if (!existsSync(releaseBinary)) {
 }
 copyFileSync(releaseBinary, resolve(appDir, exeName));
 const managedAdapters = copyManagedAdapters(appDir);
+const managedAdapterNodeModules = managedAdapters.length > 0 ? copyBridgeManagedAdapterNodeModules(appDir) : [];
 const nodeRuntime = copyNodeRuntime(appDir);
 writeFileSync(resolve(appDir, "Install.ps1"), installScript());
 writeFileSync(resolve(appDir, "Uninstall.ps1"), uninstallScript());
 writeFileSync(resolve(appDir, "README.txt"), readmeText());
-writeFileSync(resolve(appDir, "manifest.json"), JSON.stringify(manifest(managedAdapters), null, 2));
+writeFileSync(resolve(appDir, "manifest.json"), JSON.stringify(manifest(managedAdapters, nodeRuntime), null, 2));
 
 if (process.platform === "win32" && !xwinMode) {
   run("powershell.exe", [
@@ -96,11 +101,12 @@ console.log(JSON.stringify({
   install: resolve(appDir, "Install.ps1"),
   uninstall: resolve(appDir, "Uninstall.ps1"),
   managed_adapters: managedAdapters,
+  managed_adapter_node_modules: managedAdapterNodeModules.map((item) => item.target),
   node_runtime: nodeRuntime,
 }, null, 2));
 
-function manifest(copiedAdapters = []) {
-  return {
+function manifest(copiedAdapters = [], copiedNodeRuntime = null) {
+  const payload = {
     app_name: appName,
     binary: exeName,
     bundle_identifier: "cc.otherline.panda-bridge",
@@ -112,8 +118,9 @@ function manifest(copiedAdapters = []) {
       directory: "adapters",
       manifests: copiedAdapters.map((adapter) => adapter.manifest),
     },
-    node_runtime: "runtime\\node\\node.exe",
   };
+  if (copiedNodeRuntime) payload.node_runtime = "runtime\\node\\node.exe";
+  return payload;
 }
 
 function copyManagedAdapters(targetRoot) {
@@ -124,6 +131,7 @@ function copyManagedAdapters(targetRoot) {
   if (!existsSync(sourceRoot)) {
     throw new Error(`PANDA_BRIDGE_MANAGED_ADAPTERS_DIR not found: ${sourceRoot}`);
   }
+  prepareManagedAdapterSources(sourceRoot);
   const adaptersDir = resolve(targetRoot, "adapters");
   mkdirSync(adaptersDir, { recursive: true });
   for (const adapter of managedAdapterSources(sourceRoot)) {
@@ -136,27 +144,6 @@ function copyManagedAdapters(targetRoot) {
     });
   }
   return copied;
-}
-
-function managedAdapterSources(sourceRoot) {
-  if (existsSync(resolve(sourceRoot, "adapter.manifest.json"))) {
-    return [managedAdapterSource(sourceRoot)];
-  }
-  return readdirSync(sourceRoot, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory())
-    .map((entry) => resolve(sourceRoot, entry.name))
-    .filter((sourceDir) => existsSync(resolve(sourceDir, "adapter.manifest.json")))
-    .map(managedAdapterSource);
-}
-
-function managedAdapterSource(sourceDir) {
-  const manifestPath = resolve(sourceDir, "adapter.manifest.json");
-  const manifestData = JSON.parse(readFileSync(manifestPath, "utf8"));
-  const productId = String(manifestData.product_id || "").trim();
-  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(productId)) {
-    throw new Error(`managed adapter manifest has invalid product_id: ${manifestPath}`);
-  }
-  return { sourceDir, productId };
 }
 
 function copyNodeRuntime(targetRoot) {
@@ -229,7 +216,7 @@ Remove-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" 
 Remove-Item -Path "HKCU:\Software\Classes\panda-bridge" -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item -Path $InstallDir -Recurse -Force -ErrorAction SilentlyContinue
 
-Write-Host "Panda Bridge removed. User state under %USERPROFILE%\.panda-bridge is preserved."
+Write-Host "Panda Bridge removed. User state under %APPDATA%\Panda Bridge is preserved."
 `;
 }
 
@@ -276,8 +263,12 @@ function assertTemplateContracts() {
     throw new Error("manifest does not match Windows protocol/binary contract");
   }
   const legacyManifestKey = ["burn", "manifest"].join("_");
-  if (!Array.isArray(data.managed_adapters?.manifests) || data.managed_adapters?.[legacyManifestKey] || data.node_runtime !== "runtime\\node\\node.exe") {
+  if (!Array.isArray(data.managed_adapters?.manifests) || data.managed_adapters?.[legacyManifestKey] || Object.hasOwn(data, "node_runtime")) {
     throw new Error("manifest does not advertise managed adapter/runtime contract");
+  }
+  const runtimeManifest = manifest([], "runtime-present");
+  if (runtimeManifest.node_runtime !== "runtime\\node\\node.exe") {
+    throw new Error("manifest does not advertise copied node runtime");
   }
 }
 

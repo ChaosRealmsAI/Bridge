@@ -1,0 +1,62 @@
+#!/bin/bash
+# Unified Burn CLI (dev wrapper over the workspace bins). AI agents call: burn <area> ...
+set -euo pipefail
+DIR="$(cd "$(dirname "$0")" && pwd)"
+BIN="$DIR/bin"
+DEV_BIN="$DIR/target/debug"
+usage() {
+  cat <<'USAGE'
+Burn CLI
+
+Usage:
+  burn sessions ...
+  burn store init|status|doctor ...
+  burn project list|overview|tree|file-read ...
+  burn chat --agent claude|codex --project P --prompt TEXT [--json]
+  burn source|sources ...
+  burn agent profile discover|status ...
+  burn action list|help|run ...
+
+AI entry points:
+  burn action list --json
+  burn agent profile discover --json
+USAGE
+}
+bin() {
+  local name="$1"
+  if [ -x "$BIN/$name" ]; then
+    printf '%s\n' "$BIN/$name"
+  elif [ -x "$DEV_BIN/$name" ]; then
+    printf '%s\n' "$DEV_BIN/$name"
+  else
+    command -v "$name"
+  fi
+}
+node_bin() {
+  if [ -n "${BURN_NODE:-}" ] && [ -x "$BURN_NODE" ]; then
+    printf '%s\n' "$BURN_NODE"
+  elif [ -n "${NODE_BINARY:-}" ] && [ -x "$NODE_BINARY" ]; then
+    printf '%s\n' "$NODE_BINARY"
+  elif command -v node >/dev/null 2>&1; then
+    command -v node
+  elif [ -x /opt/homebrew/bin/node ]; then
+    printf '%s\n' /opt/homebrew/bin/node
+  elif [ -x /usr/local/bin/node ]; then
+    printf '%s\n' /usr/local/bin/node
+  else
+    printf '%s\n' node
+  fi
+}
+sub="${1:-}"; [ $# -gt 0 ] && shift || true
+NODE_BIN="$(node_bin)"
+case "$sub" in
+  ""|-h|--help|help)   usage ;;
+  sessions)            exec "$(bin burn-monitor)" "$@" ;;
+  store)               exec "$NODE_BIN" "$DIR/burn-store.mjs" "$@" ;;
+  project)             exec "$NODE_BIN" "$DIR/burn-project.mjs" "$@" ;;
+  chat)                exec "$(bin burn-chat)" send "$@" ;;
+  source|sources)      exec "$(bin burn-chat)" "$sub" "$@" ;;
+  agent)               exec "$NODE_BIN" "$DIR/burn-agent.mjs" "$@" ;;
+  action)              exec "$NODE_BIN" "$DIR/burn-actions.mjs" "$@" ;;
+  *) echo "{\"ok\":false,\"error\":\"unknown burn command: $sub\",\"code\":\"burn_cli_usage\"}" >&2; usage >&2; exit 2 ;;
+esac

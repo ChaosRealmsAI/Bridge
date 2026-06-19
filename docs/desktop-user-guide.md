@@ -32,6 +32,11 @@ Desktop shows:
 Desktop does not show device tokens, session cookies, product secrets, relay
 plaintext, or private credential storage paths.
 
+Desktop stores its own settings and file-backed credential fallback in the
+platform user data directory: macOS `~/Library/Application Support/Panda Bridge`
+and Windows `%APPDATA%\Panda Bridge`. Older `~/.panda-bridge` files are read
+only as a one-time compatibility fallback.
+
 ## Multiple Products
 
 Every product gets its own record. Authorizing one product does not authorize

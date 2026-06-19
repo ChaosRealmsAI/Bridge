@@ -68,7 +68,7 @@ npm run desktop:package:windows:xwin
 
 默认给用户使用我们提供的 Bridge Cloud，用户不需要自建服务器。
 
-桌面端也支持用户自己维护 Bridge Cloud。用户可以在设置里添加自托管 API，Desktop 会通过 `/v1/health` 和 `/v1/diagnostics` 验证服务器，并把 diagnostics 返回的产品列表显示为左侧产品 tab。自托管部署、产品 registry 和本机 Adapter 配置见 [`docs/self-hosting.md`](docs/self-hosting.md)。
+桌面端也支持用户自己维护 Bridge Cloud。用户可以在设置里添加自托管 API，Desktop 会通过 `/v1/health` 和 `/v1/diagnostics` 验证服务器；左侧产品列表仍来自固定 Panda 产品目录，服务器 Profile 只决定授权、presence 和 relay 使用哪个 Bridge API。自托管部署和本机 Adapter 配置见 [`docs/self-hosting.md`](docs/self-hosting.md)。
 
 官方托管资源：
 
@@ -127,16 +127,15 @@ npm run desktop:dev
 npm run verify:minimal-caller
 ```
 
-公开仓只保留通用源码、示例和脱敏文档。内部 spec、验证证据、PandaCode 运行记录和真实部署配置不进入 Git；部署前从私有配置复制 `apps/cloud-worker/wrangler.toml`。
-- `spec/js/versions/v0-4/*` 是自托管 Bridge Cloud Profile 版本事实。
+公开仓只保留通用源码、示例和脱敏文档。内部验证证据、PandaCode 运行记录和真实部署配置不进入 Git；部署前从私有配置复制 `apps/cloud-worker/wrangler.toml`。
 
 先读：
 
 ```text
-spec/bdd/_index.json
-spec/js/技术文档.js
-spec/js/质量标准.js
-spec/js/工程护栏.js
-spec/js/versions/v0-3/版本总览.js
-spec/js/versions/v0-4/版本总览.js
+spec/README.md
+spec/L1/产品能力.md
+spec/L2/Bridge核心边界.md
+spec/L2/ManagedAdapter.md
+spec/L2/接口与协议.md
+spec/L3/versions/agent-usage-ledger/版本合同.md
 ```

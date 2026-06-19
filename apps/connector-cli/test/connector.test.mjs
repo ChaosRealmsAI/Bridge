@@ -13,9 +13,15 @@ for (const stale of [
   "fake-codex",
   "codex.",
   "local_policy_denied",
+  'resolve(homedir(), ".panda-bridge", "connector.json")',
 ]) {
   assert.equal(source.includes(stale), false, `connector CLI must not contain stale runtime marker: ${stale}`);
 }
+assert.match(source, /Application Support", "Panda Bridge", "state"/);
+assert.match(source, /APPDATA/);
+assert.match(source, /XDG_STATE_HOME/);
+assert.match(source, /chmodSync\(path, mode\)/);
+assert.equal((source.match(/localHeaders\(state\.install_id\)/g) || []).length >= 5, true, "connector token requests must include install identity headers");
 
 const help = spawnSync("node", ["apps/connector-cli/src/cli.mjs", "help"], {
   cwd: root,

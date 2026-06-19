@@ -1,6 +1,11 @@
-import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, cpSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import {
+  copyBridgeManagedAdapterNodeModules,
+  managedAdapterSources,
+  prepareManagedAdapterSources,
+} from "./managed-adapters.mjs";
 
 export const appName = "Panda Bridge";
 export const bundleIdentifier = "cc.otherline.panda-bridge";
@@ -32,6 +37,7 @@ export function createMacAppBundle(appPath, options = {}) {
   copyFileSync(releaseBinary, resolve(macos, appName));
   copyFileSync(iconPath, resolve(resources, iconFileName));
   const managedAdapters = copyManagedAdapters(resources);
+  const managedAdapterNodeModules = managedAdapters.length > 0 ? copyBridgeManagedAdapterNodeModules(resources) : [];
   const nodeRuntime = copyNodeRuntime(resources);
   writeFileSync(resolve(contents, "PkgInfo"), "APPLPBRG\n");
   writeFileSync(resolve(contents, "Info.plist"), plist());
@@ -41,6 +47,7 @@ export function createMacAppBundle(appPath, options = {}) {
     executable: resolve(macos, appName),
     icon: resolve(resources, iconFileName),
     managedAdapters,
+    managedAdapterNodeModules,
     nodeRuntime,
   };
 }
@@ -163,6 +170,7 @@ function copyManagedAdapters(resources) {
   if (!existsSync(sourceRoot)) {
     throw new Error(`PANDA_BRIDGE_MANAGED_ADAPTERS_DIR not found: ${sourceRoot}`);
   }
+  prepareManagedAdapterSources(sourceRoot);
   const adaptersDir = resolve(resources, "adapters");
   mkdirSync(adaptersDir, { recursive: true });
   for (const adapter of managedAdapterSources(sourceRoot)) {
@@ -171,27 +179,6 @@ function copyManagedAdapters(resources) {
     copied.push(target);
   }
   return copied;
-}
-
-function managedAdapterSources(sourceRoot) {
-  if (existsSync(resolve(sourceRoot, "adapter.manifest.json"))) {
-    return [managedAdapterSource(sourceRoot)];
-  }
-  return readdirSync(sourceRoot, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory())
-    .map((entry) => resolve(sourceRoot, entry.name))
-    .filter((sourceDir) => existsSync(resolve(sourceDir, "adapter.manifest.json")))
-    .map(managedAdapterSource);
-}
-
-function managedAdapterSource(sourceDir) {
-  const manifestPath = resolve(sourceDir, "adapter.manifest.json");
-  const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
-  const productId = String(manifest.product_id || "").trim();
-  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(productId)) {
-    throw new Error(`managed adapter manifest has invalid product_id: ${manifestPath}`);
-  }
-  return { sourceDir, productId };
 }
 
 function copyNodeRuntime(resources) {

@@ -488,7 +488,7 @@ const callResult = await callClient.relay.createCall({
   channelId: "chan_call_1",
   seq: 5,
   requestKey: "rq_call_1",
-  payload: { type: "workspace.list" },
+  payload: { type: "relay.ping" },
   authorizationId: "auth_call_1",
   authorizationEpoch: 9,
   relayKeyId: "rkx_call_1",
@@ -499,7 +499,7 @@ const callResult = await callClient.relay.createCall({
       assert.equal(input.context.productId, "acme-chat");
       assert.equal(input.context.requestKey, "rq_call_1");
       assert.equal(input.aadText, "product:acme-chat|device:dev_call_1|channel:chan_call_1|direction:product_to_device|seq:5|authorization:auth_call_1|epoch:9|relay_key:rkx_call_1");
-      assert.deepEqual(input.payload, { type: "workspace.list" });
+      assert.deepEqual(input.payload, { type: "relay.ping" });
       return {
         ciphertext: "base64:encrypted-request",
         nonce: "base64:nonce",

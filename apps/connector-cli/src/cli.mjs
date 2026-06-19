@@ -1,11 +1,11 @@
 #!/usr/bin/env node
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir, hostname, platform } from "node:os";
 import { dirname, resolve } from "node:path";
 
 const VERSION = "panda-bridge-connector-relay-v0.8";
 const DEFAULT_API = (process.env.PANDA_BRIDGE_API_BASE || "https://api.bridge.chaos-realms.cc").replace(/\/$/, "");
-const DEFAULT_STATE = resolve(homedir(), ".panda-bridge", "connector.json");
+const DEFAULT_STATE = resolve(defaultStateDir(), "connector.json");
 const args = parseArgs(process.argv.slice(2));
 const command = args._[0] || "help";
 
@@ -74,7 +74,7 @@ async function heartbeat() {
     app_version: VERSION,
     capabilities: capabilities(),
     local_state: localState(),
-  }, state.device_token);
+  }, state.device_token, localHeaders(state.install_id));
   console.log(JSON.stringify(payload, null, 2));
 }
 
@@ -92,7 +92,7 @@ async function pollRelay() {
     if (args[arg] != null) query.set(param, String(args[arg]));
   }
   const suffix = query.toString() ? `?${query}` : "";
-  const payload = await getJson(`${state.api_base}/v1/connectors/relay/envelopes${suffix}`, state.device_token);
+  const payload = await getJson(`${state.api_base}/v1/connectors/relay/envelopes${suffix}`, state.device_token, localHeaders(state.install_id));
   console.log(JSON.stringify(payload, null, 2));
 }
 
@@ -103,13 +103,14 @@ async function ackRelay() {
     `${state.api_base}/v1/connectors/relay/envelopes/${encodeURIComponent(envelopeId)}/ack`,
     {},
     state.device_token,
+    localHeaders(state.install_id),
   );
   console.log(JSON.stringify(payload, null, 2));
 }
 
 async function sendRelay() {
   const state = loadState();
-  const payload = await postJson(`${state.api_base}/v1/connectors/relay/envelopes`, relayEnvelopeInput(), state.device_token);
+  const payload = await postJson(`${state.api_base}/v1/connectors/relay/envelopes`, relayEnvelopeInput(), state.device_token, localHeaders(state.install_id));
   console.log(JSON.stringify(payload, null, 2));
 }
 
@@ -259,8 +260,10 @@ function loadState() {
 }
 
 function writeJson(path, value) {
-  mkdirSync(dirname(path), { recursive: true });
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  setPrivatePermissions(dirname(path), 0o700);
   writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
+  setPrivatePermissions(path, 0o600);
 }
 
 function redactState(state, payload = {}) {
@@ -287,6 +290,16 @@ function statePath() {
   return resolve(args.state || process.env.PANDA_BRIDGE_CONNECTOR_STATE || DEFAULT_STATE);
 }
 
+function defaultStateDir() {
+  if (process.platform === "darwin") {
+    return resolve(homedir(), "Library", "Application Support", "Panda Bridge", "state");
+  }
+  if (process.platform === "win32") {
+    return resolve(process.env.APPDATA || resolve(homedir(), "AppData", "Roaming"), "Panda Bridge", "state");
+  }
+  return resolve(process.env.XDG_STATE_HOME || resolve(homedir(), ".local", "state"), "panda-bridge");
+}
+
 function deviceName() {
   return args["device-name"] || `${hostname()} ${platform()} Bridge`;
 }
@@ -300,6 +313,15 @@ function localHeaders(value = installId()) {
     "x-panda-bridge-local-client": "connector-cli",
     "x-panda-bridge-install-id": value,
   };
+}
+
+function setPrivatePermissions(path, mode) {
+  if (process.platform === "win32") return;
+  try {
+    chmodSync(path, mode);
+  } catch {
+    // Best-effort hardening; write failures are still surfaced by writeFileSync.
+  }
 }
 
 function authHeader(token) {

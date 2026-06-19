@@ -1,10 +1,9 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 
 const forbiddenTrackedPrefixes = [
-  "spec/",
   ".pandacode/",
   "scripts/cloud/",
 ];
@@ -19,6 +18,29 @@ const forbiddenTrackedFiles = new Set([
   "apple-enroll.png",
   "gp-signup-step.png",
 ]);
+
+const forbiddenTrackedGeneratedSegments = new Set([
+  ".build",
+  ".cache",
+  ".dart_tool",
+  ".gradle",
+  ".next",
+  ".parcel-cache",
+  ".rollup.cache",
+  ".svelte-kit",
+  ".tauri",
+  ".turbo",
+  ".vite",
+  "DerivedData",
+  "build",
+  "coverage",
+  "dist",
+  "node_modules",
+  "out",
+  "target",
+]);
+
+const forbiddenTrackedReleaseBinary = /\.(?:7z|aab|apk|appimage|dmg|exe|ipa|msi|pkg|rar|tar|tgz|txz|whl|xip|zip)$/i;
 
 const privateSupabaseRefs = [
   "jfoiiqg" + "frdosiwmkkfsf",
@@ -36,22 +58,37 @@ const forbiddenContent = [
 ];
 
 const tracked = git(["ls-files", "-z"]).split("\0").filter(Boolean);
+const untracked = git(["ls-files", "--others", "--exclude-standard", "-z"]).split("\0").filter(Boolean);
+const existingTracked = tracked.filter((file) => existsSync(file));
+const existingUntrackedScanned = untracked.filter((file) => existsSync(file) && shouldScanUntracked(file));
+const contentScanFiles = [...existingTracked, ...existingUntrackedScanned];
 const contentScanSkip = new Set([".gitignore", "scripts/verify/open-source-hygiene.mjs"]);
-for (const file of tracked) {
+for (const file of existingTracked) {
   assert.equal(
     forbiddenTrackedPrefixes.some((prefix) => file.startsWith(prefix)),
     false,
     `private path is tracked: ${file}`,
   );
   assert.equal(forbiddenTrackedFiles.has(file), false, `private file is tracked: ${file}`);
+  assert.equal(
+    trackedGeneratedSegment(file),
+    "",
+    `generated/cache/build directory is tracked: ${file}`,
+  );
+  assert.equal(
+    forbiddenTrackedReleaseBinary.test(file),
+    false,
+    `release archive/binary is tracked: ${file}`,
+  );
 }
 
 const hits = [];
-for (const file of tracked) {
+for (const file of contentScanFiles) {
   if (contentScanSkip.has(file)) continue;
   const text = readTextIfLikelyText(file);
   if (text == null) continue;
   for (const rule of forbiddenContent) {
+    if (contentRuleAllowed(file, rule)) continue;
     if (rule.pattern.test(text)) hits.push({ file, rule: rule.label });
   }
 }
@@ -62,6 +99,9 @@ console.log(JSON.stringify({
   ok: true,
   check: "open-source-hygiene",
   tracked_files: tracked.length,
+  untracked_scanned_files: existingUntrackedScanned.length,
+  release_archive_binary_guard: "passed",
+  generated_cache_build_dir_guard: "passed",
 }, null, 2));
 
 function git(args) {
@@ -83,4 +123,23 @@ function readTextIfLikelyText(file) {
   }
   if (sample.length > 0 && suspicious / sample.length > 0.1) return null;
   return buf.toString("utf8");
+}
+
+function trackedGeneratedSegment(file) {
+  return file.split("/").find((segment) => forbiddenTrackedGeneratedSegments.has(segment)) || "";
+}
+
+function shouldScanUntracked(file) {
+  if (file.startsWith("spec/")) return false;
+  if (file.startsWith(".pandacode/")) return false;
+  if (file.startsWith(".git/")) return false;
+  if (trackedGeneratedSegment(file)) return false;
+  if (forbiddenTrackedReleaseBinary.test(file)) return false;
+  if (/^Dockerfile(?:\..*)?$/.test(file.split("/").pop() || "")) return true;
+  return /\.(?:cjs|css|dart|html|js|json|jsx|md|mjs|rs|sh|sql|toml|ts|tsx|txt|yaml|yml)$/.test(file);
+}
+
+function contentRuleAllowed(file, rule) {
+  return rule.label === "pandacode runtime"
+    && file.startsWith("adapters/panda-burn/local-tools/backend/");
 }

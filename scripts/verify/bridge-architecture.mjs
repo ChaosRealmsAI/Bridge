@@ -37,6 +37,11 @@ const legacyRuntime = read("apps/cloud-worker/src/legacy-runtime.js");
 assert.ok(legacyRuntime.includes("isLegacyRuntimeRoute"), "legacy-runtime module must expose route predicate");
 assert.ok(legacyRuntime.includes("legacy_runtime_api_removed"), "legacy-runtime module must own legacy 410 payload");
 
+assertFileBudgets();
+assertServerCapabilityCatalogBoundary();
+assertDesktopUiAssetSplit();
+assertNoStaleDesktopUiCatalogDrift(readDesktopUiSource());
+
 assertAllowedExampleDirs();
 
 const packageJson = JSON.parse(read("package.json"));
@@ -50,16 +55,22 @@ const activeFiles = [
   ...activePackageScriptTargets().filter((file) => !file.includes("/relay-local-control/")),
 ];
 for (const file of activeFiles) assertNoActiveLegacySurface(file, read(file));
+for (const file of activeGenericPackageFiles()) assertNoGenericPackageProductCommandDrift(file, read(file));
 for (const file of [
   "packages/sdk/src/index.js",
   "packages/sdk/src/index.d.ts",
   "apps/web-chat/public/sdk/index.js",
   "apps/desktop/src/main.rs",
-  "apps/desktop/ui/index.html",
+  ...desktopUiFiles(),
   "apps/cloud-worker/src/products.js",
 ]) {
   assertNoCoreProductPolicyDrift(file, read(file));
 }
+const desktopUi = read("apps/desktop/ui/index.html");
+const desktopProduction = read("apps/desktop/src/main.rs").split("\n#[cfg(test)]")[0];
+assert.equal(desktopProduction.includes('"pick_local_root" =>'), false, "Desktop core must not expose pick_local_root as a callable IPC command");
+assert.equal(desktopProduction.includes('"headless-bind-local-root"'), false, "Desktop core must not expose local-root headless binding");
+assert.equal(desktopUi.includes('req.command==="pick_local_root"'), false, "Desktop UI fallback must not expose pick_local_root");
 for (const file of walk("examples/relay-local-control")) assertRelayLocalControlOnlyUsesLegacyAsNegativeProbe(file, read(file));
 for (const file of activeDocFiles()) assertNoDocRuntimeDrift(file, read(file));
 
@@ -74,6 +85,7 @@ console.log(JSON.stringify({
   check: "bridge-architecture",
   active_files: activeFiles,
   worker_index_lines: lineCount("apps/cloud-worker/src/index.js"),
+  file_budgets: fileBudgetReport(),
 }));
 
 function assertNoActiveLegacySurface(file, text) {
@@ -191,6 +203,34 @@ function assertNoDocRuntimeDrift(file, text) {
   }
 }
 
+function assertNoGenericPackageProductCommandDrift(file, text) {
+  const join = (...parts) => parts.join("");
+  const forbidden = [
+    join("workspace", ".", "list"),
+    join("burn", "-", "relay", "-", "v1"),
+    join("burn", ".", "relay"),
+    join("burn", ".", "probe"),
+    join("codex", "."),
+    join("claude", "."),
+    join("shell", ".", "run"),
+    join("fs", ".", "read"),
+    join("fs", ".", "write"),
+    join("text", "_", "delta"),
+    join("app", "_", "server", "_", "event"),
+  ];
+  for (const marker of forbidden) {
+    assert.equal(text.includes(marker), false, `${file} contains product-specific or legacy command vocabulary: ${marker}`);
+  }
+}
+
+function activeGenericPackageFiles() {
+  return walk("packages")
+    .filter((file) => /\.(?:dart|js|mjs|md|ts)$/.test(file))
+    .filter((file) => !file.includes("/node_modules/"))
+    .filter((file) => !file.includes("/dist/"))
+    .sort();
+}
+
 function assertNoPackageScriptDrift(scripts) {
   for (const scriptName of ["verify:browser", "verify:mobile-browser", "pandart:local"]) {
     assert.equal(Boolean(scripts[scriptName]), false, `package.json must not expose active old/product script: ${scriptName}`);
@@ -207,6 +247,146 @@ function assertNoPackageScriptDrift(scripts) {
       assert.equal(String(script).includes(marker), false, `package script ${name} contains stale/product marker: ${marker}`);
     }
   }
+}
+
+function assertFileBudgets() {
+  for (const budget of fileBudgets()) {
+    const lines = lineCount(budget.file);
+    assert.ok(lines <= budget.maxLines, `${budget.file} exceeds architecture file budget: ${lines} > ${budget.maxLines} (${budget.reason})`);
+  }
+}
+
+function fileBudgetReport() {
+  return Object.fromEntries(fileBudgets().map((budget) => [
+    budget.file,
+    {
+      lines: lineCount(budget.file),
+      max_lines: budget.maxLines,
+      reason: budget.reason,
+    },
+  ]));
+}
+
+function fileBudgets() {
+  const budgets = [
+    {
+      file: "apps/cloud-worker/src/index.js",
+      maxLines: 250,
+      reason: "Cloud Worker index stays a thin assembly/router entrypoint",
+    },
+    {
+      file: "apps/desktop/src/main.rs",
+      maxLines: 180,
+      reason: "Desktop main stays a thin module assembly entrypoint",
+    },
+    {
+      file: "apps/desktop/ui/index.html",
+      maxLines: 180,
+      reason: "Desktop UI HTML stays a thin shell with split CSS/JS assets",
+    },
+    {
+      file: "apps/desktop/ui/styles.css",
+      maxLines: 420,
+      reason: "Desktop UI CSS stays in a dedicated bounded asset",
+    },
+    {
+      file: "apps/desktop/ui/app.js",
+      maxLines: 700,
+      reason: "Desktop UI behavior stays in a dedicated bounded asset",
+    },
+    {
+      file: "adapters/panda-burn/src/usage-ledger.mjs",
+      maxLines: 1000,
+      reason: "Panda Burn usage ledger main must not regress into a single-file ledger",
+    },
+    {
+      file: "apps/desktop/assets/panda-bridge-icon.svg",
+      maxLines: 120,
+      reason: "Desktop icon asset must remain a compact SVG, not a generated trace dump",
+    },
+  ];
+
+  for (const file of walk("apps/cloud-worker/src").filter((item) => item.endsWith(".js"))) {
+    budgets.push({
+      file,
+      maxLines: file.endsWith("/worker-core.js") ? 900 : 1100,
+      reason: "Cloud Worker production modules must stay decomposed after the core split",
+    });
+  }
+  for (const file of walk("apps/desktop/src").filter((item) => item.endsWith(".rs") && !item.endsWith("/tests.rs"))) {
+    budgets.push({
+      file,
+      maxLines: file.endsWith("/main.rs") ? 180 : 1000,
+      reason: "Desktop production Rust modules must stay below the post-refactor module budget",
+    });
+  }
+
+  const strictest = new Map();
+  for (const budget of budgets) {
+    const previous = strictest.get(budget.file);
+    if (!previous || budget.maxLines < previous.maxLines) strictest.set(budget.file, budget);
+  }
+  return [...strictest.values()].sort((left, right) => left.file.localeCompare(right.file));
+}
+
+function assertServerCapabilityCatalogBoundary() {
+  const products = read("apps/cloud-worker/src/products.js");
+  assert.ok(products.includes("SERVER_CAPABILITY_ALLOWLIST"), "Cloud products module must name server capabilities, not Desktop catalog authority");
+  assert.ok(products.includes("not the Desktop product catalog"), "Cloud products module must document server capability vs Desktop catalog boundary");
+  for (const marker of [
+    "acme-demo",
+    "desktop_product_catalog",
+    "Desktop product catalog replacement",
+    "server product catalog",
+  ]) {
+    assert.equal(products.includes(marker), false, `Cloud server capability catalog contains stale server-catalog marker: ${marker}`);
+  }
+}
+
+function assertNoStaleDesktopUiCatalogDrift(text) {
+  assert.ok(text.includes("const BASE_PRODUCTS="), "Desktop UI must retain a fixed base product catalog");
+  for (const marker of [
+    "pick_local_root",
+    "fsRows",
+    "shellRows",
+    "workspaceRows",
+    "workspace_roots",
+    "sandbox_floor",
+    "permission_preset",
+    "allow_developer_instructions",
+    "fs.read",
+    "fs.write",
+    "shell.run",
+    "local_root",
+  ]) {
+    assert.equal(text.includes(marker), false, `Desktop UI contains stale core/product affordance: ${marker}`);
+  }
+  for (const pattern of [
+    /mock\.products\s*=\s*normalizeProducts\([^)]*profile\.products/s,
+    /ui\.products\s*=\s*normalizeProducts\([^)]*cloud_profiles/s,
+    /ui\.products\s*=\s*normalizeProducts\([^)]*selected_cloud_profile/s,
+  ]) {
+    assert.equal(pattern.test(text), false, `Desktop UI allows server Profile product catalog replacement: ${pattern}`);
+  }
+}
+
+function assertDesktopUiAssetSplit() {
+  const index = read("apps/desktop/ui/index.html");
+  const windowSource = read("apps/desktop/src/window.rs");
+  assert.ok(index.includes("__PANDA_BRIDGE_DESKTOP_CSS__"), "Desktop UI index must keep a CSS compile-time placeholder");
+  assert.ok(index.includes("__PANDA_BRIDGE_DESKTOP_JS__"), "Desktop UI index must keep a JS compile-time placeholder");
+  assert.ok(windowSource.includes('include_str!("../ui/styles.css")'), "Desktop window must compile-time embed split CSS");
+  assert.ok(windowSource.includes('include_str!("../ui/app.js")'), "Desktop window must compile-time embed split JS");
+}
+
+function readDesktopUiSource() {
+  return desktopUiFiles().map(read).join("\n");
+}
+
+function desktopUiFiles() {
+  return walk("apps/desktop/ui")
+    .filter((file) => /\.(?:html|css|js)$/.test(file))
+    .sort();
 }
 
 function activeDocFiles() {
@@ -244,6 +424,7 @@ function guardVerifierTargets() {
   return new Set([
     "scripts/verify/bridge-architecture.mjs",
     "scripts/verify/open-source-hygiene.mjs",
+    "scripts/verify/panda-burn-usage-ledger.mjs",
     "scripts/verify/sdk-docs.mjs",
     "scripts/verify/sdk-types.mjs",
     "scripts/verify/relay-boundary.mjs",

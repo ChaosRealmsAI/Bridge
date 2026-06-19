@@ -87,6 +87,8 @@ async function inspectScenario(name, options = {}) {
       profileOptions: [...document.querySelectorAll("option")].map((item) => item.textContent.trim()),
       serverNames: [...document.querySelectorAll(".srv-name .nm")].map((item) => item.textContent.trim()),
       serverHealth: [...document.querySelectorAll(".srv-health")].map((item) => item.textContent.trim()),
+      serverDetails: [...document.querySelectorAll(".srv-detail")].map((item) => item.textContent.trim()),
+      selectedProfile: typeof ui !== "undefined" ? ui.status?.selected_profile || null : null,
       hasBurnSvg: Boolean(document.querySelector(".ptile svg")),
       hasEmptyLogo: Boolean(document.querySelector(".elogo svg")),
       hasSheet: Boolean(document.querySelector(".sheetwrap.on")),
@@ -145,6 +147,14 @@ const myServerSettings = await inspectScenario("my-server-settings", {
 assert.match(myServerSettings.state.text, /My Server/);
 assert.ok(myServerSettings.state.productNames.includes("Burn"), "My Server route must keep the fixed Burn product tab visible");
 assert.ok(myServerSettings.state.serverNames.includes("My Server"), "My Server should render as a server card");
+assert.equal(myServerSettings.state.selectedProfile?.label, "My Server", "selected-profile status should follow My Server");
+assert.equal(myServerSettings.state.selectedProfile?.server?.reachable, true, "My Server should expose a real probe-backed reachable status");
+assert.equal(myServerSettings.state.selectedProfile?.device?.paired, true, "My Server pairing should be shown separately from authorization");
+assert.equal(myServerSettings.state.selectedProfile?.account?.authorized, false, "Pairing alone must not mark the account authorized");
+assert.ok(
+  myServerSettings.state.serverHealth.every((item) => !/^Online\b/i.test(item)),
+  "Pairing without account authorization must not render immediate Online health",
+);
 
 const authSheet = await inspectScenario("authorization-sheet", {
   query: "?sheet=1&theme=dark",
@@ -185,6 +195,8 @@ const summary = {
     profile_options: item.state.profileOptions,
     server_names: item.state.serverNames,
     server_health: item.state.serverHealth,
+    server_details: item.state.serverDetails,
+    selected_profile: item.state.selectedProfile,
     has_burn_svg: item.state.hasBurnSvg,
     has_empty_logo: item.state.hasEmptyLogo,
     has_sheet: item.state.hasSheet,

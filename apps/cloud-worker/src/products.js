@@ -28,7 +28,21 @@ export const BRIDGE_RUNTIME_CAPABILITY_REGISTRY = Object.freeze({
 
 export const BRIDGE_RUNTIME_CAPABILITIES = Object.freeze(Object.keys(BRIDGE_RUNTIME_CAPABILITY_REGISTRY));
 
-export const PRODUCT_REGISTRY = {
+// Server capability allowlist for Bridge Cloud routes. This is intentionally
+// not the Desktop product catalog; Desktop catalog authority stays in Desktop
+// core/managed-adapter manifests.
+export const SERVER_CAPABILITY_ALLOWLIST = {
+  "panda-relay": {
+    id: "panda-relay",
+    name: "Panda Relay",
+    official_origin: "https://bridge.chaos-realms.cc",
+    official_origins: ["https://bridge.chaos-realms.cc"],
+    web_url: "https://bridge.chaos-realms.cc/authorize",
+    capabilities: [...RELAY_CAPABILITIES],
+    adapter_boundary: { adapter_id: "panda-relay", adapter_owner: "product" },
+    default_policy: {},
+    requires_desktop_authorization: true,
+  },
   "panda-burn": {
     id: "panda-burn",
     name: "Burn",
@@ -42,18 +56,30 @@ export const PRODUCT_REGISTRY = {
   },
 };
 
-export function allProducts(origin, env = {}) {
-  return Object.values(productRegistryForEnv(env)).map((product) => publicProduct(product));
+// Backward-compatible name for older API/tests that still call these records
+// "products" on the wire.
+export const PRODUCT_REGISTRY = SERVER_CAPABILITY_ALLOWLIST;
+
+export function allServerCapabilities(origin, env = {}) {
+  return Object.values(serverCapabilityAllowlistForEnv(env)).map((product) => publicProduct(product));
 }
 
-export function productById(productId, origin, env = {}) {
-  const product = productRegistryForEnv(env)[productId];
+export function serverCapabilityByProductId(productId, origin, env = {}) {
+  const product = serverCapabilityAllowlistForEnv(env)[productId];
   return product ? publicProduct(product) : null;
 }
 
-export function officialProductOrigins(env = {}) {
-  return [...new Set(Object.values(productRegistryForEnv(env)).flatMap((product) => product.official_origins || [product.official_origin]))];
+export function defaultServerCapabilityProductId(env = {}) {
+  return Object.keys(serverCapabilityAllowlistForEnv(env))[0] || "";
 }
+
+export function officialServerCapabilityOrigins(env = {}) {
+  return [...new Set(Object.values(serverCapabilityAllowlistForEnv(env)).flatMap((product) => product.official_origins || [product.official_origin]))];
+}
+
+export const allProducts = allServerCapabilities;
+export const productById = serverCapabilityByProductId;
+export const officialProductOrigins = officialServerCapabilityOrigins;
 
 export function capabilityDanger(kind) {
   return BRIDGE_RUNTIME_CAPABILITY_REGISTRY[kind]?.danger || null;
@@ -130,16 +156,16 @@ function publicProduct(product) {
   };
 }
 
-function productRegistryForEnv(env = {}) {
+function serverCapabilityAllowlistForEnv(env = {}) {
   const raw = typeof env?.BRIDGE_PRODUCT_REGISTRY_JSON === "string" ? env.BRIDGE_PRODUCT_REGISTRY_JSON.trim() : "";
   const mode = typeof env?.BRIDGE_PRODUCT_REGISTRY_MODE === "string" ? env.BRIDGE_PRODUCT_REGISTRY_MODE.trim().toLowerCase() : "builtin";
-  if (!raw || mode === "builtin") return PRODUCT_REGISTRY;
+  if (!raw || mode === "builtin") return SERVER_CAPABILITY_ALLOWLIST;
   if (!["extend", "replace"].includes(mode)) throw registryConfigError(`invalid mode: ${mode}`);
   const custom = parseCustomProducts(raw);
   if (mode === "replace") return custom;
-  const duplicateBuiltIn = Object.keys(custom).find((id) => Object.hasOwn(PRODUCT_REGISTRY, id));
+  const duplicateBuiltIn = Object.keys(custom).find((id) => Object.hasOwn(SERVER_CAPABILITY_ALLOWLIST, id));
   if (duplicateBuiltIn) throw registryConfigError(`custom product cannot override built-in product id in extend mode: ${duplicateBuiltIn}`);
-  return { ...PRODUCT_REGISTRY, ...custom };
+  return { ...SERVER_CAPABILITY_ALLOWLIST, ...custom };
 }
 
 function parseCustomProducts(raw) {

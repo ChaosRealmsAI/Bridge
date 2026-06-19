@@ -226,6 +226,7 @@ html.app .wincontrols{display:none}
 .srv-name .nm{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .srv-cur{flex:none;font-size:9.5px;font-weight:650;letter-spacing:.02em;color:var(--ink-on-energy);background:linear-gradient(150deg,var(--energy-1),var(--energy-2));padding:1.5px 7px;border-radius:99px}
 .srv-host{font-size:10.5px;color:var(--ink-3);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.srv-detail{font-size:10px;color:var(--ink-3);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .srv-health{display:inline-flex;align-items:center;gap:6px;font-size:10.5px;font-weight:540;padding:3px 10px;border-radius:99px;white-space:nowrap;flex:none}
 .srv-health .d{width:6px;height:6px;border-radius:50%;flex:none}
 .srv-health.online{color:var(--ok);background:var(--ok-soft)}

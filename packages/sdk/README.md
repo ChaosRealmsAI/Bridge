@@ -39,7 +39,7 @@ if (current?.authorization?.status === "active" && current.connected) {
     channelId: "chan_1",
     seq: 1,
     requestKey: crypto.randomUUID(),
-    payload: { type: "workspace.list" },
+    payload: { type: "relay.ping" },
     session: {
       encrypt: encryptForProductAdapter,
       decrypt: decryptFromProductAdapter,

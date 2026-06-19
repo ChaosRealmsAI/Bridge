@@ -30,6 +30,10 @@ Object.assign(TEXT["zh-CN"],{expandServers:"显示全部 {n} 台",collapseServer
 Object.assign(TEXT["zh-TW"],{expandServers:"顯示全部 {n} 台",collapseServers:"收起",selfhostHelp:"如何自建伺服器"});
 Object.assign(TEXT.en,{expandServers:"Show all {n}",collapseServers:"Show less",selfhostHelp:"How to self-host"});
 Object.assign(TEXT.ja,{expandServers:"すべて表示（{n}）",collapseServers:"折りたたむ",selfhostHelp:"サーバーを自前で立てるには"});
+Object.assign(TEXT["zh-CN"],{devicePresent:"设备在线",devicePaired:"已配对",deviceUnpaired:"未配对",authActive:"已授权",authNone:"未授权",engineStopped:"本机引擎已停止",adapterMissing:"Adapter 缺失",engineReady:"本机就绪",transportRealtime:"实时通道",transportPolling:"轮询兜底",transportIdle:"传输空闲",healthIncompatible:"不兼容"});
+Object.assign(TEXT["zh-TW"],{devicePresent:"裝置線上",devicePaired:"已配對",deviceUnpaired:"未配對",authActive:"已授權",authNone:"未授權",engineStopped:"本機引擎已停止",adapterMissing:"Adapter 缺失",engineReady:"本機就緒",transportRealtime:"即時通道",transportPolling:"輪詢備援",transportIdle:"傳輸閒置",healthIncompatible:"不相容"});
+Object.assign(TEXT.en,{devicePresent:"Device present",devicePaired:"Paired",deviceUnpaired:"Unpaired",authActive:"Authorized",authNone:"Not authorized",engineStopped:"Engine stopped",adapterMissing:"Adapter missing",engineReady:"Local ready",transportRealtime:"Realtime",transportPolling:"Polling fallback",transportIdle:"Transport idle",healthIncompatible:"Incompatible"});
+Object.assign(TEXT.ja,{devicePresent:"デバイスオンライン",devicePaired:"ペアリング済み",deviceUnpaired:"未ペアリング",authActive:"承認済み",authNone:"未承認",engineStopped:"エンジン停止",adapterMissing:"Adapter なし",engineReady:"ローカル準備完了",transportRealtime:"リアルタイム",transportPolling:"ポーリング代替",transportIdle:"転送待機",healthIncompatible:"非対応"});
 const OFFICIAL_PROFILE={id:"official",name:"Official Bridge Cloud",api_base:DEFAULT_API,web_origin:"https://bridge.chaos-realms.cc",source:"official",products:BASE_PRODUCTS.map(clone)};
 const ui={view:"product",selected:"panda-burn",products:BASE_PRODUCTS.map(clone),settings:{launch_at_login:true,appearance:"auto",language:"auto",api_base:DEFAULT_API,cloud_profiles:[clone(OFFICIAL_PROFILE)],selected_cloud_profile_id:"official"},pending:null,status:null,booting:true,statusError:null,health:{},serverSheet:null,serverListExpanded:false};
 const mq=window.matchMedia("(prefers-color-scheme: dark)");
@@ -125,16 +129,33 @@ function render(){
   document.getElementById("modalRoot").innerHTML=modalHtml();
   applyTheme();
 }
+function selectedLive(){
+  return ui.status&&ui.status.selected_profile?ui.status.selected_profile:null;
+}
+function selectedLiveForProfile(p){
+  const live=selectedLive();
+  if(!live||!p)return null;
+  const selectedId=ui.settings&&ui.settings.selected_cloud_profile_id;
+  if(p.id===selectedId&&(live.profile_id===p.id||live.api_base===p.api_base))return live;
+  return null;
+}
+function selectedTransportDegraded(){
+  const tr=selectedLive()?.transport;
+  if(!tr)return !!(ui.status&&ui.status.worker_running&&!ui.status.realtime_connected);
+  return tr.polling_active&&tr.realtime_state!=="connected";
+}
 function engineHtml(){
   if(ui.statusError)return`<span class="e-dot off"></span><span>${t("engineUnavailable")}</span>`;
   if(ui.booting&&!ui.status)return`<span class="e-dot off"></span><span>${t("engineStarting")}</span>`;
-  const reconnect=!!(ui.status&&ui.status.worker_running&&!ui.status.realtime_connected);
-  return reconnect?`<span class="e-dot off"></span><span>${t("engineReconnect")}</span>`:`<span class="e-dot"></span><span>${t("engineRunning")}</span>`;
+  const local=selectedLive()?.local_engine;
+  if(local&&local.running===false)return`<span class="e-dot off"></span><span>${t("engineStopped")}</span>`;
+  if(local&&local.adapter_health==="missing")return`<span class="e-dot off"></span><span>${t("adapterMissing")}</span>`;
+  return selectedTransportDegraded()?`<span class="e-dot off"></span><span>${t("engineReconnect")}</span>`:`<span class="e-dot"></span><span>${t("engineRunning")}</span>`;
 }
 function productState(p){
   const accts=p.accounts||[];
   if(p.connected)return"live";
-  if(p.connection==="reconnecting"||(ui.status&&ui.status.worker_running&&!ui.status.realtime_connected&&accts.some(a=>a.authorized!=="paused")))return"retry";
+  if(p.connection==="reconnecting"||(selectedTransportDegraded()&&accts.some(a=>a.authorized!=="paused")))return"retry";
   return"off";
 }
 function tabHtml(p){
@@ -153,7 +174,7 @@ function productHtml(p){
   if(!p)return"";
   const accounts=p.accounts||[];
   if(!accounts.length)return emptyHtml(p);
-  const offline=!!(ui.status&&ui.status.worker_running&&!ui.status.realtime_connected&&accounts.some(a=>a.authorized!=="paused"));
+  const offline=!!(selectedTransportDegraded()&&accounts.some(a=>a.authorized!=="paused"));
   return `<div class="ptop">
       <span class="ptlab">${t("accountsN",{n:accounts.length})}</span>
       <div class="ptend"><button class="btn mini" onclick="openProduct('${p.id}')">${t("open")} ${I.arrow}</button></div>
@@ -234,16 +255,42 @@ function serverListHtml(profiles,selected){
 function toggleServerList(){ui.serverListExpanded=!ui.serverListExpanded;closePop();render();probeAllServers()}
 function serverHealth(p){
   const active=p.id===(ui.settings.selected_cloud_profile_id);
+  const live=active?selectedLiveForProfile(p):null;
+  const probed=ui.health[p.id];
+  if(probed&&probed.state==="checking"&&!live)return{state:"checking",latency:probed.latency};
+  if(probed&&probed.state==="offline")return{state:"offline",latency:probed.latency};
   if(active){
     if(ui.statusError)return{state:"offline"};
+    if(live){
+      if(live.server?.error||live.server?.reachable===false)return{state:"offline"};
+      if(live.server?.compatible===false)return{state:"degraded"};
+      if(live.server?.reachable===true&&live.server?.compatible!==false){
+        if(live.device?.paired&&live.account?.authorized&&live.local_engine?.running&&live.local_engine?.adapter_health!=="missing"&&live.transport?.realtime_state==="connected"){
+          return{state:"online",latency:probed&&probed.state==="online"?probed.latency:null};
+        }
+        return{state:"degraded",latency:probed&&probed.state==="online"?probed.latency:null};
+      }
+      if(live.server?.compatible===true)return{state:"unknown"};
+    }
     if(ui.status&&ui.status.worker_running){
-      if(ui.status.realtime_connected){const h=ui.health[p.id];return{state:"online",latency:h&&h.state==="online"?h.latency:null}}
+      if(ui.status.realtime_connected){return{state:"degraded",latency:probed&&probed.state==="online"?probed.latency:null}}
       return{state:"degraded"};
     }
   }
-  const probed=ui.health[p.id];
   if(probed&&probed.state)return{state:probed.state,latency:probed.latency};
   return{state:"unknown"};
+}
+function serverDetail(p,h){
+  const live=selectedLiveForProfile(p);
+  if(!live){
+    if(h.state==="offline"&&ui.health[p.id]?.error)return String(ui.health[p.id].error).slice(0,120);
+    return p.api_base||"";
+  }
+  const device=live.device?.paired?(live.device.present===true?t("devicePresent"):t("devicePaired")):t("deviceUnpaired");
+  const auth=live.account?.authorized?t("authActive"):t("authNone");
+  const local=live.local_engine?.running===false?t("engineStopped"):(live.local_engine?.adapter_health==="missing"?t("adapterMissing"):t("engineReady"));
+  const tr=live.transport?.realtime_state==="connected"?t("transportRealtime"):(live.transport?.polling_state==="active"?t("transportPolling"):t("transportIdle"));
+  return [device,auth,local,tr].join(" · ");
 }
 function serverCardHtml(p,selectedId){
   const active=p.id===selectedId;
@@ -251,7 +298,8 @@ function serverCardHtml(p,selectedId){
   const host=hostOnly(p.api_base);
   const h=serverHealth(p);
   const lat=h.state==="online"&&h.latency?` <span class="srv-lat">· ${h.latency}ms</span>`:"";
-  const label=t("health"+h.state.charAt(0).toUpperCase()+h.state.slice(1));
+  const label=h.state==="degraded"&&selectedLiveForProfile(p)?.server?.compatible===false?t("healthIncompatible"):t("health"+h.state.charAt(0).toUpperCase()+h.state.slice(1));
+  const detail=serverDetail(p,h);
   const ico=official
     ?`<span class="srv-ico n-cyan">${I.cloud}</span>`
     :`<span class="srv-ico n-gray">${I.server}</span>`;
@@ -264,6 +312,7 @@ function serverCardHtml(p,selectedId){
       <div class="srv-meta">
         <div class="srv-name"><span class="nm">${esc(p.name||host)}</span>${active?`<span class="srv-cur">${t("currentTag")}</span>`:`<span class="srv-cur" style="background:var(--surface-2);color:var(--ink-3)">${official?t("officialTag"):t("selfhostTag")}</span>`}</div>
         <div class="srv-host mono">${esc(host)}</div>
+        <div class="srv-detail">${esc(detail)}</div>
       </div>
       <span class="srv-health ${h.state}"><i class="d"></i>${label}${lat}</span>
       ${actions}
@@ -366,13 +415,14 @@ async function submitPairServer(){
   f.busy=true;f.error="";render();
   try{
     ui.settings=await window.PandaBridge.call("pair_selfhost_profile",{api,token,name:"My Server"});
-    const id=ui.settings.selected_cloud_profile_id;if(id)ui.health[id]={state:"online",at:Date.now()};
+    const id=ui.settings.selected_cloud_profile_id;if(id)ui.health[id]={state:"checking",at:Date.now()};
     ui.serverSheet=null;toast(t("serverAdded"));await refresh();
   }catch(e){if(ui.serverSheet){ui.serverSheet.busy=false;ui.serverSheet.error=String(e?.message||e).slice(0,200)}render()}
 }
 async function selectServer(ev,id){
   if(ev&&ev.target&&ev.target.closest&&ev.target.closest(".srv-act"))return;
   if(id===(ui.settings&&ui.settings.selected_cloud_profile_id))return;
+  ui.health[id]={state:"checking",at:Date.now()};render();
   try{ui.settings=await window.PandaBridge.call("select_cloud_profile",{profile_id:id});toast(t("serverSelected"));await refresh()}catch(e){showError(e);await refresh().catch(()=>{})}
 }
 async function probeServer(ev,id){
@@ -508,8 +558,31 @@ function installFallback(){
   const mock={settings:{launch_at_login:true,appearance:new URLSearchParams(location.search).get("theme")||"auto",language:"auto",api_base:DEFAULT_API,cloud_profiles:[clone(OFFICIAL_PROFILE)],selected_cloud_profile_id:"official"},products:normalizeProducts([
     {id:"panda-burn",name:"Burn",origin:"https://token-burn.com",web_url:"https://token-burn.com/authorize",accounts:emptyDemo?[]:[{id:"demo_burn",email:demoAccountLabel,authorized:"active",connected:true,connection:"connected"}],connected:!emptyDemo,connection:emptyDemo?"offline":"connected"}
   ])};
+  function mockStatus(){
+    const profile=mock.settings.cloud_profiles.find(p=>p.id===mock.settings.selected_cloud_profile_id)||mock.settings.cloud_profiles[0]||OFFICIAL_PROFILE;
+    const accounts=mock.products.flatMap(p=>p.accounts||[]);
+    const authorized=accounts.some(a=>a.authorized!=="paused");
+    const paired=profile.id!=="official"||authorized;
+    const serverReachable=profile.id==="official"?null:true;
+    const running=authorized;
+    return {
+      ...clone(mock),
+      worker_running: running,
+      realtime_connected: authorized,
+      selected_profile:{
+        profile_id:profile.id,
+        label:profile.name||hostOnly(profile.api_base),
+        api_base:profile.api_base,
+        server:{reachable:serverReachable,compatible:true,last_probe_at:serverReachable?new Date().toISOString():null,error:null,source:serverReachable?"mock_profile_probe":"mock_builtin_profile"},
+        device:{paired,present:authorized?true:(paired?null:false),last_seen_at:authorized?new Date().toISOString():null,device_id:paired?"mock_device":null,device_name:paired?deviceLabel():null},
+        account:{authorized,authorization_state:authorized?"active":"none",account_id:authorized?"demo_burn":null,account_display:authorized?demoAccountLabel:null,product_ids:authorized?["panda-burn"]:[]},
+        local_engine:{running,adapter_health:authorized?"configured":"idle",adapter_configured:authorized,adapter_running:false,adapter_products:authorized?[{product_id:"panda-burn",state:"configured",configured:true,running:false,endpoint_source:"mock"}]:[]},
+        transport:{realtime_state:authorized?"connected":"idle",polling_state:authorized?"active":"idle",realtime_connected:authorized,polling_active:authorized,degraded_reason:null}
+      }
+    };
+  }
   window.ipc={postMessage(raw){const req=JSON.parse(raw);const reply=(ok,result,error)=>setTimeout(()=>window.PandaBridge.receive({type:"response",id:req.id,ok,result,error}),50);
-    if(req.command==="status")return reply(true,clone(mock));
+    if(req.command==="status")return reply(true,mockStatus());
     if(req.command==="settings")return reply(true,clone(mock.settings));
     if(req.command==="update_settings"){mock.settings={...mock.settings,...req.params};return reply(true,clone(mock.settings))}
     if(req.command==="select_cloud_profile"){mock.settings.selected_cloud_profile_id=req.params.profile_id||"official";const p=mock.settings.cloud_profiles.find(x=>x.id===mock.settings.selected_cloud_profile_id)||mock.settings.cloud_profiles[0];mock.settings.api_base=p.api_base;mock.products=normalizeProducts(BASE_PRODUCTS);return reply(true,clone(mock.settings))}

@@ -1,8 +1,7 @@
 // Live interop proof: this Dart SDK <-> the desktop relay adapter, byte-level.
 //
-// Assumes the local relay is already running, e.g.:
-//   node /Users/Zhuanz/panda/syllo/scripts/verify/burn-local-app-relay.mjs \
-//     --port 8799 --root /Users/Zhuanz/panda/syllo
+// Assumes a product-local relay adapter is already running, e.g.:
+//   node path/to/product-local-relay.mjs --port 8799 --root path/to/project
 //
 // Usage:
 //   dart run example/relay_smoke.dart [baseUrl]   (default http://127.0.0.1:8799)
@@ -42,15 +41,15 @@ Future<void> main(List<String> args) async {
     senderKeyId: (session['senderKeyId'] as String?) ?? 'bridge-product',
     recipientKeyId: (session['recipientKeyId'] as String?) ?? 'bridge-adapter',
     channelPrefix: (session['channelPrefix'] as String?) ?? 'bridge-client',
-    schemaId: 'burn-relay-v1',
+    schemaId: 'bridge-relay-smoke-v1',
   );
 
   final client = BridgeRelayClient(context);
 
   // 2. health probe -> data.adapter_ready must be true.
   final health = await client.call(<String, dynamic>{
-    'version': 'burn-relay-v1',
-    'type': 'burn.relay.health',
+    'version': 'bridge-relay-smoke-v1',
+    'type': 'relay.health',
     'request_id': 'smoke-health-${DateTime.now().millisecondsSinceEpoch}',
     'input': <String, dynamic>{},
   });
@@ -60,10 +59,10 @@ Future<void> main(List<String> args) async {
   _assert(healthOk, 'health result not ok');
   _assert(healthData['adapter_ready'] == true, 'adapter_ready != true');
 
-  // 3. pwd probe -> data.cwd must contain the syllo root path.
+  // 3. pwd probe -> data.cwd must be returned by the product adapter.
   final pwd = await client.call(<String, dynamic>{
-    'version': 'burn-relay-v1',
-    'type': 'burn.probe.pwd',
+    'version': 'bridge-relay-smoke-v1',
+    'type': 'relay.probe.pwd',
     'request_id': 'smoke-pwd-${DateTime.now().millisecondsSinceEpoch}',
     'input': <String, dynamic>{},
   });
@@ -72,7 +71,7 @@ Future<void> main(List<String> args) async {
   final cwd = (pwdData['cwd'] as String?) ?? '';
   stdout.writeln('[probe.pwd] ok=$pwdOk data=${jsonEncode(pwdData)}');
   _assert(pwdOk, 'pwd result not ok');
-  _assert(cwd.contains('syllo'), 'cwd does not contain syllo: $cwd');
+  _assert(cwd.isNotEmpty, 'cwd is empty');
 
   client.http.close();
   stdout.writeln('INTEROP OK: Dart SDK <-> desktop relay adapter byte-compatible.');

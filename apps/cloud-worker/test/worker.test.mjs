@@ -205,6 +205,32 @@ function relayEnvelopeAadText({ productId, deviceId, channelId, direction = "pro
 const health = await api("GET", "/v1/health");
 assert.equal(health.protocol, "panda-bridge-protocol-v0.2");
 assert.equal(health.storage, "memory");
+assert.equal(health.storage_configured, true);
+const productionNoStoreResponse = await worker.fetch(new Request("http://local.test/v1/health"), {
+  ...env,
+  BRIDGE_ENV: "production",
+  BRIDGE_LOCAL_MEMORY: "",
+});
+const productionNoStoreHealth = await productionNoStoreResponse.json();
+assert.equal(productionNoStoreResponse.status, 503);
+assert.equal(productionNoStoreHealth.ok, false);
+assert.equal(productionNoStoreHealth.error, "bridge_storage_unconfigured");
+assert.equal(productionNoStoreHealth.storage, "unconfigured");
+const productionWriteResponse = await worker.fetch(new Request("http://local.test/v1/sessions/guest", {
+  method: "POST",
+  headers: {
+    origin: env.BRIDGE_WEB_ORIGIN,
+    "content-type": "application/json",
+  },
+  body: JSON.stringify({}),
+}), {
+  ...env,
+  BRIDGE_ENV: "production",
+  BRIDGE_LOCAL_MEMORY: "",
+});
+const productionWritePayload = await productionWriteResponse.json();
+assert.equal(productionWriteResponse.status, 503);
+assert.equal(productionWritePayload.error, "bridge_storage_unconfigured");
 const bridgeTestCspResponse = await worker.fetch(new Request("http://local.test/v1/health", {
   headers: { origin: "https://bridge.test.example" },
 }), env);
@@ -213,6 +239,7 @@ assert.match(bridgeTestCspResponse.headers.get("content-security-policy") || "",
 
 const diagnostics = await api("GET", "/v1/diagnostics");
 assert.equal(diagnostics.protocol, "panda-bridge-protocol-v0.2");
+assert.equal(diagnostics.storage_configured, true);
 assert.equal(diagnostics.relay.stores_plaintext, false);
 assert.equal(diagnostics.relay.envelope_ttl_ms, 300000);
 assert.deepEqual(diagnostics.relay.queue_limits, {
@@ -224,6 +251,11 @@ assert.deepEqual(diagnostics.relay.queue_limits, {
 });
 assert.equal(diagnostics.legacy_runtime_api.removed, true);
 assert.equal("jobs" in diagnostics, false);
+assert.equal(diagnostics.server_capabilities.authority, "bridge_cloud_server_allowlist");
+assert.equal(diagnostics.server_capabilities.desktop_catalog, false);
+assert.deepEqual(diagnostics.server_capabilities.items, diagnostics.products);
+assert.equal(diagnostics.desktop_product_catalog.authority, "bridge_desktop_core_managed_adapters");
+assert.equal(diagnostics.desktop_product_catalog.server_defined, false);
 for (const product of diagnostics.products) {
   assert.deepEqual(product.capabilities, RELAY_CAPABILITIES);
   assert.doesNotMatch(JSON.stringify({ ...product, capabilities: [] }), /codex\.|claude\.|shell\.run|fs\.|data\./);
@@ -258,6 +290,80 @@ assert.deepEqual(webMessages[0], { type: "relay.envelope.created", envelope: { i
 const assetHead = await worker.fetch(new Request("http://local.test/downloads/panda-bridge-macos.dmg", { method: "HEAD" }), env);
 assert.equal(assetHead.status, 200);
 assert.deepEqual(assetRequests.at(-1), { method: "HEAD", pathname: "/downloads/panda-bridge-macos.dmg" });
+
+env.BRIDGE_SELFHOST_ADMIN_TOKEN = "selfhost-admin-test";
+const selfhostPairingDenied = await apiMissingOrigin("POST", "/v1/selfhost/pairing-token", {
+  device_name: "Denied Selfhost Desktop",
+});
+assert.equal(selfhostPairingDenied.response.status, 403);
+assert.equal(selfhostPairingDenied.payload.error, "selfhost_admin_required");
+
+const wrongSelfhostPairingToken = await apiMissingOrigin("POST", "/v1/connectors/claim", {
+  code: "NOPE-TOKN",
+  install_id: "install-selfhost-wrong",
+  device_name: "Wrong Selfhost Desktop",
+}, "", {
+  "x-panda-bridge-local-client": "desktop",
+  "x-panda-bridge-install-id": "install-selfhost-wrong",
+});
+assert.equal(wrongSelfhostPairingToken.response.status, 400);
+assert.equal(wrongSelfhostPairingToken.payload.error, "invalid_pairing_code");
+
+const selfhostPairing = await apiMissingOrigin("POST", "/v1/selfhost/pairing-token", {
+  device_name: "Selfhost Desktop",
+}, "", {
+  "x-panda-bridge-selfhost-admin-token": "selfhost-admin-test",
+});
+assert.equal(selfhostPairing.response.status, 201);
+assert.match(selfhostPairing.payload.token, /^[A-Z0-9]{4}-[A-Z0-9]{4,6}$/);
+assert.equal(selfhostPairing.payload.ttl_seconds, 900);
+assert.equal(JSON.stringify(__bridgeTestMemorySnapshot().bridge_pairing_codes).includes(selfhostPairing.payload.token), false);
+
+const selfhostClaim = await apiMissingOrigin("POST", "/v1/connectors/claim", {
+  code: selfhostPairing.payload.token,
+  install_id: "install-selfhost-claim",
+  device_name: "Selfhost Desktop",
+}, "", {
+  "x-panda-bridge-local-client": "desktop",
+  "x-panda-bridge-install-id": "install-selfhost-claim",
+});
+assert.equal(selfhostClaim.response.status, 201);
+assert.match(selfhostClaim.payload.device_token, /^pbd_/);
+const consumedPairing = __bridgeTestMemorySnapshot().bridge_pairing_codes.find((row) => row.id === selfhostPairing.payload.pairing_token.id);
+assert.ok(consumedPairing.consumed_at);
+assert.equal(consumedPairing.device_id, selfhostClaim.payload.device.id);
+
+const reusedSelfhostPairing = await apiMissingOrigin("POST", "/v1/connectors/claim", {
+  code: selfhostPairing.payload.token,
+  install_id: "install-selfhost-reuse",
+  device_name: "Selfhost Desktop Reuse",
+}, "", {
+  "x-panda-bridge-local-client": "desktop",
+  "x-panda-bridge-install-id": "install-selfhost-reuse",
+});
+assert.equal(reusedSelfhostPairing.response.status, 400);
+assert.equal(reusedSelfhostPairing.payload.error, "invalid_pairing_code");
+
+env.BRIDGE_PAIRING_TOKEN_TTL_MS = "1";
+const expiringSelfhostPairing = await apiMissingOrigin("POST", "/v1/selfhost/pairing-token", {
+  device_name: "Expiring Selfhost Desktop",
+}, "", {
+  "x-panda-bridge-selfhost-admin-token": "selfhost-admin-test",
+});
+assert.equal(expiringSelfhostPairing.response.status, 201);
+await new Promise((resolve) => setTimeout(resolve, 10));
+const expiredSelfhostClaim = await apiMissingOrigin("POST", "/v1/connectors/claim", {
+  code: expiringSelfhostPairing.payload.token,
+  install_id: "install-selfhost-expired",
+  device_name: "Expired Selfhost Desktop",
+}, "", {
+  "x-panda-bridge-local-client": "desktop",
+  "x-panda-bridge-install-id": "install-selfhost-expired",
+});
+assert.equal(expiredSelfhostClaim.response.status, 400);
+assert.equal(expiredSelfhostClaim.payload.error, "invalid_pairing_code");
+delete env.BRIDGE_PAIRING_TOKEN_TTL_MS;
+delete env.BRIDGE_SELFHOST_ADMIN_TOKEN;
 
 const guestLogin = await apiRaw("POST", "/v1/sessions/guest", { display_name: "Tester" });
 assert.ok(guestLogin.response.ok);
@@ -374,7 +480,13 @@ const customDiagnosticsResponse = await worker.fetch(new Request("http://local.t
 }), customRegistryEnv);
 assert.equal(customDiagnosticsResponse.status, 200);
 const customDiagnostics = await customDiagnosticsResponse.json();
+assert.equal(customDiagnostics.server_capabilities.authority, "bridge_cloud_server_allowlist");
+assert.equal(customDiagnostics.server_capabilities.desktop_catalog, false);
+assert.deepEqual(customDiagnostics.server_capabilities.items.map((item) => item.id), ["acme-demo"]);
+assert.equal(customDiagnostics.desktop_product_catalog.authority, "bridge_desktop_core_managed_adapters");
+assert.equal(customDiagnostics.desktop_product_catalog.server_defined, false);
 assert.deepEqual(customDiagnostics.products.map((item) => item.id), ["acme-demo"]);
+assert.deepEqual(customDiagnostics.products, customDiagnostics.server_capabilities.items);
 assert.equal(customDiagnostics.products[0].origin, "http://acme.local.test");
 assert.equal(customDiagnostics.products[0].web_url, "http://acme.local.test/app");
 assert.deepEqual(customDiagnostics.products[0].capabilities, ["relay.envelope", "relay.ack"]);
@@ -384,6 +496,7 @@ const customDiagnosticsFromBridgeResponse = await worker.fetch(new Request("http
 assert.equal(customDiagnosticsFromBridgeResponse.status, 200);
 const customDiagnosticsFromBridge = await customDiagnosticsFromBridgeResponse.json();
 assert.equal(customDiagnosticsFromBridge.products[0].origin, "http://acme.local.test");
+assert.equal(customDiagnosticsFromBridge.desktop_product_catalog.server_defined, false);
 const customProductsResponse = await worker.fetch(new Request("http://local.test/v1/products", {
   headers: { origin: "http://acme.local.test" },
 }), customRegistryEnv);
@@ -429,7 +542,7 @@ const extendOverrideRegistryResponse = await worker.fetch(new Request("http://lo
   BRIDGE_PRODUCT_REGISTRY_MODE: "extend",
   BRIDGE_PRODUCT_REGISTRY_JSON: JSON.stringify({
     products: [{
-      id: "panda-burn",
+      id: "panda-relay",
       name: "Fake Panda",
       official_origin: "https://evil.example",
     }],

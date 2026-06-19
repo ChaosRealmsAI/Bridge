@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -16,13 +16,19 @@ import {
   startRelayLocalControlAdapter,
 } from "../../examples/relay-local-control/adapter.mjs";
 
-const PRODUCT_ID = "acme-demo";
-const PRODUCT_NAME = "Acme Demo";
-const evidenceDir = resolve("spec/verification/evidence/selfhost-profile");
-rmSync(evidenceDir, { recursive: true, force: true });
+const PRODUCT_ID = "panda-burn";
+const PRODUCT_NAME = "Burn";
+const DIAGNOSTICS_TEST_PRODUCT_ID = "acme-demo";
+const SELFHOST_ADMIN_TOKEN = "selfhost-admin-test";
+const evidenceRoot = resolve("spec/L3/evidence");
+const finalEvidenceDir = resolve(evidenceRoot, "personal-selfhost-docker-pairing");
+mkdirSync(evidenceRoot, { recursive: true });
+const evidenceDir = mkdtempSync(resolve(evidenceRoot, ".personal-selfhost-docker-pairing-"));
 mkdirSync(evidenceDir, { recursive: true });
 mkdirSync(resolve(evidenceDir, "snapshots"), { recursive: true });
 mkdirSync(resolve(evidenceDir, "screenshots"), { recursive: true });
+const desktopUiHtmlPath = writeCompiledDesktopUiHtml();
+let evidencePromoted = false;
 
 const temp = mkdtempSync(resolve(tmpdir(), "panda-bridge-selfhost-profile-"));
 const mainStatePath = resolve(temp, "desktop-state.json");
@@ -42,18 +48,22 @@ let deleteCustomProfileStatus = null;
 
 try {
   const diagnostics = await fetchJson(`${apiBase}/v1/diagnostics`, apiBase);
-  assert.deepEqual(diagnostics.products.map((item) => item.id), [PRODUCT_ID]);
-  assert.equal(diagnostics.products[0].web_url, `${apiBase}/acme`);
+  const diagnosticsProductIds = diagnostics.products.map((item) => item.id);
+  assert.ok(diagnosticsProductIds.includes(PRODUCT_ID));
+  assert.ok(diagnosticsProductIds.includes(DIAGNOSTICS_TEST_PRODUCT_ID));
   step("bb-v04-diagnostics", {
     action: "Open self-host /v1/diagnostics",
-    expected: "custom registry exposes only acme-demo with relay capabilities",
-    actual: `products=${diagnostics.products.map((item) => item.id).join(",")}`,
+    expected: "Bridge Server diagnostics is compatible, but diagnostics products do not define Desktop's product catalog",
+    actual: `diagnostics_products=${diagnosticsProductIds.join(",")}`,
     evidence: snapshot("diagnostics", diagnostics),
   });
 
   const initialStatus = await desktopJson(["headless-status"], "initial-status");
   assert.equal(initialStatus.settings.api_base, "https://api.bridge.chaos-realms.cc");
   assert.equal(initialStatus.settings.cloud_profiles.some((item) => item.id === "official"), true);
+  assert.equal(initialStatus.selected_profile.profile_id, "official");
+  assert.equal(initialStatus.selected_profile.server.compatible, true);
+  assert.equal(initialStatus.selected_profile.device.paired, false);
   step("bb-v04-official-default", {
     action: "Open Desktop status with empty local state",
     expected: "official Bridge Cloud exists, is selected, and no custom Profile is saved",
@@ -73,11 +83,17 @@ try {
     const addStatus = await desktopJson(["headless-status"], "after-add-profile");
     addProfileStatus = addStatus;
     const addProduct = addStatus.products.find((item) => item.id === PRODUCT_ID);
-    assert.ok(addProduct, "manual add-profile route must expose self-host product");
+    assert.ok(addProduct, "manual add-profile route must keep fixed Burn product");
+    assert.equal(addStatus.products.some((item) => item.id === DIAGNOSTICS_TEST_PRODUCT_ID), false);
     assert.equal(addProduct.accounts.length, 0);
+    assert.equal(addStatus.selected_profile.profile_id, addedSettings.selected_cloud_profile_id);
+    assert.equal(addStatus.selected_profile.server.reachable, true);
+    assert.equal(addStatus.selected_profile.server.compatible, true);
+    assert.equal(addStatus.selected_profile.device.paired, false);
+    assert.equal(addStatus.selected_profile.account.authorized, false);
     step("bb-v04-add-profile", {
       action: "Add self-host API from Desktop settings/Profile management",
-      expected: "Desktop validates health/diagnostics, saves/selects Profile, and renders diagnostics product tabs with account isolation",
+      expected: "Desktop validates health/diagnostics, saves/selects Profile, and keeps the fixed product catalog",
       actual: `selected=${addStatus.settings.api_base}; product=${addProduct.id}; accounts=${addProduct.accounts.length}`,
       evidence: ["snapshots/after-add-profile-settings.json", "snapshots/after-add-profile.json"],
     });
@@ -91,9 +107,10 @@ try {
     const refreshedStatus = await desktopJson(["headless-status"], "after-refresh-profile");
     refreshProfileStatus = refreshedStatus;
     assert.ok(refreshedStatus.products.some((item) => item.id === PRODUCT_ID));
+    assert.equal(refreshedStatus.products.some((item) => item.id === DIAGNOSTICS_TEST_PRODUCT_ID), false);
     step("bb-v04-refresh-profile", {
       action: "Refresh selected self-host Profile from settings",
-      expected: "Desktop revalidates health/diagnostics, keeps the Profile selected, and keeps products from diagnostics",
+      expected: "Desktop revalidates health/diagnostics, keeps the Profile selected, and keeps fixed products",
       actual: `selected=${refreshedStatus.settings.api_base}; products=${refreshedStatus.products.map((item) => item.id).join(",")}`,
       evidence: ["snapshots/after-refresh-profile-settings.json", "snapshots/after-refresh-profile.json"],
     });
@@ -110,7 +127,7 @@ try {
     assert.equal(removedStatus.settings.cloud_profiles.some((item) => item.api_base === apiBase), false);
     step("bb-v04-delete-custom-profile", {
       action: "Delete the selected custom self-host Profile",
-      expected: "Desktop removes custom products from current view and falls back to official Profile without deleting official",
+      expected: "Desktop removes the custom server Profile and keeps the fixed product catalog through the official fallback",
       actual: `selected=${removedStatus.settings.api_base}; profiles=${removedStatus.settings.cloud_profiles.map((item) => item.id).join(",")}`,
       evidence: ["snapshots/after-delete-custom-profile-settings.json", "snapshots/after-delete-custom-profile.json"],
     });
@@ -134,26 +151,140 @@ try {
     await invalidServer.close();
   }
 
+  const wrongPairing = await runDesktop([
+    "headless-pair-selfhost-profile",
+    "--api",
+    apiBase,
+    "--token",
+    "NOPE-TOKN",
+    "--name",
+    "My Server",
+  ]);
+  assert.notEqual(wrongPairing.status, 0, "wrong Pairing Token must fail");
+  const afterWrongPairing = await desktopJson(["headless-status"], "after-wrong-pairing-token");
+  assert.equal(afterWrongPairing.settings.api_base, "https://api.bridge.chaos-realms.cc");
+  assert.equal(afterWrongPairing.settings.cloud_profiles.some((item) => item.api_base === apiBase), false);
+  snapshot("wrong-pairing-token-error", commandEvidence(wrongPairing));
+  step("bb-v05-pairing-wrong-token", {
+    action: "Pair Desktop with Server URL and a wrong Pairing Token",
+    expected: "Desktop receives a stable error and saves no My Server Profile",
+    actual: `exit=${wrongPairing.status}; error=${desktopError(wrongPairing.stderr)}; saved=${afterWrongPairing.settings.cloud_profiles.some((item) => item.api_base === apiBase)}`,
+    evidence: ["snapshots/wrong-pairing-token-error.json", "snapshots/after-wrong-pairing-token.json"],
+  });
+
+  const pairingToken = await createPairingToken(apiBase, "Self-host Profile Paired Device");
+  snapshot("selfhost-pairing-token", redactPairingTokenPayload(pairingToken));
+  const pairedSettings = await desktopJson([
+    "headless-pair-selfhost-profile",
+    "--api",
+    apiBase,
+    "--token",
+    pairingToken.token,
+    "--name",
+    "My Server",
+    "--device-name",
+    "Self-host Profile Paired Device",
+  ], "after-pair-selfhost-settings");
+  assert.equal(pairedSettings.api_base, apiBase);
+  const pairedProfile = pairedSettings.cloud_profiles.find((item) => item.api_base === apiBase);
+  assert.ok(pairedProfile, "paired profile must be saved");
+  assert.equal(pairedProfile.name, "My Server");
+  assert.equal(pairedProfile.source, "selfhost");
+  assert.equal(JSON.stringify(pairedSettings).includes(pairingToken.token), false);
+  const afterPairStatus = await desktopJson(["headless-status"], "after-pair-selfhost-status");
+  const pairedProduct = afterPairStatus.products.find((item) => item.id === PRODUCT_ID);
+  assert.ok(pairedProduct, "paired My Server Profile must keep fixed Burn product");
+  assert.equal(afterPairStatus.products.some((item) => item.id === DIAGNOSTICS_TEST_PRODUCT_ID), false);
+  assert.equal(pairedProduct.accounts.length, 0);
+  assert.equal(afterPairStatus.selected_profile.profile_id, pairedSettings.selected_cloud_profile_id);
+  assert.equal(afterPairStatus.selected_profile.server.reachable, true);
+  assert.equal(afterPairStatus.selected_profile.server.compatible, true);
+  assert.equal(afterPairStatus.selected_profile.device.paired, true);
+  assert.equal(afterPairStatus.selected_profile.account.authorized, false);
+  const pairedStateText = readFileSync(activeStatePath, "utf8");
+  assert.equal(pairedStateText.includes(pairingToken.token), false, "Desktop state must not store original Pairing Token");
+  step("bb-v05-pairing-success", {
+    action: "Generate server-side Pairing Token and pair Desktop with Server URL + Token",
+    expected: "Desktop validates health/diagnostics, consumes token, stores My Server Profile and long-lived device credential, and keeps fixed products",
+    actual: `selected=${afterPairStatus.settings.api_base}; profile=${pairedProfile.name}; token_stored=${pairedStateText.includes(pairingToken.token)}`,
+    evidence: ["snapshots/selfhost-pairing-token.json", "snapshots/after-pair-selfhost-settings.json", "snapshots/after-pair-selfhost-status.json"],
+  });
+
+  await withIsolatedDesktop("reused-pairing-token", async () => {
+    const reusedPairing = await runDesktop([
+      "headless-pair-selfhost-profile",
+      "--api",
+      apiBase,
+      "--token",
+      pairingToken.token,
+      "--name",
+      "My Server",
+    ]);
+    assert.notEqual(reusedPairing.status, 0, "reused Pairing Token must fail");
+    const afterReuse = await desktopJson(["headless-status"], "after-reused-pairing-token");
+    assert.equal(afterReuse.settings.cloud_profiles.some((item) => item.api_base === apiBase), false);
+    snapshot("reused-pairing-token-error", commandEvidence(reusedPairing));
+    step("bb-v05-pairing-reused-token", {
+      action: "Attempt to pair a fresh Desktop state with the already consumed Pairing Token",
+      expected: "Server rejects reuse and Desktop saves no Profile",
+      actual: `exit=${reusedPairing.status}; error=${desktopError(reusedPairing.stderr)}; saved=${afterReuse.settings.cloud_profiles.some((item) => item.api_base === apiBase)}`,
+      evidence: ["snapshots/reused-pairing-token-error.json", "snapshots/after-reused-pairing-token.json"],
+    });
+  });
+
+  const expiringWorker = await startLocalWorker({ env: { BRIDGE_PAIRING_TOKEN_TTL_MS: "1" } });
+  try {
+    const expiringToken = await createPairingToken(expiringWorker.apiBase, "Expired Self-host Profile Device");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    await withIsolatedDesktop("expired-pairing-token", async () => {
+      const expiredPairing = await runDesktop([
+        "headless-pair-selfhost-profile",
+        "--api",
+        expiringWorker.apiBase,
+        "--token",
+        expiringToken.token,
+        "--name",
+        "My Server",
+      ]);
+      assert.notEqual(expiredPairing.status, 0, "expired Pairing Token must fail");
+      const afterExpired = await desktopJson(["headless-status"], "after-expired-pairing-token");
+      assert.equal(afterExpired.settings.cloud_profiles.some((item) => item.api_base === expiringWorker.apiBase), false);
+      snapshot("expired-pairing-token-error", commandEvidence(expiredPairing));
+      step("bb-v05-pairing-expired-token", {
+        action: "Attempt to pair after a safe 1 ms Pairing Token TTL override expires",
+        expected: "Server rejects the expired token and Desktop saves no Profile",
+        actual: `exit=${expiredPairing.status}; error=${desktopError(expiredPairing.stderr)}; saved=${afterExpired.settings.cloud_profiles.some((item) => item.api_base === expiringWorker.apiBase)}`,
+        evidence: ["snapshots/expired-pairing-token-error.json", "snapshots/after-expired-pairing-token.json"],
+      });
+    });
+  } finally {
+    await expiringWorker.close();
+  }
+
   const bridge = createBridgeClient({ apiBase, productId: PRODUCT_ID, fetch: fetchWithJar(apiBase) });
   const session = await bridge.auth.guest("Self-host Profile");
   assert.equal(session.authenticated, true);
   const deniedIntent = await bridge.connect.createIntent({ deviceName: "Self-host Profile Deny Device" });
-  const preview = await desktopJson([
-    "headless-preview-intent",
-    "--api",
-    apiBase,
-    "--intent",
-    deniedIntent.token,
-  ], "preview-unknown-api");
-  assert.equal(preview.product_id, PRODUCT_ID);
-  assert.equal(preview.product_name, PRODUCT_NAME);
-  const afterPreview = await desktopJson(["headless-status"], "after-preview-no-claim");
-  assert.equal(afterPreview.settings.cloud_profiles.some((item) => item.api_base === apiBase), false);
-  step("bb-v04-deeplink-deny", {
-    action: "Preview unknown self-host API intent, then do not allow/claim",
-    expected: "trust dialog data is available, but Deny/close leaves no saved Profile",
-    actual: `preview=${preview.product_name}; saved=${afterPreview.settings.cloud_profiles.some((item) => item.api_base === apiBase)}`,
-    evidence: ["snapshots/preview-unknown-api.json", "snapshots/after-preview-no-claim.json"],
+  let preview;
+  let afterPreview;
+  await withIsolatedDesktop("preview-no-claim", async () => {
+    preview = await desktopJson([
+      "headless-preview-intent",
+      "--api",
+      apiBase,
+      "--intent",
+      deniedIntent.token,
+    ], "preview-unknown-api");
+    assert.equal(preview.product_id, PRODUCT_ID);
+    assert.equal(preview.product_name, PRODUCT_NAME);
+    afterPreview = await desktopJson(["headless-status"], "after-preview-no-claim");
+    assert.equal(afterPreview.settings.cloud_profiles.some((item) => item.api_base === apiBase), false);
+    step("bb-v04-deeplink-deny", {
+      action: "Preview unknown self-host API intent, then do not allow/claim",
+      expected: "trust dialog data is available, but Deny/close leaves no saved Profile",
+      actual: `preview=${preview.product_name}; saved=${afterPreview.settings.cloud_profiles.some((item) => item.api_base === apiBase)}`,
+      evidence: ["snapshots/preview-unknown-api.json", "snapshots/after-preview-no-claim.json"],
+    });
   });
 
   const intent = await bridge.connect.createIntent({ deviceName: "Self-host Profile Device" });
@@ -176,21 +307,28 @@ try {
   const selfhostProduct = status.products.find((item) => item.id === PRODUCT_ID);
   assert.ok(selfhostProduct, "headless-status must expose the self-host product tab");
   assert.equal(selfhostProduct.name, PRODUCT_NAME);
+  assert.equal(status.products.some((item) => item.id === DIAGNOSTICS_TEST_PRODUCT_ID), false);
   assert.equal(selfhostProduct.accounts.length, 1);
   assert.equal(status.settings.api_base, apiBase);
   assert.equal(status.settings.cloud_profiles.some((item) => item.api_base === apiBase), true);
+  assert.equal(status.selected_profile.api_base, apiBase);
+  assert.equal(status.selected_profile.server.reachable, true);
+  assert.equal(status.selected_profile.server.compatible, true);
+  assert.equal(status.selected_profile.device.paired, true);
+  assert.equal(status.selected_profile.account.authorized, true);
+  assert.ok(["connected", "degraded", "stopped"].includes(status.selected_profile.transport.realtime_state));
   step("bb-v04-deeplink-allow", {
     action: "Allow unknown self-host API deep link",
-    expected: "Desktop validates diagnostics, claims intent, saves/selects Profile, and shows acme-demo tab/account",
+    expected: "Desktop validates diagnostics, claims intent, saves/selects Profile, and shows fixed Burn tab/account",
     actual: `selected=${status.settings.api_base}; product=${selfhostProduct.id}; accounts=${selfhostProduct.accounts.length}`,
     evidence: ["snapshots/claim-unknown-api-allow.json", "snapshots/after-allow-status.json"],
   });
 
   const openWeb = await desktopJson(["headless-open-web-url", "--product-id", PRODUCT_ID], "open-web-url");
-  assert.equal(openWeb.url, `${apiBase}/acme`);
+  assert.equal(openWeb.url, "https://token-burn.com/authorize");
   step("bb-v04-open-web", {
     action: "Resolve product open_web for selected self-host Profile",
-    expected: "Desktop opens the custom product web_url from diagnostics, not the official default",
+    expected: "Desktop opens the fixed product web_url, not a server diagnostics product page",
     actual: openWeb.url,
     evidence: "snapshots/open-web-url.json",
   });
@@ -236,6 +374,14 @@ try {
     product_id: PRODUCT_ID,
     desktop_state_path: mainStatePath,
     device_id: claim.device_id,
+    pairing: {
+      token_generated: true,
+      wrong_token_rejected: true,
+      reused_token_rejected: true,
+      expired_token_rejected: true,
+      desktop_state_contains_original_token: pairedStateText.includes(pairingToken.token),
+      paired_profile_source: pairedProfile.source,
+    },
     profile: {
       selected_api_base: status.settings.api_base,
       products: status.products.map((item) => item.id),
@@ -256,13 +402,16 @@ try {
     },
     checked_at: new Date().toISOString(),
   };
+  assert.equal(summary.pairing.desktop_state_contains_original_token, false, "Desktop state stored original Pairing Token");
   assert.equal(summary.relay.server_visible_plaintext, false, "self-host relay leaked product plaintext into server-visible fields");
   writeFileSync(resolve(evidenceDir, "manifest.json"), `${JSON.stringify({ ok: true, steps }, null, 2)}\n`);
   writeFileSync(resolve(evidenceDir, "summary.json"), `${JSON.stringify(summary, null, 2)}\n`);
+  promoteEvidenceDir();
   console.log(JSON.stringify(summary, null, 2));
 } finally {
   await adapter.close();
   await workerServer.close();
+  if (!evidencePromoted) rmSync(evidenceDir, { recursive: true, force: true });
 }
 
 function snapshot(name, payload) {
@@ -409,8 +558,8 @@ async function captureDesktopUi(browser, fileName, statusPayload, beforeShot) {
         if (req.command === "status") return reply(true, window.__pandaBridgeStatus);
         if (req.command === "settings") return reply(true, window.__pandaBridgeStatus.settings || {});
         if (req.command === "preview_intent") return reply(true, window.__pandaBridgePreview || {
-          product_id: "acme-demo",
-          product_name: "Acme Demo",
+          product_id: "panda-burn",
+          product_name: "Burn",
           cloud_origin: req.params?.api || "http://127.0.0.1",
           user_display_name: "Self-host Profile",
           user_id: "visual-user",
@@ -419,19 +568,33 @@ async function captureDesktopUi(browser, fileName, statusPayload, beforeShot) {
           local_root_state: { fs: {}, shell: {} },
         });
         if (req.command === "claim_intent" || req.command === "open_web" || req.command === "start_worker") return reply(true, { ok: true });
-        if (req.command === "select_cloud_profile" || req.command === "update_settings" || req.command === "refresh_cloud_profile") return reply(true, window.__pandaBridgeStatus.settings || {});
+        if (req.command === "select_cloud_profile" || req.command === "update_settings" || req.command === "refresh_cloud_profile" || req.command === "pair_selfhost_profile") return reply(true, window.__pandaBridgeStatus.settings || {});
         if (req.command === "remove_cloud_profile") return reply(false, null, "official Bridge Cloud profile cannot be removed");
         return reply(true, { ok: true });
       },
     };
   }, statusPayload);
-  await page.goto(pathToFileURL(resolve("apps/desktop/ui/index.html")).href);
+  await page.goto(pathToFileURL(desktopUiHtmlPath).href);
   await page.waitForSelector("#pane", { timeout: 5000 });
   await beforeShot(page);
   const relative = `screenshots/${fileName}`;
   await page.screenshot({ path: resolve(evidenceDir, relative), fullPage: true });
   await page.close();
   return relative;
+}
+
+function writeCompiledDesktopUiHtml() {
+  const indexSource = readFileSync(resolve("apps/desktop/ui/index.html"), "utf8");
+  const cssSource = readFileSync(resolve("apps/desktop/ui/styles.css"), "utf8");
+  const jsSource = readFileSync(resolve("apps/desktop/ui/app.js"), "utf8");
+  const html = indexSource
+    .replace("__PANDA_BRIDGE_DESKTOP_CSS__", cssSource)
+    .replace("__PANDA_BRIDGE_DESKTOP_JS__", jsSource);
+  assert.equal(html.includes("__PANDA_BRIDGE_DESKTOP_CSS__"), false, "compiled selfhost UI HTML must embed CSS");
+  assert.equal(html.includes("__PANDA_BRIDGE_DESKTOP_JS__"), false, "compiled selfhost UI HTML must embed JS");
+  const target = resolve(evidenceDir, "desktop-ui-compiled.html");
+  writeFileSync(target, html);
+  return target;
 }
 
 async function captureProductPage(browser, fileName, url) {
@@ -448,6 +611,21 @@ function appendEvidence(stepId, evidence) {
   const target = steps.find((item) => item.id === stepId);
   assert.ok(target, `missing manifest step: ${stepId}`);
   target.evidence.push(evidence);
+}
+
+function promoteEvidenceDir() {
+  const backupDir = existsSync(finalEvidenceDir)
+    ? resolve(evidenceRoot, `.personal-selfhost-docker-pairing-previous-${Date.now()}`)
+    : "";
+  if (backupDir) renameSync(finalEvidenceDir, backupDir);
+  try {
+    renameSync(evidenceDir, finalEvidenceDir);
+    evidencePromoted = true;
+    if (backupDir) rmSync(backupDir, { recursive: true, force: true });
+  } catch (error) {
+    if (backupDir && !existsSync(finalEvidenceDir)) renameSync(backupDir, finalEvidenceDir);
+    throw error;
+  }
 }
 
 async function runCommandThroughBridge(bridge, deviceId, channelId, seq, command) {
@@ -514,13 +692,15 @@ async function startInvalidDiagnosticsServer() {
   };
 }
 
-async function startLocalWorker() {
+async function startLocalWorker(options = {}) {
   const env = {
     BRIDGE_LOCAL_MEMORY: "1",
     BRIDGE_WEB_ORIGIN: "http://127.0.0.1:0",
     BRIDGE_PUBLIC_API_BASE: "http://127.0.0.1:0",
-    BRIDGE_PRODUCT_REGISTRY_MODE: "replace",
+    BRIDGE_PRODUCT_REGISTRY_MODE: "extend",
+    BRIDGE_SELFHOST_ADMIN_TOKEN: SELFHOST_ADMIN_TOKEN,
     SESSION_COOKIE_NAME: "pb_session",
+    ...(options.env || {}),
   };
   const server = createServer(async (incoming, outgoing) => {
     try {
@@ -544,13 +724,16 @@ async function startLocalWorker() {
         BRIDGE_PUBLIC_API_BASE: origin,
         BRIDGE_PRODUCT_REGISTRY_JSON: JSON.stringify({
           products: [{
-            id: PRODUCT_ID,
-            name: PRODUCT_NAME,
+            id: DIAGNOSTICS_TEST_PRODUCT_ID,
+            name: "Acme Demo",
             official_origin: origin,
             web_url: `${origin}/acme`,
           }],
         }),
-        BRIDGE_PRODUCT_ALLOWED_ORIGINS: JSON.stringify({ [PRODUCT_ID]: [origin] }),
+        BRIDGE_PRODUCT_ALLOWED_ORIGINS: JSON.stringify({
+          [PRODUCT_ID]: [origin],
+          [DIAGNOSTICS_TEST_PRODUCT_ID]: [origin],
+        }),
       });
       outgoing.writeHead(response.status, Object.fromEntries(response.headers.entries()));
       outgoing.end(response.body ? Buffer.from(await response.arrayBuffer()) : undefined);
@@ -572,6 +755,29 @@ function fetchJson(url, origin) {
     assert.ok(response.ok, JSON.stringify(payload));
     return payload;
   });
+}
+
+async function createPairingToken(apiBase, deviceName) {
+  const response = await fetch(`${apiBase}/v1/selfhost/pairing-token`, {
+    method: "POST",
+    headers: {
+      accept: "application/json",
+      "content-type": "application/json",
+      "x-panda-bridge-selfhost-admin-token": SELFHOST_ADMIN_TOKEN,
+    },
+    body: JSON.stringify({ device_name: deviceName }),
+  });
+  const payload = await response.json();
+  assert.ok(response.ok, JSON.stringify(payload));
+  assert.match(payload.token, /^[A-Z0-9]{4}-[A-Z0-9]{4,6}$/);
+  return payload;
+}
+
+function redactPairingTokenPayload(payload) {
+  return {
+    ...payload,
+    token: "[redacted-pairing-token]",
+  };
 }
 
 function fetchWithJar(origin) {
