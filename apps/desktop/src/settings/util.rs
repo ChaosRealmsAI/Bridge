@@ -91,7 +91,7 @@ pub(crate) fn display_account(user: &ConnectUser) -> String {
 }
 
 pub(crate) fn device_name() -> String {
-    format!("Panda Bridge {}", env::consts::OS)
+    local_computer_name().unwrap_or_else(|| format!("Panda Bridge {}", env::consts::OS))
 }
 
 pub(crate) fn now_string() -> String {

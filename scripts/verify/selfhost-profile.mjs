@@ -64,8 +64,16 @@ try {
   assert.equal(initialStatus.settings.api_base, "https://api.bridge.chaos-realms.cc");
   assert.equal(initialStatus.settings.cloud_profiles.some((item) => item.id === "official"), true);
   assert.equal(initialStatus.selected_profile.profile_id, "official");
-  assert.equal(initialStatus.selected_profile.server.compatible, true);
+  assert.equal(initialStatus.selected_profile.server.reachable, null);
+  assert.equal(initialStatus.selected_profile.server.compatible, null);
+  assert.equal(initialStatus.selected_profile.server.probe_latency_ms ?? null, null);
+  assert.equal(initialStatus.selected_profile.server.source, "not_probed");
   assert.equal(initialStatus.selected_profile.device.paired, false);
+  assert.equal(initialStatus.local_device.identity_source, "local_install");
+  assert.match(initialStatus.local_device.fingerprint, /^PB-[A-Z0-9]{8,24}$/);
+  assert.equal(initialStatus.local_device.os.length > 0, true);
+  assert.equal(initialStatus.local_device.arch.length > 0, true);
+  assert.doesNotMatch(JSON.stringify(initialStatus.local_device), /install-|pbd_|pbi_|\/Users\/|token|127\.0\.0\.1|00:11:22/i);
   step("bb-v04-official-default", {
     action: "Open Desktop status with empty local state",
     expected: "official Bridge Cloud exists, is selected, and no custom Profile is saved",
@@ -91,6 +99,7 @@ try {
     assert.equal(addStatus.selected_profile.profile_id, addedSettings.selected_cloud_profile_id);
     assert.equal(addStatus.selected_profile.server.reachable, true);
     assert.equal(addStatus.selected_profile.server.compatible, true);
+    assert.ok(addStatus.selected_profile.server.probe_latency_ms > 0);
     assert.equal(addStatus.selected_profile.device.paired, false);
     assert.equal(addStatus.selected_profile.account.authorized, false);
     step("bb-v04-add-profile", {
@@ -201,8 +210,10 @@ try {
   assert.equal(afterPairStatus.selected_profile.profile_id, pairedSettings.selected_cloud_profile_id);
   assert.equal(afterPairStatus.selected_profile.server.reachable, true);
   assert.equal(afterPairStatus.selected_profile.server.compatible, true);
+  assert.ok(afterPairStatus.selected_profile.server.probe_latency_ms > 0);
   assert.equal(afterPairStatus.selected_profile.device.paired, true);
   assert.equal(afterPairStatus.selected_profile.account.authorized, false);
+  assert.equal(afterPairStatus.local_device.fingerprint, initialStatus.local_device.fingerprint, "local fingerprint should remain stable across self-host pairing");
   const pairedStateText = readFileSync(activeStatePath, "utf8");
   assert.equal(pairedStateText.includes(pairingToken.token), false, "Desktop state must not store original Pairing Token");
   step("bb-v05-pairing-success", {
@@ -303,6 +314,7 @@ try {
   const claim = JSON.parse(connected.stdout);
   assert.equal(claim.product_id, PRODUCT_ID);
   assert.equal(claim.product_name, PRODUCT_NAME);
+  assert.equal(claim.device_info, undefined, "headless claim result must not expose raw local_state internals");
   snapshot("claim-unknown-api-allow", claim);
 
   const status = await desktopJson(["headless-status"], "after-allow-status");
@@ -316,9 +328,12 @@ try {
   assert.equal(status.selected_profile.api_base, apiBase);
   assert.equal(status.selected_profile.server.reachable, true);
   assert.equal(status.selected_profile.server.compatible, true);
+  assert.ok(status.selected_profile.server.probe_latency_ms > 0);
   assert.equal(status.selected_profile.device.paired, true);
   assert.equal(status.selected_profile.account.authorized, true);
   assert.ok(["connected", "degraded"].includes(status.selected_profile.transport.realtime_state));
+  assert.equal(status.local_device.fingerprint, initialStatus.local_device.fingerprint, "local fingerprint should not change after authorization");
+  assert.match(status.local_device.fingerprint, /^PB-[A-Z0-9]{8,24}$/);
   step("bb-v04-deeplink-allow", {
     action: "Allow unknown self-host API deep link",
     expected: "Desktop validates diagnostics, claims intent, saves/selects Profile, and shows fixed Burn tab/account",
@@ -388,6 +403,12 @@ try {
       selected_api_base: status.settings.api_base,
       products: status.products.map((item) => item.id),
       account_count: selfhostProduct.accounts.length,
+    },
+    local_device_info: {
+      fingerprint: status.local_device.fingerprint,
+      identity_source: status.local_device.identity_source,
+      os: status.local_device.os,
+      arch: status.local_device.arch,
     },
     relay: {
       command: "pwd",

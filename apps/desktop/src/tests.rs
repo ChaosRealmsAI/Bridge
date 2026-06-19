@@ -301,10 +301,18 @@ mod tests {
         home
     }
 
-    fn start_profile_server(diagnostics: Value) -> (String, std::thread::JoinHandle<()>) {
+    fn start_profile_server(mut diagnostics: Value) -> (String, std::thread::JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         let api = format!("http://{addr}");
+        if diagnostics
+            .get("api_base")
+            .and_then(Value::as_str)
+            .map(|value| value == "__API__")
+            .unwrap_or(false)
+        {
+            diagnostics["api_base"] = Value::String(api.clone());
+        }
         let handle = thread::spawn(move || {
             for _ in 0..2 {
                 let (mut stream, _) = listener.accept().unwrap();
@@ -1104,6 +1112,7 @@ mod tests {
         assert_eq!(legacy.server.reachable, None);
         assert_eq!(legacy.server.compatible, None);
         assert_eq!(legacy.server.last_probe_at, None);
+        assert_eq!(legacy.server.probe_latency_ms, None);
         assert_eq!(legacy.server.source, "not_probed");
 
         let probe_at = format!("unix:{}", unix_seconds());
@@ -1112,11 +1121,12 @@ mod tests {
             .iter_mut()
             .find(|profile| profile.api_base == api)
             .unwrap()
-            .updated_at = format!("probe:{probe_at}");
+            .updated_at = format!("probe:{probe_at}|latency_ms:37");
         let probed = selected_profile_live_status(None, &state, &settings);
         assert_eq!(probed.server.reachable, Some(true));
         assert_eq!(probed.server.compatible, Some(true));
         assert_eq!(probed.server.last_probe_at, Some(probe_at.clone()));
+        assert_eq!(probed.server.probe_latency_ms, Some(37));
         assert_eq!(probed.server.source, "profile_probe");
 
         let stale_probe_at = format!(
@@ -1133,11 +1143,84 @@ mod tests {
         assert_eq!(stale.server.reachable, None);
         assert_eq!(stale.server.compatible, None);
         assert_eq!(stale.server.last_probe_at, Some(stale_probe_at));
+        assert_eq!(stale.server.probe_latency_ms, None);
         assert_eq!(
             stale.server.error,
             Some("profile probe stale".to_string())
         );
         assert_eq!(stale.server.source, "profile_probe_stale");
+    }
+
+    #[test]
+    fn selected_profile_server_status_does_not_trust_unprobed_official_profile() {
+        let settings = default_settings();
+        let state = new_app_state();
+
+        let live = selected_profile_live_status(None, &state, &settings);
+
+        assert_eq!(live.profile_id, "official");
+        assert_eq!(live.server.reachable, None);
+        assert_eq!(live.server.compatible, None);
+        assert_eq!(live.server.last_probe_at, None);
+        assert_eq!(live.server.probe_latency_ms, None);
+        assert_eq!(live.server.source, "not_probed");
+    }
+
+    #[test]
+    fn selected_profile_server_status_reports_official_probe_failure() {
+        let mut settings = default_settings();
+        settings.cloud_profiles[0].updated_at =
+            "probe_error:2026-06-20T00:02:00Z|TLS handshake failed".to_string();
+        let state = new_app_state();
+
+        let failed = selected_profile_live_status(None, &state, &settings);
+
+        assert_eq!(failed.profile_id, "official");
+        assert_eq!(failed.server.reachable, Some(false));
+        assert_eq!(failed.server.compatible, Some(false));
+        assert_eq!(
+            failed.server.last_probe_at,
+            Some("2026-06-20T00:02:00Z".to_string())
+        );
+        assert_eq!(failed.server.probe_latency_ms, None);
+        assert_eq!(
+            failed.server.error,
+            Some("TLS handshake failed".to_string())
+        );
+        assert_eq!(failed.server.source, "profile_probe_error");
+    }
+
+    #[test]
+    fn selected_profile_server_status_reports_successful_probe_latency() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        reset_credentials_env();
+        let old_home = env::var_os("HOME");
+        let old_userprofile = env::var_os("USERPROFILE");
+        let home = with_settings_home("panda-bridge-profile-probe-latency");
+        let (api, server) = start_profile_server(json!({
+            "ok": true,
+            "protocol": BRIDGE_PROTOCOL_VERSION,
+            "api_base": "__API__",
+            "web_origin": "http://127.0.0.1:1",
+            "products": []
+        }));
+
+        let settings = add_cloud_profile(&json!({ "api": api })).unwrap();
+        server.join().unwrap();
+        let profile = selected_cloud_profile(&settings).unwrap();
+        assert!(profile.updated_at.starts_with("probe:"));
+        assert!(profile.updated_at.contains("|latency_ms:"));
+
+        let state = new_app_state();
+        let live = selected_profile_live_status(None, &state, &settings);
+        assert_eq!(live.server.reachable, Some(true));
+        assert_eq!(live.server.compatible, Some(true));
+        assert!(live.server.probe_latency_ms.unwrap_or(0) > 0);
+
+        restore_env_var("HOME", old_home);
+        restore_env_var("USERPROFILE", old_userprofile);
+        reset_credentials_env();
+        let _ = fs::remove_dir_all(home);
     }
 
     #[test]
@@ -1320,6 +1403,77 @@ mod tests {
         );
         assert_eq!(local_state()["commands"], Value::Null);
         assert_eq!(local_state()["workspaces"], Value::Null);
+    }
+
+    #[test]
+    fn local_device_info_selected_profile_status_and_local_state_are_sanitized() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let old_home = env::var_os("HOME");
+        let old_userprofile = env::var_os("USERPROFILE");
+        let old_state = env::var_os("PANDA_BRIDGE_DESKTOP_STATE");
+        let old_state_dir = env::var_os("PANDA_BRIDGE_DESKTOP_STATE_DIR");
+        reset_credentials_env();
+        let home = with_settings_home("panda-bridge-local-device-info");
+        let old_install_file = env::var_os("PANDA_BRIDGE_INSTALL_ID_FILE");
+        let old_seed = env::var_os("PANDA_BRIDGE_INSTALL_ID_SEED");
+        let old_name = env::var_os("PANDA_BRIDGE_COMPUTER_NAME");
+        let old_model = env::var_os("PANDA_BRIDGE_DEVICE_MODEL");
+        let path = env::temp_dir().join(format!(
+            "panda-bridge-install-id-test-{}-{}",
+            std::process::id(),
+            unix_seconds()
+        ));
+        let _ = fs::remove_file(&path);
+        env::set_var("PANDA_BRIDGE_INSTALL_ID_FILE", &path);
+        env::set_var("PANDA_BRIDGE_INSTALL_ID_SEED", "stable-test-seed");
+        env::set_var("PANDA_BRIDGE_COMPUTER_NAME", "Alice MacBook");
+        env::set_var("PANDA_BRIDGE_DEVICE_MODEL", "MacBookPro18,3");
+
+        let first = local_device_info();
+        let second = local_device_info();
+        assert_eq!(first.display_name, "Alice MacBook");
+        assert_eq!(first.model, "MacBookPro18,3");
+        assert_eq!(first.os, env::consts::OS);
+        assert_eq!(first.arch, env::consts::ARCH);
+        assert_eq!(first.identity_source, "local_install");
+        assert_eq!(first.fingerprint, second.fingerprint);
+        assert!(first.fingerprint.starts_with("PB-"));
+        assert_eq!(first.fingerprint.len(), 15);
+        assert_ne!(
+            first.fingerprint,
+            public_fingerprint_for_install_id("different-install-id")
+        );
+        env::set_var("PANDA_BRIDGE_COMPUTER_NAME", "/Users/private");
+        assert_ne!(local_device_info().display_name, "Users private");
+        env::set_var("PANDA_BRIDGE_COMPUTER_NAME", "192.168.1.44");
+        assert_ne!(local_device_info().display_name, "192.168.1.44");
+        env::set_var("PANDA_BRIDGE_DEVICE_MODEL", "00:11:22:33:44:55");
+        assert_ne!(local_device_info().model, "00 11 22 33 44 55");
+        env::set_var("PANDA_BRIDGE_COMPUTER_NAME", "Alice MacBook");
+        env::set_var("PANDA_BRIDGE_DEVICE_MODEL", "MacBookPro18,3");
+
+        let state = local_state_for_products(&["panda-burn".to_string()]);
+        assert_eq!(state["device_info"]["display_name"], "Alice MacBook");
+        assert_eq!(state["device_info"]["fingerprint"], first.fingerprint);
+        assert_eq!(state["device_info"]["identity_source"], "local_install");
+        let text = serde_json::to_string(&state).unwrap();
+        assert!(!text.contains("stable-test-seed"));
+        assert!(!text.contains(path.to_string_lossy().as_ref()));
+
+        let status = status(&new_app_state());
+        assert_eq!(status.local_device.fingerprint, first.fingerprint);
+        assert_eq!(status.selected_profile.profile_id, "official");
+
+        restore_env_var("HOME", old_home);
+        restore_env_var("USERPROFILE", old_userprofile);
+        restore_env_var("PANDA_BRIDGE_DESKTOP_STATE", old_state);
+        restore_env_var("PANDA_BRIDGE_DESKTOP_STATE_DIR", old_state_dir);
+        restore_env_var("PANDA_BRIDGE_INSTALL_ID_FILE", old_install_file);
+        restore_env_var("PANDA_BRIDGE_INSTALL_ID_SEED", old_seed);
+        restore_env_var("PANDA_BRIDGE_COMPUTER_NAME", old_name);
+        restore_env_var("PANDA_BRIDGE_DEVICE_MODEL", old_model);
+        let _ = fs::remove_file(path);
+        let _ = fs::remove_dir_all(home);
     }
 
     #[test]

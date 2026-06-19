@@ -27,6 +27,7 @@ pub(crate) fn local_state_for_products(product_ids: &[String]) -> Value {
         });
     let mut state = json!({
         "platform": env::consts::OS,
+        "device_info": local_device_info_value(),
         "relay": { "envelopes": true, "ack": true },
         "adapter_router": {
             "mode": "external_http",

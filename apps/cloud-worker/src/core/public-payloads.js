@@ -60,6 +60,7 @@ export function publicBridgeStateDevices(devices, currentDevice, env, authorizat
 
 export function publicStateDevice(device, env, productId = "") {
   if (!device) return null;
+  const localState = safeLocalState(device.local_state);
   const payload = {
     id: device.id,
     name: device.device_name,
@@ -67,19 +68,22 @@ export function publicStateDevice(device, env, productId = "") {
     online: isDeviceOnline(device, env),
     last_seen_at: device.last_seen_at || null,
   };
+  if (localState.device_info) payload.device_info = localState.device_info;
   const exchange = deviceRelayKeyExchange(device, productId);
   if (exchange) payload.relay_key_exchange = exchange;
   return payload;
 }
 
 export function publicDevice(device, env = {}) {
+  const localState = safeLocalState(device?.local_state);
   return device ? {
     id: device.id,
     device_name: device.device_name,
     status: publicDeviceStatus(device, env),
     app_version: device.app_version,
     capabilities: safeDeviceCapabilities(device.capabilities),
-    local_state: safeLocalState(device.local_state),
+    local_state: localState,
+    ...(localState.device_info ? { device_info: localState.device_info } : {}),
     last_seen_at: device.last_seen_at,
     created_at: device.created_at,
     updated_at: device.updated_at,
@@ -107,6 +111,7 @@ export function safeLocalState(input = {}) {
   const adapter = object(value.adapter_router || value.adapterRouter);
   const relayKeyExchange = normalizeRelayKeyExchange(value.relay_key_exchange || value.relayKeyExchange);
   const products = safeAdapterProducts(adapter.products);
+  const deviceInfo = safeDeviceInfo(value.device_info || value.deviceInfo);
   const out = {
     relay: {
       envelopes: relay.envelopes !== false,
@@ -120,8 +125,74 @@ export function safeLocalState(input = {}) {
   if (Object.keys(products).length) out.adapter_router.products = products;
   const platform = clean(value.platform, 80);
   if (platform) out.platform = platform;
+  if (deviceInfo) out.device_info = deviceInfo;
   if (relayKeyExchange) out.relay_key_exchange = relayKeyExchange;
   return out;
+}
+
+export function safeDeviceInfo(input = {}) {
+  const value = object(input);
+  const displayName = cleanDeviceInfoField(value.display_name || value.displayName, 80);
+  const model = cleanDeviceInfoField(value.model, 80);
+  const os = cleanDeviceInfoField(value.os, 40);
+  const arch = cleanDeviceInfoField(value.arch, 40);
+  const fingerprint = clean(value.fingerprint, 40);
+  const identitySource = clean(value.identity_source || value.identitySource, 40);
+  if (
+    !displayName
+    || !model
+    || !os
+    || !arch
+    || !/^PB-[A-Z0-9]{8,24}$/.test(fingerprint)
+    || identitySource !== "local_install"
+  ) {
+    return null;
+  }
+  return {
+    display_name: displayName,
+    model,
+    os,
+    arch,
+    fingerprint,
+    identity_source: "local_install",
+  };
+}
+
+function cleanDeviceInfoField(input, maxLength) {
+  const value = clean(input, maxLength);
+  if (!value || looksSensitiveDeviceInfoField(value)) return "";
+  const sanitized = value
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .replace(/[\\/:@]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, maxLength);
+  return looksSensitiveDeviceInfoField(sanitized) ? "" : sanitized;
+}
+
+function looksSensitiveDeviceInfoField(input) {
+  const value = String(input || "").trim();
+  if (!value) return false;
+  const lower = value.toLowerCase();
+  return value.includes("@")
+    || value.includes("/")
+    || value.includes("\\")
+    || lower.includes("pbi_")
+    || lower.includes("pbd_")
+    || isIpv4Literal(value)
+    || isMacLiteral(value);
+}
+
+function isIpv4Literal(value) {
+  const parts = String(value).split(".");
+  return parts.length === 4 && parts.every((part) => /^\d{1,3}$/.test(part) && Number(part) >= 0 && Number(part) <= 255);
+}
+
+function isMacLiteral(value) {
+  const delimiter = value.includes(":") ? ":" : value.includes("-") ? "-" : "";
+  if (!delimiter) return false;
+  const parts = value.split(delimiter);
+  return parts.length === 6 && parts.every((part) => /^[0-9a-fA-F]{2}$/.test(part));
 }
 
 export function safeAdapterProducts(input = {}) {

@@ -151,6 +151,7 @@ struct DesktopStatus {
     api_base: Option<String>,
     device_id: Option<String>,
     device_name: Option<String>,
+    local_device: LocalDeviceInfo,
     account_id: Option<String>,
     account_display: Option<String>,
     product_id: Option<String>,
@@ -181,6 +182,8 @@ struct SelectedServerLiveStatus {
     reachable: Option<bool>,
     compatible: Option<bool>,
     last_probe_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    probe_latency_ms: Option<u64>,
     error: Option<String>,
     source: String,
 }

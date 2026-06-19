@@ -172,22 +172,20 @@ pub(crate) fn refresh_cloud_profile(params: &Value) -> Result<DesktopSettings, S
     let mut profile = match fetch_cloud_profile(&existing.api_base, Some(&existing.name)) {
         Ok(profile) => profile,
         Err(error) => {
-            if existing.id != "official" {
-                if let Some(profile) = settings
-                    .cloud_profiles
-                    .iter_mut()
-                    .find(|profile| profile.id == target)
-                {
-                    profile.updated_at = profile_probe_error_marker(&error);
-                }
-                save_settings(&settings).map_err(|save_error| {
-                    format!(
-                        "{}; failed to persist profile probe failure: {}",
-                        redact_error_text(&error),
-                        redact_error_text(&save_error)
-                    )
-                })?;
+            if let Some(profile) = settings
+                .cloud_profiles
+                .iter_mut()
+                .find(|profile| profile.id == target)
+            {
+                profile.updated_at = profile_probe_error_marker(&error);
             }
+            save_settings(&settings).map_err(|save_error| {
+                format!(
+                    "{}; failed to persist profile probe failure: {}",
+                    redact_error_text(&error),
+                    redact_error_text(&save_error)
+                )
+            })?;
             return Err(error);
         }
     };
@@ -209,12 +207,14 @@ pub(crate) const PROFILE_PROBE_SUCCESS_TTL_SECONDS: u64 = 120;
 pub(crate) struct ProfileProbeSuccess {
     pub(crate) at: String,
     pub(crate) fresh: bool,
+    pub(crate) latency_ms: Option<u64>,
 }
 
 pub(crate) fn profile_probe_at(updated_at: &str) -> Option<String> {
     updated_at
         .trim()
         .strip_prefix("probe:")
+        .and_then(|value| value.split('|').next())
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
@@ -225,7 +225,26 @@ pub(crate) fn profile_probe_success(updated_at: &str) -> Option<ProfileProbeSucc
     let fresh = unix_marker_age_seconds(&at)
         .map(|age| age <= PROFILE_PROBE_SUCCESS_TTL_SECONDS)
         .unwrap_or(false);
-    Some(ProfileProbeSuccess { at, fresh })
+    Some(ProfileProbeSuccess {
+        at,
+        fresh,
+        latency_ms: profile_probe_latency_ms(updated_at),
+    })
+}
+
+fn profile_probe_latency_ms(updated_at: &str) -> Option<u64> {
+    updated_at
+        .trim()
+        .strip_prefix("probe:")?
+        .split('|')
+        .skip(1)
+        .find_map(|part| part.trim().strip_prefix("latency_ms:"))
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|value| *value > 0)
+}
+
+fn profile_probe_success_marker(latency_ms: u64) -> String {
+    format!("probe:{}|latency_ms:{}", now_string(), latency_ms.max(1))
 }
 
 fn unix_marker_age_seconds(marker: &str) -> Option<u64> {
@@ -362,6 +381,7 @@ pub(crate) fn merge_official_profile(existing: CloudProfile) -> CloudProfile {
     } else {
         existing.name
     };
+    official.updated_at = existing.updated_at;
     official
 }
 
@@ -386,12 +406,14 @@ pub(crate) fn fetch_cloud_profile(
     name: Option<&str>,
 ) -> Result<CloudProfile, String> {
     let api_base = clean_api(api_base)?;
+    let probe_started = Instant::now();
     let health_url = format!("{api_base}/v1/health");
     let health: HealthResponse = get_json(&health_url, None)?;
     validate_bridge_health(&health)?;
     let diagnostics_url = format!("{api_base}/v1/diagnostics");
     let diagnostics: DiagnosticsResponse = get_json(&diagnostics_url, None)?;
     validate_bridge_diagnostics(&api_base, &diagnostics)?;
+    let latency_ms = u64::try_from(probe_started.elapsed().as_millis()).unwrap_or(u64::MAX);
     Ok(CloudProfile {
         id: profile_id_for_api(&api_base),
         name: name
@@ -403,7 +425,7 @@ pub(crate) fn fetch_cloud_profile(
         web_origin: diagnostics.web_origin,
         products: fixed_product_catalog_entries(),
         source: "user".to_string(),
-        updated_at: format!("probe:{}", now_string()),
+        updated_at: profile_probe_success_marker(latency_ms),
     })
 }
 

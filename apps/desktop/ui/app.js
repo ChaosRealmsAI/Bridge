@@ -22,6 +22,10 @@ Object.assign(TEXT["zh-CN"],{pausedTag:"已暂停",engineStarting:"本机引擎 
 Object.assign(TEXT["zh-TW"],{pausedTag:"已暫停",engineStarting:"本機引擎 · 啟動中…",engineUnavailable:"本機引擎 · 狀態讀取失敗"});
 Object.assign(TEXT.en,{pausedTag:"Paused",engineStarting:"Local engine · starting…",engineUnavailable:"Local engine · status unavailable"});
 Object.assign(TEXT.ja,{pausedTag:"停止中",engineStarting:"ローカルエンジン · 起動中…",engineUnavailable:"ローカルエンジン · 状態を取得できません"});
+Object.assign(TEXT["zh-CN"],{authorizing:"处理中…"});
+Object.assign(TEXT["zh-TW"],{authorizing:"處理中…"});
+Object.assign(TEXT.en,{authorizing:"Processing…"});
+Object.assign(TEXT.ja,{authorizing:"処理中…"});
 Object.assign(TEXT["zh-CN"],{addServerTitle:"添加自托管服务器",addServerDesc:"连接你自己部署的 Bridge 服务器，数据只在你和服务器之间流转。",serverUrlLabel:"服务器地址",pairTokenHint:"在你的 Bridge 服务器上生成一次性配对 Token，粘贴到这里完成配对。",pairingBusy:"配对中…",healthOnline:"在线",healthDegraded:"重连中",healthOffline:"离线",healthChecking:"检测中…",healthUnknown:"未检测",currentTag:"当前",officialTag:"官方",selfhostTag:"自托管",recheck:"重新检测",removeServerConfirm:"移除 {name}？",removeServerDesc:"将从这台电脑删除该服务器配置，已配对的设备凭证也会失效。"});
 Object.assign(TEXT["zh-TW"],{addServerTitle:"新增自託管伺服器",addServerDesc:"連接你自己部署的 Bridge 伺服器，資料只在你與伺服器之間流轉。",serverUrlLabel:"伺服器位址",pairTokenHint:"在你的 Bridge 伺服器上產生一次性配對 Token，貼到這裡完成配對。",pairingBusy:"配對中…",healthOnline:"線上",healthDegraded:"重新連線中",healthOffline:"離線",healthChecking:"檢測中…",healthUnknown:"未檢測",currentTag:"目前",officialTag:"官方",selfhostTag:"自託管",recheck:"重新檢測",removeServerConfirm:"移除 {name}？",removeServerDesc:"將從這台電腦刪除該伺服器設定，已配對的裝置憑證也會失效。"});
 Object.assign(TEXT.en,{addServerTitle:"Pair a self-hosted server",addServerDesc:"Connect to your own Bridge server — traffic stays between you and that server.",serverUrlLabel:"Server address",pairTokenHint:"Generate a one-time Pairing Token on your Bridge server, then paste it here.",pairingBusy:"Pairing…",healthOnline:"Online",healthDegraded:"Reconnecting",healthOffline:"Offline",healthChecking:"Checking…",healthUnknown:"Not checked",currentTag:"Active",officialTag:"Official",selfhostTag:"Self-hosted",recheck:"Re-check",removeServerConfirm:"Remove {name}?",removeServerDesc:"This removes the server from this computer; its paired device credential is revoked."});
@@ -34,6 +38,14 @@ Object.assign(TEXT["zh-CN"],{devicePresent:"设备在线",devicePaired:"已配�
 Object.assign(TEXT["zh-TW"],{devicePresent:"裝置線上",devicePaired:"已配對",deviceUnpaired:"未配對",authActive:"已授權",authNone:"未授權",engineStopped:"本機引擎已停止",adapterMissing:"Adapter 缺失",engineReady:"本機就緒",transportRealtime:"即時通道",transportPolling:"輪詢備援",transportIdle:"傳輸閒置",healthIncompatible:"不相容"});
 Object.assign(TEXT.en,{devicePresent:"Device present",devicePaired:"Paired",deviceUnpaired:"Unpaired",authActive:"Authorized",authNone:"Not authorized",engineStopped:"Engine stopped",adapterMissing:"Adapter missing",engineReady:"Local ready",transportRealtime:"Realtime",transportPolling:"Polling fallback",transportIdle:"Transport idle",healthIncompatible:"Incompatible"});
 Object.assign(TEXT.ja,{devicePresent:"デバイスオンライン",devicePaired:"ペアリング済み",deviceUnpaired:"未ペアリング",authActive:"承認済み",authNone:"未承認",engineStopped:"エンジン停止",adapterMissing:"Adapter なし",engineReady:"ローカル準備完了",transportRealtime:"リアルタイム",transportPolling:"ポーリング代替",transportIdle:"転送待機",healthIncompatible:"非対応"});
+Object.assign(TEXT["zh-CN"],{localComputer:"本机电脑",computerName:"电脑名称",computerModel:"机型",computerSystem:"系统",computerFingerprint:"本机指纹"});
+Object.assign(TEXT["zh-TW"],{localComputer:"本機電腦",computerName:"電腦名稱",computerModel:"機型",computerSystem:"系統",computerFingerprint:"本機指紋"});
+Object.assign(TEXT.en,{localComputer:"Local Computer",computerName:"Computer name",computerModel:"Model",computerSystem:"System",computerFingerprint:"Local fingerprint"});
+Object.assign(TEXT.ja,{localComputer:"ローカルコンピューター",computerName:"コンピューター名",computerModel:"モデル",computerSystem:"システム",computerFingerprint:"ローカル指紋"});
+Object.assign(TEXT["zh-CN"],{localComputerUnavailable:"本机信息暂不可用"});
+Object.assign(TEXT["zh-TW"],{localComputerUnavailable:"本機資訊暫不可用"});
+Object.assign(TEXT.en,{localComputerUnavailable:"Local computer unavailable"});
+Object.assign(TEXT.ja,{localComputerUnavailable:"ローカル情報を取得できません"});
 const OFFICIAL_PROFILE={id:"official",name:"Official Bridge Cloud",api_base:DEFAULT_API,web_origin:"https://bridge.chaos-realms.cc",source:"official",products:BASE_PRODUCTS.map(clone)};
 const ui={view:"product",selected:"panda-burn",products:BASE_PRODUCTS.map(clone),settings:{launch_at_login:true,appearance:"auto",language:"auto",api_base:DEFAULT_API,cloud_profiles:[clone(OFFICIAL_PROFILE)],selected_cloud_profile_id:"official"},pending:null,status:null,booting:true,statusError:null,health:{},serverSheet:null,serverListExpanded:false};
 const mq=window.matchMedia("(prefers-color-scheme: dark)");
@@ -218,17 +230,53 @@ function settingsHtml(){
   const selected=s.selected_cloud_profile_id||profiles[0]?.id||"official";
   return `<div class="ptop"><span class="ptlab">${t("settings")}</span></div>
   <div class="setscroll">
+    ${localComputerHtml()}
     <div class="glab">${t("general")}</div>
     <div class="rows">
       <div><span class="rico n-blue">${I.power}</span><div class="rtext"><div class="t">${t("launch")}</div></div><div class="end"><button class="switch" role="switch" aria-checked="${!!s.launch_at_login}" onclick="setLaunch(${!s.launch_at_login})"></button></div></div>
       <div><span class="rico n-indigo">${I.theme}</span><div class="rtext"><div class="t">${t("appearance")}</div></div><div class="end"><div class="seg">${["auto","light","dark"].map(v=>`<button aria-current="${s.appearance===v}" onclick="setAppearance('${v}')">${t(v==="auto"?"system":v)}</button>`).join("")}</div></div></div>
       <div><span class="rico n-orange">${I.lang}</span><div class="rtext"><div class="t">${t("language")}</div></div><div class="end"><select class="select" onchange="setLanguage(this.value)">${LANG_OPTIONS.map(([code,label])=>`<option value="${code}" ${s.language===code?"selected":""}>${esc(label)}</option>`).join("")}</select></div></div>
     </div>
-    <div class="glab">${t("cloudGroup")}</div>
+    <div class="glab glab-cloud"><span>${t("cloudGroup")}</span><div class="cloud-actions"><button class="cbtn cbtn-add" onclick="openServerSheet()" title="${esc(t("addServerTitle"))}">${I.plus}<span>${t("addServer")}</span></button><button class="cbtn cbtn-help" onclick="openSelfhostHelp()" title="${esc(t("selfhostHelp"))}"><span class="help-dot">?</span><span>${t("selfhostHelp")}</span></button></div></div>
     <div class="srvlist">
       ${serverListHtml(profiles,selected)}
     </div>
   </div>`;
+}
+function localDeviceInfo(){
+  const info=ui.status?.local_device||{};
+  const fingerprint=String(info.fingerprint||"");
+  if(info.identity_source!=="local_install"||!/^PB-[A-Z0-9]{8,24}$/.test(fingerprint))return null;
+  return {
+    display_name:String(info.display_name||"").slice(0,80)||deviceLabel(),
+    model:String(info.model||"").slice(0,80)||platformKind(),
+    os:String(info.os||"").slice(0,40)||platformKind(),
+    arch:String(info.arch||"").slice(0,40),
+    fingerprint,
+    identity_source:"local_install"
+  };
+}
+function localComputerHtml(){
+  const d=localDeviceInfo();
+  if(!d)return `<div class="glab">${t("localComputer")}</div>
+    <div class="localcard">
+      <span class="rico n-sky">${I.mac}</span>
+      <div class="local-main">
+        <div class="local-name">${t("localComputerUnavailable")}</div>
+        <div class="local-sub">${esc(platformKind())}</div>
+      </div>
+      <div class="local-fp mono" title="${esc(t("computerFingerprint"))}">--</div>
+    </div>`;
+  const system=[d.os,d.arch].filter(Boolean).join(" · ");
+  return `<div class="glab">${t("localComputer")}</div>
+    <div class="localcard">
+      <span class="rico n-sky">${I.mac}</span>
+      <div class="local-main">
+        <div class="local-name">${esc(d.display_name)}</div>
+        <div class="local-sub">${esc(d.model)}${system?` · ${esc(system)}`:""}</div>
+      </div>
+      <div class="local-fp mono" title="${esc(t("computerFingerprint"))}">${esc(d.fingerprint)}</div>
+    </div>`;
 }
 const SERVER_LIST_CAP=4;
 function visibleServers(profiles,selected){
@@ -246,45 +294,49 @@ function serverListHtml(profiles,selected){
   const visible=visibleServers(profiles,selected);
   const cards=visible.map(p=>serverCardHtml(p,selected)).join("");
   const toggle=overflow?`<button class="srv-more" onclick="toggleServerList()">${expanded?`${I.chevUp}<span>${t("collapseServers")}</span>`:`${I.chevDown}<span>${t("expandServers",{n:profiles.length})}</span>`}</button>`:"";
-  const foot=`<div class="srv-foot">
-      <button class="srv-add" onclick="openServerSheet()" title="${esc(t("addServerTitle"))}">${I.plus}<span>${t("addServer")}</span></button>
-      <button class="srv-help" onclick="openSelfhostHelp()" title="${esc(t("selfhostHelp"))}"><span class="help-dot">?</span><span>${t("selfhostHelp")}</span></button>
-    </div>`;
-  return `${cards}${toggle}${foot}`;
+  return `${cards}${toggle}`;
 }
 function toggleServerList(){ui.serverListExpanded=!ui.serverListExpanded;closePop();render();probeAllServers()}
 function serverHealth(p){
   const active=p.id===(ui.settings.selected_cloud_profile_id);
   const live=active?selectedLiveForProfile(p):null;
   const probed=ui.health[p.id];
+  const persistedError=profileProbeError(p);
   if(probed&&probed.state==="checking"&&!live)return{state:"checking",latency:probed.latency};
   if(probed&&probed.state==="offline")return{state:"offline",latency:probed.latency};
   if(active){
     if(ui.statusError)return{state:"offline"};
     if(live){
+      const nativeLatency=live.server?.probe_latency_ms||null;
       if(live.server?.error||live.server?.reachable===false)return{state:"offline"};
       if(live.server?.compatible===false)return{state:"degraded"};
       if(live.server?.reachable===true&&live.server?.compatible!==false){
         if(live.device?.paired&&live.account?.authorized&&live.local_engine?.running&&live.local_engine?.adapter_health!=="missing"&&live.transport?.realtime_state==="connected"){
-          return{state:"online",latency:probed&&probed.state==="online"?probed.latency:null};
+          return{state:"online",latency:nativeLatency};
         }
-        return{state:"degraded",latency:probed&&probed.state==="online"?probed.latency:null};
+        return{state:"degraded",latency:nativeLatency};
       }
       if(live.server?.compatible===true)return{state:"unknown"};
     }
     if(ui.status&&ui.status.worker_running){
-      if(ui.status.realtime_connected){return{state:"degraded",latency:probed&&probed.state==="online"?probed.latency:null}}
+      if(ui.status.realtime_connected){return{state:"degraded"}}
       return{state:"degraded"};
     }
   }
+  if(!live&&persistedError)return{state:"offline"};
   if(probed&&probed.state)return{state:probed.state,latency:probed.latency};
   return{state:"unknown"};
 }
 function serverDetail(p,h){
   const live=selectedLiveForProfile(p);
   if(!live){
+    const persistedError=profileProbeError(p);
+    if(persistedError)return persistedError;
     if(h.state==="offline"&&ui.health[p.id]?.error)return String(ui.health[p.id].error).slice(0,120);
     return p.api_base||"";
+  }
+  if(p.id===ui.settings.selected_cloud_profile_id&&live.server?.error){
+    return String(live.server.error).slice(0,120);
   }
   const device=live.device?.paired?(live.device.present===true?t("devicePresent"):t("devicePaired")):t("deviceUnpaired");
   const auth=live.account?.authorized?t("authActive"):t("authNone");
@@ -353,7 +405,9 @@ function modalHtml(){
   </div></div>`;
   const pendingStyle=productStyle(ui.pending);
   const pendingIcon=productIconHtml(pendingStyle)||esc((ui.pending.product_name||"PB").slice(0,2).toUpperCase());
-  return `<div class="sheetwrap on" id="sheetwrap"><div class="sheet"><div class="sh-glow"></div>
+  const confirming=!!ui.pending.confirming;
+  const allowBody=confirming?`<span class="spinmark" aria-hidden="true"></span><span>${t("authorizing")}</span>`:t("allow");
+  return `<div class="sheetwrap on" id="sheetwrap"><div class="sheet ${confirming?"processing":""}"><div class="sh-glow"></div>
     <div class="sh-top">
       <div class="sh-mini">
         <span class="t" style="background:${pendingStyle.color}">${pendingIcon}</span>
@@ -365,7 +419,7 @@ function modalHtml(){
       <div class="acctline">${esc(ui.pending.account)}</div>
     </div>
     ${authSummaryHtml(ui.pending)}
-    <div class="sh-foot"><button class="btn" onclick="denyIntent()">${t("deny")}</button><button class="btn energy" onclick="allowIntent()">${t("allow")}</button></div>
+    <div class="sh-foot"><button class="btn" onclick="denyIntent()" ${confirming?"disabled":""}>${t("deny")}</button><button class="btn energy ${confirming?"busy":""}" id="allowIntentButton" onclick="allowIntent()" ${confirming?"disabled aria-busy=\"true\"":""}>${allowBody}</button></div>
   </div></div>`;
 }
 function authSummaryHtml(p){
@@ -428,13 +482,39 @@ async function selectServer(ev,id){
 async function probeServer(ev,id){
   if(ev&&ev.stopPropagation)ev.stopPropagation();
   ui.health[id]={state:"checking"};render();
-  const t0=(typeof performance!=="undefined"&&performance.now)?performance.now():Date.now();
   try{
     ui.settings=await window.PandaBridge.call("refresh_cloud_profile",{profile_id:id});
-    const now=(typeof performance!=="undefined"&&performance.now)?performance.now():Date.now();
-    ui.health[id]={state:"online",latency:Math.max(1,Math.round(now-t0)),at:Date.now()};
-  }catch(e){ui.health[id]={state:"offline",error:String(e?.message||e)}}
+    const profile=((ui.settings&&ui.settings.cloud_profiles)||[]).find(p=>p.id===id);
+    const persistedError=profileProbeError(profile);
+    if(persistedError){
+      ui.health[id]={state:"offline",error:persistedError,at:Date.now()};
+      await refresh();
+      return;
+    }
+    const latency=profileProbeLatency(profile);
+    ui.health[id]={state:"online",latency,at:Date.now()};
+    await refresh();
+    return;
+  }catch(e){
+    ui.health[id]={state:"offline",error:String(e?.message||e)};
+    await refresh().catch(()=>{});
+  }
   render();
+}
+function profileProbeLatency(profile){
+  const updated=String(profile?.updated_at||"");
+  if(!updated.startsWith("probe:"))return null;
+  const part=updated.split("|").slice(1).find(item=>item.trim().startsWith("latency_ms:"));
+  const value=part?Number(part.split(":").slice(1).join(":").trim()):0;
+  return Number.isFinite(value)&&value>0?Math.round(value):null;
+}
+function profileProbeError(profile){
+  const updated=String(profile?.updated_at||"");
+  if(!updated.startsWith("probe_error:"))return null;
+  const at=updated.indexOf("|");
+  if(at<0)return null;
+  const detail=updated.slice(at+1).replace(/[\r\n|]+/g," ").replace(/\s+/g," ").trim();
+  return detail?detail.slice(0,120):null;
 }
 function probeAllServers(){
   if(ui.serverSheet||ui.view!=="settings")return;
@@ -528,11 +608,18 @@ function normalizeProductKey(value){return String(value||"").replace(/[^a-z0-9]/
 function denyIntent(){ui.pending=null;render()}
 async function allowIntent(){
   const p=ui.pending;if(!p)return;
+  if(p.confirming)return;
+  ui.pending={...p,confirming:true};
+  render();
   try{
-    const pending=await window.PandaBridge.call("claim_intent_preview",{api:p.api,intent:p.intent,device_name:`Panda Bridge ${navigator.platform||"Desktop"}`});
+    const pending=await window.PandaBridge.call("claim_intent_preview",{api:p.api,intent:p.intent,device_name:localDeviceInfo()?.display_name||`Panda Bridge ${navigator.platform||"Desktop"}`});
     await window.PandaBridge.call("confirm_pending_intent",{pending_id:pending.pending_id,intent:p.intent});
-    ui.pending=null;ui.selected=p.select;ui.view="product";await window.PandaBridge.call("start_worker");await refresh()
-  }catch(e){showError(e)}
+    ui.pending=null;ui.selected=p.select;ui.view="product";render();await window.PandaBridge.call("start_worker");await refresh()
+  }catch(e){
+    if(ui.pending&&ui.pending.intent===p.intent)ui.pending={...p,confirming:false};
+    render();
+    showError(e)
+  }
 }
 let popEl=null;
 function closePop(){if(popEl){popEl.remove();popEl=null}}
@@ -552,7 +639,10 @@ let toastTimer;
 function toast(msg){document.getElementById("toastTxt").textContent=msg;const el=document.getElementById("toast");el.classList.add("on");clearTimeout(toastTimer);toastTimer=setTimeout(()=>el.classList.remove("on"),1900)}
 function showError(e){toast(`${t("failed")} · ${String(e?.message||e).slice(0,120)}`)}
 function installFallback(){
-  const emptyDemo=new URLSearchParams(location.search).get("empty");
+  const params=new URLSearchParams(location.search);
+  const emptyDemo=params.get("empty");
+  const slowConfirm=params.get("slowConfirm")==="1";
+  const officialError=params.get("officialError")==="1";
   const demoAccountLabel="Burn Demo Identity";
   const teamAccountLabel="Team Demo Identity";
   const mock={settings:{launch_at_login:true,appearance:new URLSearchParams(location.search).get("theme")||"auto",language:"auto",api_base:DEFAULT_API,cloud_profiles:[clone(OFFICIAL_PROFILE)],selected_cloud_profile_id:"official"},products:normalizeProducts([
@@ -564,16 +654,28 @@ function installFallback(){
     const authorized=accounts.some(a=>a.authorized!=="paused");
     const paired=profile.id!=="official"||authorized;
     const serverReachable=profile.id==="official"?null:true;
+    const serverCompatible=profile.id==="official"?null:true;
+    const serverError=profile.id==="official"&&officialError?"Official server probe failed":null;
+    const server={reachable:serverReachable,compatible:serverCompatible,last_probe_at:serverReachable?new Date().toISOString():null,error:serverError,source:serverReachable?"demo_profile_probe":"demo_not_probed"};
+    if(serverReachable)server.probe_latency_ms=12;
     const running=authorized;
     return {
       ...clone(mock),
+      local_device:{
+        display_name:"Smoke Local Computer",
+        model:platformKind()==="mac"?"Mac":"Desktop",
+        os:platformKind()==="windows"?"windows":platformKind()==="mac"?"macos":"linux",
+        arch:"x64",
+        fingerprint:"PB-0123ABCD4567",
+        identity_source:"local_install"
+      },
       worker_running: running,
       realtime_connected: authorized,
       selected_profile:{
         profile_id:profile.id,
         label:profile.name||hostOnly(profile.api_base),
         api_base:profile.api_base,
-        server:{reachable:serverReachable,compatible:true,last_probe_at:serverReachable?new Date().toISOString():null,error:null,source:serverReachable?"mock_profile_probe":"mock_builtin_profile"},
+        server,
         device:{paired,present:authorized?true:(paired?null:false),last_seen_at:authorized?new Date().toISOString():null,device_id:paired?"mock_device":null,device_name:paired?deviceLabel():null},
         account:{authorized,authorization_state:authorized?"active":"none",account_id:authorized?"demo_burn":null,account_display:authorized?demoAccountLabel:null,product_ids:authorized?["panda-burn"]:[]},
         local_engine:{running,adapter_health:authorized?"configured":"idle",adapter_configured:authorized,adapter_running:false,adapter_products:authorized?[{product_id:"panda-burn",state:"configured",configured:true,running:false,endpoint_source:"mock"}]:[]},
@@ -581,7 +683,7 @@ function installFallback(){
       }
     };
   }
-  window.ipc={postMessage(raw){const req=JSON.parse(raw);const reply=(ok,result,error)=>setTimeout(()=>window.PandaBridge.receive({type:"response",id:req.id,ok,result,error}),50);
+  window.ipc={postMessage(raw){const req=JSON.parse(raw);const reply=(ok,result,error,delay=50)=>setTimeout(()=>window.PandaBridge.receive({type:"response",id:req.id,ok,result,error}),delay);
     if(req.command==="status")return reply(true,mockStatus());
     if(req.command==="settings")return reply(true,clone(mock.settings));
     if(req.command==="update_settings"){mock.settings={...mock.settings,...req.params};return reply(true,clone(mock.settings))}
@@ -595,8 +697,8 @@ function installFallback(){
       const base={product_id:"panda-burn",product_name:"Burn",cloud_origin:"https://token-burn.com",user_display_name:demoAccountLabel,user_id:"demo_user",capabilities:["relay.envelope","relay.ack"],local_policy:{version:"BRIDGE-RELAY-AUTH-v1",source_origin:"https://token-burn.com",capabilities:["relay.envelope","relay.ack"],product_authorization:{owner:"product-adapter",enforcement:"product-adapter",control:"computer-control"}}};
       return reply(true,base);
     }
-    if(req.command==="claim_intent_preview"||req.command==="claim_intent_pending")return reply(true,{pending_id:"pending_demo",status:"pending"});
-    if(req.command==="confirm_pending_intent"||req.command==="claim_intent"){mock.products[0].accounts.push({id:"team",email:teamAccountLabel,authorized:"active",connected:true,connection:"connected"});return reply(true,{ok:true})}
+    if(req.command==="claim_intent_preview"||req.command==="claim_intent_pending")return reply(true,{pending_id:"pending_demo",status:"pending"},null,slowConfirm?900:50);
+    if(req.command==="confirm_pending_intent"||req.command==="claim_intent"){mock.products[0].accounts.push({id:"team",email:teamAccountLabel,authorized:"active",connected:true,connection:"connected"});return reply(true,{ok:true},null,slowConfirm?900:50)}
     if(req.command==="open_web"||req.command==="start_worker")return reply(true,{ok:true});
     reply(false,null,"unknown command");
   }};

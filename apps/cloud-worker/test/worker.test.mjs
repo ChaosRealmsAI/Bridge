@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash, createHmac, randomUUID } from "node:crypto";
 import worker, { BridgeDeviceRoom, __bridgeTestConnectorRelayListPayload, __bridgeTestMemorySnapshot, __bridgeTestRelayEnvelopeMatches } from "../src/index.js";
+import { safeDeviceInfo } from "../src/core/public-payloads.js";
 import { RELAY_CAPABILITIES, assertRegistryWellFormed, scopeDangerMetadataFromCapabilities } from "../src/products.js";
 
 const assetRequests = [];
@@ -564,6 +565,19 @@ const claimed = await nativeClaimIntent(intent.token, {
     platform: "macos",
     commands: { codex: true },
     workspaces: { default: "/Users/private/project" },
+    device_info: {
+      display_name: "Relay Test Mac",
+      model: "MacBookPro18,3",
+      os: "macos",
+      arch: "arm64",
+      fingerprint: "PB-A1B2C3D4E5F6",
+      identity_source: "local_install",
+      install_id: "install-relay-test",
+      username: "private",
+      home_path: "/Users/private",
+      ip: "127.0.0.1",
+      mac: "00:11:22:33:44:55",
+    },
     adapter_router: { configured: true },
   },
 });
@@ -575,7 +589,21 @@ assert.deepEqual(claimed.device.capabilities, {
   relay: ["relay.envelope", "relay.ack"],
   adapter_router: { mode: "external_http" },
 });
-assert.doesNotMatch(JSON.stringify(claimed.device), /codex|commands|workspaces|Users\/private|shell\.run|fs\.read|data\./);
+assert.deepEqual(claimed.device.device_info, {
+  display_name: "Relay Test Mac",
+  model: "MacBookPro18,3",
+  os: "macos",
+  arch: "arm64",
+  fingerprint: "PB-A1B2C3D4E5F6",
+  identity_source: "local_install",
+});
+assert.deepEqual(claimed.device.local_state.device_info, claimed.device.device_info);
+assert.equal(safeDeviceInfo({ ...claimed.device.device_info, display_name: "/Users/private" }), null);
+assert.equal(safeDeviceInfo({ ...claimed.device.device_info, display_name: "127.0.0.1" }), null);
+assert.equal(safeDeviceInfo({ ...claimed.device.device_info, model: "00:11:22:33:44:55" }), null);
+assert.equal(safeDeviceInfo({ ...claimed.device.device_info, model: "pbd_secret" }), null);
+assert.equal(safeDeviceInfo({ ...claimed.device.device_info, display_name: "Relay\u0007 Test Mac" }).display_name, "Relay Test Mac");
+assert.doesNotMatch(JSON.stringify(claimed.device), /codex|commands|workspaces|Users\/private|install-relay-test|00:11:22|127\.0\.0\.1|shell\.run|fs\.read|data\./);
 const alreadyClaimed = await apiMissingOrigin("POST", `/v1/connect-intents/${encodeURIComponent(intent.token)}/claim`, {
   install_id: "install-relay-test-duplicate",
   device_name: "Duplicate Claim Device",
@@ -598,18 +626,32 @@ const heartbeat = await api("POST", "/v1/connectors/heartbeat", {
     platform: "macos",
     commands: { codex: true },
     workspaces: { default: "/Users/private/heartbeat" },
+    device_info: {
+      display_name: "Relay Test Mac",
+      model: "MacBookPro18,3",
+      os: "macos",
+      arch: "arm64",
+      fingerprint: "PB-A1B2C3D4E5F6",
+      identity_source: "local_install",
+      token: "pbd_secret",
+      home_path: "/Users/private",
+    },
     adapter_router: { configured: true },
   },
 }, confirmed.device_token || claimed.device_token);
 assert.equal(heartbeat.device.status, "online");
-assert.doesNotMatch(JSON.stringify(heartbeat.device), /codex|commands|workspaces|Users\/private|shell\.run|fs\.read|data\./);
+assert.deepEqual(heartbeat.device.device_info, claimed.device.device_info);
+assert.doesNotMatch(JSON.stringify(heartbeat.device), /codex|commands|workspaces|Users\/private|pbd_secret|shell\.run|fs\.read|data\./);
 
 const readyState = await api("GET", "/v1/bridge/state?product_id=panda-chat");
 assert.equal(readyState.accounts[0].authorization.status, "active");
 assert.equal(readyState.connected, true);
 assert.deepEqual(readyState.product.capabilities, ["relay.envelope", "relay.ack"]);
 assert.deepEqual(readyState.authorization.policy.capabilities, ["relay.envelope", "relay.ack"]);
+assert.deepEqual(readyState.current_device.device_info, claimed.device.device_info);
+assert.deepEqual(readyState.devices.find((device) => device.id === claimed.device.id).device_info, claimed.device.device_info);
 assert.doesNotMatch(JSON.stringify(readyState.authorization.policy), /Users\/private|commands|workspaces|shell\.run|fs\.read/);
+assert.doesNotMatch(JSON.stringify(readyState), /install-relay-test|Users\/private|pbd_secret|00:11:22|127\.0\.0\.1/);
 
 const relayKeyExchange = {
   algorithm: "ECDH-P256+A256GCM",

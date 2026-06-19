@@ -15,6 +15,7 @@ pub(crate) fn status(state: &AppState) -> DesktopStatus {
         api_base: credentials.as_ref().map(|item| item.api_base.clone()),
         device_id: credentials.as_ref().map(|item| item.device_id.clone()),
         device_name: credentials.as_ref().map(|item| item.device_name.clone()),
+        local_device: local_device_info(),
         account_id: credentials
             .as_ref()
             .and_then(|item| item.account_id.clone()),
@@ -294,6 +295,7 @@ fn selected_server_status(
             reachable: Some(false),
             compatible: Some(false),
             last_probe_at: Some(failure.at),
+            probe_latency_ms: None,
             error: Some(failure.error),
             source: "profile_probe_error".to_string(),
         };
@@ -304,24 +306,24 @@ fn selected_server_status(
             reachable: None,
             compatible: None,
             last_probe_at: Some(probe.at.clone()),
+            probe_latency_ms: None,
             error: Some("profile probe stale".to_string()),
             source: "profile_probe_stale".to_string(),
         };
     }
+    let probe_latency_ms = probe.as_ref().and_then(|probe| probe.latency_ms);
     let last_probe_at = probe.map(|probe| probe.at);
     let reachable = if last_probe_at.is_some() {
         Some(true)
     } else {
         None
     };
-    let compatible = if profile.id == "official" || last_probe_at.is_some() {
+    let compatible = if last_probe_at.is_some() {
         Some(true)
     } else {
         None
     };
-    let source = if profile.id == "official" {
-        "builtin_profile"
-    } else if last_probe_at.is_some() {
+    let source = if last_probe_at.is_some() {
         "profile_probe"
     } else {
         "not_probed"
@@ -330,6 +332,7 @@ fn selected_server_status(
         reachable,
         compatible,
         last_probe_at,
+        probe_latency_ms,
         error: None,
         source: source.to_string(),
     }
