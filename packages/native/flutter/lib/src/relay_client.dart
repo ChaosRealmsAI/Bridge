@@ -24,8 +24,19 @@ class BridgeRelayClient {
   /// Send [command] and await the final decrypted result.
   ///
   /// [onProgress] (when non-null) is invoked for each progress envelope with
-  /// `result["data"] ?? result`; polling uses limit=10 and a 350ms cadence.
-  /// Without it, limit=1 and a 700ms cadence are used.
+  /// `result["data"] ?? result`; polling uses limit=10. Without it, limit=1.
+  ///
+  /// Latency note: the GET carries `wait_ms` so the relay long-polls (production
+  /// holds the request until an envelope lands; ~50-250ms for a fast command).
+  /// Between GETs we start with a short delay ([fastPollMs]) and back off toward
+  /// [slowPollMs], so a ~50ms backend command is no longer pinned to a fixed
+  /// 700ms client sleep. Mock relays that ignore `wait_ms` still get a tight
+  /// re-poll instead of the old 700ms wait.
+  static const int fastPollMs = 60;
+  static const int slowPollMs = 700;
+  static const int fastPollProgressMs = 60;
+  static const int slowPollProgressMs = 350;
+
   Future<Map<String, dynamic>> call(
     Map<String, dynamic> command, {
     int timeoutMs = 270000,
@@ -57,6 +68,13 @@ class BridgeRelayClient {
 
     var afterSeq = 1;
     final deadline = DateTime.now().millisecondsSinceEpoch + timeoutMs;
+    // Ramp the inter-poll delay from fast -> slow. Production relays long-poll
+    // (wait_ms) and return the instant an envelope lands; this delay only covers
+    // mock relays that return immediately, so start tight and back off.
+    final fast = onProgress == null ? fastPollMs : fastPollProgressMs;
+    final slow = onProgress == null ? slowPollMs : slowPollProgressMs;
+    var pollDelayMs = fast;
+    var firstPoll = true;
     while (DateTime.now().millisecondsSinceEpoch < deadline) {
       final limit = onProgress == null ? 1 : 10;
       final pollPath = '/v1/products/$pid/relay/envelopes'
@@ -96,14 +114,22 @@ class BridgeRelayClient {
         if (onProgress != null && progressCheck(result)) {
           final data = result['data'];
           await onProgress(data is Map ? Map<String, dynamic>.from(data) : result);
+          // Streaming reply is active: keep polling tight so chunks render live.
+          pollDelayMs = fast;
+          firstPoll = false;
           continue;
         }
         return result;
       }
 
-      await Future<void>.delayed(
-        Duration(milliseconds: onProgress == null ? 700 : 350),
-      );
+      // No envelope this round. The first empty poll often just means the mock
+      // relay hasn't run the adapter yet, so retry quickly, then back off.
+      if (firstPoll) {
+        firstPoll = false;
+      } else {
+        pollDelayMs = (pollDelayMs * 2).clamp(fast, slow);
+      }
+      await Future<void>.delayed(Duration(milliseconds: pollDelayMs));
     }
     throw BridgeRelayError('bridge_relay_timeout', 'Bridge relay timed out.');
   }
