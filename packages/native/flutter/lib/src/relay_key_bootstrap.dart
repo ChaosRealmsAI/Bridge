@@ -3,6 +3,7 @@ import 'dart:typed_data';
 
 import 'package:cryptography/cryptography.dart';
 
+import 'p256.dart';
 import 'relay_ids.dart';
 
 /// ECDH-P256 relay-key wrapping for the bootstrap handshake. Mirrors Kotlin
@@ -13,6 +14,10 @@ import 'relay_ids.dart';
 ///  - wrappingKey = SHA-256( sharedSecret ‖ "bridge-relay-key-bootstrap-v1" ‖ aad ),
 ///  - AES-256-GCM wrap of the relay key under that wrapping key,
 ///  - `app_public_jwk.x/y` = affine coordinates (32 bytes each), base64url no padding.
+///
+/// The P-256 ECDH (key gen, public point, shared X) uses the pure-Dart [P256]
+/// so the wrap works in headless tests and on every native target without a
+/// platform-crypto plugin. AES-GCM / SHA-256 still come from `cryptography`.
 class BridgeRelayKeyBootstrap {
   BridgeRelayKeyBootstrap._();
 
@@ -33,21 +38,15 @@ class BridgeRelayKeyBootstrap {
     if (publicJwk is! Map) {
       throw const FormatException('invalid_relay_key_exchange');
     }
-    final x = BridgeRelayIds.b64UrlDecode((publicJwk['x'] ?? '') as String);
-    final y = BridgeRelayIds.b64UrlDecode((publicJwk['y'] ?? '') as String);
+    final xBytes = BridgeRelayIds.b64UrlDecode((publicJwk['x'] ?? '') as String);
+    final yBytes = BridgeRelayIds.b64UrlDecode((publicJwk['y'] ?? '') as String);
+    final desktopX = P256.bytesToBigInt(BridgeRelayIds.ecCoordinate(xBytes));
+    final desktopY = P256.bytesToBigInt(BridgeRelayIds.ecCoordinate(yBytes));
 
-    final ecdh = Ecdh.p256(length: 32);
-    final keyPair = await ecdh.newKeyPair();
-
-    final desktopPublic = SimplePublicKey(
-      <int>[...BridgeRelayIds.ecCoordinate(x), ...BridgeRelayIds.ecCoordinate(y)],
-      type: KeyPairType.p256,
-    );
-    final sharedSecret = await ecdh.sharedSecretKey(
-      keyPair: keyPair,
-      remotePublicKey: desktopPublic,
-    );
-    final sharedBytes = await sharedSecret.extractBytes();
+    // Ephemeral key pair + ECDH shared X (== WebCrypto deriveBits for P-256).
+    final privateScalar = P256.newPrivateScalar();
+    final (appX, appY) = P256.publicPoint(privateScalar);
+    final sharedBytes = P256.sharedSecretX(privateScalar, desktopX, desktopY);
 
     final aad = Uint8List.fromList(utf8.encode(aadText));
     final wrappingKey = await _relayWrappingKey(sharedBytes, aad);
@@ -64,7 +63,12 @@ class BridgeRelayKeyBootstrap {
       ..setRange(0, secretBox.cipherText.length, secretBox.cipherText)
       ..setRange(secretBox.cipherText.length, secretBox.cipherText.length + secretBox.mac.bytes.length, secretBox.mac.bytes);
 
-    final appPublicJwk = await _ecPublicJwk(keyPair);
+    final appPublicJwk = <String, dynamic>{
+      'kty': 'EC',
+      'crv': 'P-256',
+      'x': BridgeRelayIds.b64Url(P256.bigIntTo32Bytes(appX)),
+      'y': BridgeRelayIds.b64Url(P256.bigIntTo32Bytes(appY)),
+    };
 
     return <String, dynamic>{
       'algorithm': 'ECDH-P256+A256GCM',
@@ -87,20 +91,5 @@ class BridgeRelayKeyBootstrap {
     ];
     final digest = await Sha256().hash(material);
     return SecretKey(digest.bytes);
-  }
-
-  static Future<Map<String, dynamic>> _ecPublicJwk(KeyPair keyPair) async {
-    final publicKey = await keyPair.extractPublicKey() as SimplePublicKey;
-    // `cryptography` returns the affine X ‖ Y (64 bytes) for P-256 public keys.
-    final bytes = publicKey.bytes;
-    final coords = bytes.length == 65 ? bytes.sublist(1) : bytes;
-    final x = BridgeRelayIds.ecCoordinate(Uint8List.fromList(coords.sublist(0, 32)));
-    final y = BridgeRelayIds.ecCoordinate(Uint8List.fromList(coords.sublist(32, 64)));
-    return <String, dynamic>{
-      'kty': 'EC',
-      'crv': 'P-256',
-      'x': BridgeRelayIds.b64Url(x),
-      'y': BridgeRelayIds.b64Url(y),
-    };
   }
 }
