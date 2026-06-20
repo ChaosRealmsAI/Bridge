@@ -22,6 +22,7 @@ Object.assign(TEXT["zh-CN"],{pausedTag:"已暂停",engineStarting:"本机引擎 
 Object.assign(TEXT["zh-TW"],{pausedTag:"已暫停",engineStarting:"本機引擎 · 啟動中…",engineUnavailable:"本機引擎 · 狀態讀取失敗"});
 Object.assign(TEXT.en,{pausedTag:"Paused",engineStarting:"Local engine · starting…",engineUnavailable:"Local engine · status unavailable"});
 Object.assign(TEXT.ja,{pausedTag:"停止中",engineStarting:"ローカルエンジン · 起動中…",engineUnavailable:"ローカルエンジン · 状態を取得できません"});
+Object.assign(TEXT["zh-CN"],{connectionOff:"已关闭",connectionPaused:"已关闭连接",connectionResumed:"已恢复连接"});Object.assign(TEXT["zh-TW"],{connectionOff:"已關閉",connectionPaused:"已關閉連接",connectionResumed:"已恢復連接"});Object.assign(TEXT.en,{connectionOff:"Off",connectionPaused:"Connection turned off",connectionResumed:"Connection restored"});Object.assign(TEXT.ja,{connectionOff:"オフ",connectionPaused:"接続をオフにしました",connectionResumed:"接続を再開しました"});
 Object.assign(TEXT["zh-CN"],{authorizing:"处理中…"});
 Object.assign(TEXT["zh-TW"],{authorizing:"處理中…"});
 Object.assign(TEXT.en,{authorizing:"Processing…"});
@@ -211,18 +212,20 @@ function emptyHtml(p){
 }
 function accountHtml(p,a,i){
   const active=a.authorized!=="paused";
-  const connected=active&&!!a.connected;
-  const retry=active&&!connected&&a.connection==="reconnecting";
+  const connectionEnabled=a.connection_enabled!==false;
+  const connectionOn=active&&connectionEnabled;
+  const connected=connectionOn&&!!a.connected;
+  const retry=connectionOn&&!connected&&a.connection==="reconnecting";
   const av=avatarFor(a.email);
   let pill;
   if(!active)pill=`<span class="pill paused"><i class="d"></i>${t("pausedTag")}</span>`;
   else if(connected)pill=`<span class="pill live"><i class="d"></i>${t("connected")}</span>`;
   else if(retry)pill=`<span class="pill retry"><i class="d"></i>${t("reconnecting")}</span>`;
-  else pill=`<span class="pill idle"><i class="d"></i>${t("idle")}</span>`;
+  else pill=`<span class="pill idle"><i class="d"></i>${connectionEnabled?t("idle"):t("connectionOff")}</span>`;
   return `<div class="acard ${connected?"live":""}" id="acct-${p.id}-${i}">
     <span class="avatar" style="background:${av.bg}">${esc(av.txt)}</span>
     <div class="awho"><div class="aem">${esc(a.email||"Panda Account")}</div><div class="ameta">${pill}</div></div>
-    <div class="actrl"><span class="swlabel">${t("auth")}</span><button class="switch" role="switch" aria-checked="${active}" onclick="toggleAuth('${p.id}',${i})" aria-label="${t("auth")}"></button></div>
+    <div class="actrls"><div class="actrl"><span class="swlabel">${t("conn")}</span><button class="switch" role="switch" aria-checked="${connectionOn}" ${active?"":'disabled aria-disabled="true"'} onclick="toggleConnection('${p.id}',${i})" aria-label="${t("conn")}"></button></div><div class="actrl"><span class="swlabel">${t("auth")}</span><button class="switch" role="switch" aria-checked="${active}" onclick="toggleAuth('${p.id}',${i})" aria-label="${t("auth")}"></button></div></div>
     <button class="amore" title="${t("delete")}" onclick="confirmDelete(event,'${p.id}',${i})">${I.trash}</button>
   </div>`;
 }
@@ -474,6 +477,7 @@ async function toggleAuth(productId,index){
   const p=productById(productId),a=p?.accounts?.[index];if(!a)return;
   try{await window.PandaBridge.call("toggle_authorization",{product_id:productId,account:a.id||a.email});toast(a.authorized==="paused"?t("resumed"):t("paused"));await refresh()}catch(e){showError(e)}
 }
+async function toggleConnection(productId,index){const p=productById(productId),a=p?.accounts?.[index];if(!a||a.authorized==="paused")return;const next=a.connection_enabled===false;try{await window.PandaBridge.call("toggle_connection",{product_id:productId,account:a.id||a.email,enabled:next});toast(next?t("connectionResumed"):t("connectionPaused"));await refresh()}catch(e){showError(e)}}
 async function removeAccount(productId,index){
   const p=productById(productId),a=p?.accounts?.[index];if(!a)return;
   const row=document.getElementById(`acct-${productId}-${index}`);if(row)row.classList.add("leaving");
@@ -614,7 +618,7 @@ function normalizeProducts(items){
     const base=BASE_PRODUCTS.find(p=>p.id===src.id)||{};
     const style=productStyle(src,index);
     const accounts=Array.isArray(src.accounts)?src.accounts.map(a=>({
-      id:a.id||null,email:a.email||"Panda Account",authorized:a.authorized||"active",connected:!!a.connected,connection:a.connection||"reconnecting"
+      id:a.id||null,email:a.email||"Panda Account",authorized:a.authorized||"active",connection_enabled:a.connection_enabled!==false,connected:!!a.connected,connection:a.connection||"reconnecting"
     })):[];
     return {...clone(base),...src,origin:src.origin||base.origin||hostOnly(src.web_url),web_url:src.web_url||base.web_url||src.origin||"",initials:style.initials,color:style.color,icon:style.icon,accounts,connected:!!src.connected,connection:src.connection||"offline"};
   });
@@ -705,19 +709,21 @@ function installFallback(){
   const demoAccountLabel="Burn Demo Identity";
   const teamAccountLabel="Team Demo Identity";
   const mock={settings:{launch_at_login:true,appearance:new URLSearchParams(location.search).get("theme")||"auto",language:"auto",api_base:DEFAULT_API,cloud_profiles:[clone(OFFICIAL_PROFILE)],selected_cloud_profile_id:"official"},products:normalizeProducts([
-    {id:"panda-burn",name:"Burn",origin:"https://token-burn.com",web_url:"https://token-burn.com/authorize",accounts:emptyDemo?[]:[{id:"demo_burn",email:demoAccountLabel,authorized:"active",connected:true,connection:"connected"}],connected:!emptyDemo,connection:emptyDemo?"offline":"connected"}
+    {id:"panda-burn",name:"Burn",origin:"https://token-burn.com",web_url:"https://token-burn.com/authorize",accounts:emptyDemo?[]:[{id:"demo_burn",email:demoAccountLabel,authorized:"active",connection_enabled:true,connected:true,connection:"connected"}],connected:!emptyDemo,connection:emptyDemo?"offline":"connected"}
   ])};
   function mockStatus(){
     const profile=mock.settings.cloud_profiles.find(p=>p.id===mock.settings.selected_cloud_profile_id)||mock.settings.cloud_profiles[0]||OFFICIAL_PROFILE;
     const accounts=mock.products.flatMap(p=>p.accounts||[]);
     const authorized=accounts.some(a=>a.authorized!=="paused");
+    const connectionEnabled=accounts.some(a=>a.authorized!=="paused"&&a.connection_enabled!==false);
+    mock.products.forEach(p=>{const on=(p.accounts||[]).some(a=>a.authorized!=="paused"&&a.connection_enabled!==false&&a.connected);p.connected=on;p.connection=on?"connected":((p.accounts||[]).some(a=>a.authorized!=="paused"&&a.connection_enabled!==false)?"reconnecting":"offline")});
     const paired=profile.id!=="official"||authorized;
     const serverReachable=profile.id==="official"?null:true;
     const serverCompatible=profile.id==="official"?null:true;
     const serverError=profile.id==="official"&&officialError?"Official server probe failed":null;
     const server={reachable:serverReachable,compatible:serverCompatible,last_probe_at:serverReachable?new Date().toISOString():null,error:serverError,source:serverReachable?"demo_profile_probe":"demo_not_probed"};
     if(serverReachable){server.probe_latency_ms=12;server.health_latency_ms=4;server.diagnostics_latency_ms=8}
-    const running=authorized;
+    const running=connectionEnabled;
     return {
       ...clone(mock),
       local_device:{
@@ -729,16 +735,16 @@ function installFallback(){
         identity_source:"local_install"
       },
       worker_running: running,
-      realtime_connected: authorized,
+      realtime_connected: connectionEnabled,
       selected_profile:{
         profile_id:profile.id,
         label:profile.name||hostOnly(profile.api_base),
         api_base:profile.api_base,
         server,
-        device:{paired,present:authorized?true:(paired?null:false),last_seen_at:authorized?new Date().toISOString():null,device_id:paired?"mock_device":null,device_name:paired?deviceLabel():null},
-        account:{authorized,authorization_state:authorized?"active":"none",account_id:authorized?"demo_burn":null,account_display:authorized?demoAccountLabel:null,product_ids:authorized?["panda-burn"]:[]},
-        local_engine:{running,adapter_health:authorized?"configured":"idle",adapter_configured:authorized,adapter_running:false,adapter_products:authorized?[{product_id:"panda-burn",state:"configured",configured:true,running:false,endpoint_source:"mock"}]:[]},
-        transport:{realtime_state:authorized?"connected":"idle",polling_state:authorized?"active":"idle",realtime_connected:authorized,polling_active:authorized,degraded_reason:null}
+        device:{paired,present:connectionEnabled?true:(paired?null:false),last_seen_at:connectionEnabled?new Date().toISOString():null,device_id:paired?"mock_device":null,device_name:paired?deviceLabel():null},
+        account:{authorized,authorization_state:authorized?"active":"none",connection_enabled:connectionEnabled,account_id:authorized?"demo_burn":null,account_display:authorized?demoAccountLabel:null,product_ids:connectionEnabled?["panda-burn"]:[]},
+        local_engine:{running,adapter_health:connectionEnabled?"configured":"idle",adapter_configured:connectionEnabled,adapter_running:false,adapter_products:connectionEnabled?[{product_id:"panda-burn",state:"configured",configured:true,running:false,endpoint_source:"mock"}]:[]},
+        transport:{realtime_state:connectionEnabled?"connected":"idle",polling_state:connectionEnabled?"active":"idle",realtime_connected:connectionEnabled,polling_active:connectionEnabled,degraded_reason:null}
       }
     };
   }
@@ -750,14 +756,15 @@ function installFallback(){
     if(req.command==="add_cloud_profile"||req.command==="pair_selfhost_profile"){const api=req.params.api;const id="profile_demo";const profile={id,name:req.params.name||hostOnly(api),api_base:api,web_origin:api,source:req.command==="pair_selfhost_profile"?"selfhost":"user",products:BASE_PRODUCTS.map(clone)};mock.settings.cloud_profiles=mock.settings.cloud_profiles.filter(p=>p.id!==id).concat([profile]);mock.settings.selected_cloud_profile_id=id;mock.settings.api_base=api;mock.products=normalizeProducts(BASE_PRODUCTS);return reply(true,clone(mock.settings))}
     if(req.command==="refresh_cloud_profile")return reply(true,clone(mock.settings));
     if(req.command==="remove_cloud_profile"){mock.settings.cloud_profiles=mock.settings.cloud_profiles.filter(p=>p.id!==req.params.profile_id);mock.settings.selected_cloud_profile_id="official";mock.settings.api_base=DEFAULT_API;mock.products=normalizeProducts(BASE_PRODUCTS);return reply(true,clone(mock.settings))}
-    if(req.command==="toggle_authorization"){const p=mock.products.find(x=>x.id===req.params.product_id);const a=p?.accounts.find(x=>x.id===req.params.account||x.email===req.params.account);if(a){a.authorized=a.authorized==="paused"?"active":"paused";a.connected=a.authorized==="active";a.connection=a.connected?"connected":"disabled"}return reply(true,{ok:true})}
+    if(req.command==="toggle_authorization"){const p=mock.products.find(x=>x.id===req.params.product_id);const a=p?.accounts.find(x=>x.id===req.params.account||x.email===req.params.account);if(a){a.authorized=a.authorized==="paused"?"active":"paused";a.connected=a.authorized==="active"&&a.connection_enabled!==false;a.connection=a.connected?"connected":"disabled"}return reply(true,{ok:true})}
+    if(req.command==="toggle_connection"){const p=mock.products.find(x=>x.id===req.params.product_id);const a=p?.accounts.find(x=>x.id===req.params.account||x.email===req.params.account);if(a){a.connection_enabled=!!req.params.enabled;a.connected=a.authorized!=="paused"&&a.connection_enabled;a.connection=a.connected?"connected":"disabled"}return reply(true,{ok:true,connection_enabled:!!req.params.enabled})}
     if(req.command==="remove_authorization"){const p=mock.products.find(x=>x.id===req.params.product_id);if(p)p.accounts=p.accounts.filter(x=>x.id!==req.params.account_id&&x.email!==req.params.account_id);return reply(true,{ok:true})}
     if(req.command==="preview_intent"){
       const base={product_id:"panda-burn",product_name:"Burn",cloud_origin:"https://token-burn.com",user_display_name:demoAccountLabel,user_id:"demo_user",capabilities:["relay.envelope","relay.ack"],local_policy:{version:"BRIDGE-RELAY-AUTH-v1",source_origin:"https://token-burn.com",capabilities:["relay.envelope","relay.ack"],product_authorization:{owner:"product-adapter",enforcement:"product-adapter",control:"computer-control"}}};
       return reply(true,base);
     }
     if(req.command==="claim_intent_preview"||req.command==="claim_intent_pending")return reply(true,{pending_id:"pending_demo",status:"pending"},null,slowConfirm?900:50);
-    if(req.command==="confirm_pending_intent"||req.command==="claim_intent"){mock.products[0].accounts.push({id:"team",email:teamAccountLabel,authorized:"active",connected:true,connection:"connected"});return reply(true,{ok:true},null,slowConfirm?900:50)}
+    if(req.command==="confirm_pending_intent"||req.command==="claim_intent"){mock.products[0].accounts.push({id:"team",email:teamAccountLabel,authorized:"active",connection_enabled:true,connected:true,connection:"connected"});return reply(true,{ok:true},null,slowConfirm?900:50)}
     if(req.command==="open_web"||req.command==="start_worker")return reply(true,{ok:true});
     reply(false,null,"unknown command");
   }};
@@ -768,5 +775,5 @@ if(!window.ipc)installFallback();
 applyTheme();
 render();
 refresh()
-  .then(status=>{if(ui.view==="settings")probeAllServers();if((status.products||[]).some(p=>(p.accounts||[]).some(a=>a.authorized==="active")))window.PandaBridge.call("start_worker").catch(()=>{})})
+  .then(status=>{if(ui.view==="settings")probeAllServers();if((status.products||[]).some(p=>(p.accounts||[]).some(a=>a.authorized==="active"&&a.connection_enabled!==false)))window.PandaBridge.call("start_worker").catch(()=>{})})
   .catch(error=>{ui.booting=false;ui.statusError=String(error?.message||error);render()});

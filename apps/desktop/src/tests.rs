@@ -21,6 +21,7 @@ mod tests {
                 name: "Bridge Demo".to_string(),
                 origin: Some("http://local.test".to_string()),
                 authorization: AuthorizationState::Active,
+                connection_enabled: true,
                 capabilities: capabilities.into_iter().map(ToOwned::to_owned).collect(),
                 policy: test_auth_scope(),
                 epoch: 1,
@@ -866,6 +867,45 @@ mod tests {
     }
 
     #[test]
+    fn connection_toggle_disables_local_relay_without_pausing_authorization() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        reset_credentials_env();
+        let state_path = env::temp_dir().join(format!(
+            "panda-bridge-connection-toggle-test-{}.json",
+            next_event_seq()
+        ));
+        env::set_var("PANDA_BRIDGE_DESKTOP_STATE", &state_path);
+        let mut credentials = test_credentials(vec!["relay.envelope", "relay.ack"]);
+        credentials.device_online = Some(true);
+        save_credentials(&credentials).unwrap();
+
+        let disabled = set_connection_enabled("bridge-demo", "user@example.test", Some(false))
+            .unwrap();
+        assert_eq!(disabled["connection_enabled"], false);
+        let loaded = load_credentials().unwrap();
+        assert_eq!(
+            loaded.connections[0].authorized_products[0].authorization,
+            AuthorizationState::Active
+        );
+        assert!(!loaded.connections[0].authorized_products[0].connection_enabled);
+        assert!(active_connection_products(&loaded.connections[0]).is_empty());
+
+        let enabled = set_connection_enabled("bridge-demo", "user@example.test", Some(true))
+            .unwrap();
+        assert_eq!(enabled["connection_enabled"], true);
+        let loaded = load_credentials().unwrap();
+        assert_eq!(
+            loaded.connections[0].authorized_products[0].authorization,
+            AuthorizationState::Active
+        );
+        assert!(loaded.connections[0].authorized_products[0].connection_enabled);
+        assert_eq!(active_connection_products(&loaded.connections[0]).len(), 1);
+
+        reset_credentials_env();
+        let _ = fs::remove_file(state_path);
+    }
+
+    #[test]
     fn remove_authorization_deletes_local_account_product() {
         let _guard = ENV_LOCK.lock().unwrap();
         reset_credentials_env();
@@ -981,6 +1021,7 @@ mod tests {
         credentials.authorized_products[0].name = "Burn".to_string();
         credentials.authorized_products[0].origin = Some("https://token-burn.com".to_string());
         credentials.authorized_products[0].authorization = AuthorizationState::Paused;
+        credentials.authorized_products[0].connection_enabled = true;
         let state = new_app_state();
         state.worker_running.store(true, Ordering::SeqCst);
         state.realtime_connected.store(true, Ordering::SeqCst);
@@ -1003,9 +1044,11 @@ mod tests {
 
         let serialized = serde_json::to_value(bridge_demo).unwrap();
         assert_eq!(serialized["accounts"][0]["authorized"], "paused");
+        assert_eq!(serialized["accounts"][0]["connection_enabled"], true);
         assert_eq!(serialized["accounts"][0]["connected"], false);
 
         credentials.authorized_products[0].authorization = AuthorizationState::Active;
+        credentials.authorized_products[0].connection_enabled = false;
         credentials.device_online = Some(true);
         let products = desktop_products(Some(&credentials), &state, &settings);
         let account = &products
@@ -1014,6 +1057,21 @@ mod tests {
             .unwrap()
             .accounts[0];
         assert_eq!(account.authorized, AuthorizationState::Active);
+        assert!(!account.connection_enabled);
+        assert!(!account.connected);
+        assert_eq!(account.connection, "disabled");
+        assert!(active_connection_products(&credentials).is_empty());
+
+        credentials.authorized_products[0].connection_enabled = true;
+        credentials.device_online = Some(true);
+        let products = desktop_products(Some(&credentials), &state, &settings);
+        let account = &products
+            .iter()
+            .find(|product| product.id == "panda-burn")
+            .unwrap()
+            .accounts[0];
+        assert_eq!(account.authorized, AuthorizationState::Active);
+        assert!(account.connection_enabled);
         assert!(account.connected);
         assert_eq!(account.connection, "connected");
     }

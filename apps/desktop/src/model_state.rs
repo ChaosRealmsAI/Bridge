@@ -75,6 +75,8 @@ struct ProductGrant {
     origin: Option<String>,
     #[serde(default = "default_authorization_state")]
     authorization: AuthorizationState,
+    #[serde(default = "default_connection_enabled")]
+    connection_enabled: bool,
     #[serde(default)]
     capabilities: Vec<String>,
     #[serde(default)]
@@ -124,6 +126,8 @@ struct ProductGrantAccount {
     origin: Option<String>,
     #[serde(default = "default_authorization_state")]
     authorized: AuthorizationState,
+    #[serde(default = "default_connection_enabled")]
+    connection_enabled: bool,
     #[serde(default)]
     connected: Option<bool>,
     #[serde(default)]
@@ -207,6 +211,7 @@ struct SelectedDeviceLiveStatus {
 struct SelectedAccountLiveStatus {
     authorized: bool,
     authorization_state: String,
+    connection_enabled: bool,
     account_id: Option<String>,
     account_display: Option<String>,
     product_ids: Vec<String>,
@@ -257,6 +262,7 @@ struct DesktopAccountStatus {
     product_id: Option<String>,
     device_id: String,
     authorized: AuthorizationState,
+    connection_enabled: bool,
     connected: bool,
     connection: String,
 }
@@ -323,6 +329,10 @@ impl AuthorizationState {
 
 fn default_authorization_state() -> AuthorizationState {
     AuthorizationState::Active
+}
+
+fn default_connection_enabled() -> bool {
+    true
 }
 
 fn default_authorization_epoch() -> u64 {

@@ -400,6 +400,60 @@ pub(crate) fn toggle_authorization(product_id: &str, account: &str) -> Result<Va
     }))
 }
 
+pub(crate) fn set_connection_enabled(
+    product_id: &str,
+    account: &str,
+    enabled: Option<bool>,
+) -> Result<Value, String> {
+    let credentials = ensure_credentials_install_id(load_credentials()?)?;
+    let mut connections = credentials_connections(&credentials);
+    let mut target_enabled = enabled;
+    let mut found = false;
+    let mut changed = 0_usize;
+    for connection in connections
+        .iter_mut()
+        .filter(|connection| connection_matches_account(connection, Some(account)))
+    {
+        let current_products = connection_products(connection);
+        if !current_products
+            .iter()
+            .any(|grant| product_matches_target(grant, product_id))
+        {
+            continue;
+        }
+        if connection.authorized_products.is_empty() {
+            connection.authorized_products = current_products;
+        }
+        for grant in connection
+            .authorized_products
+            .iter_mut()
+            .filter(|grant| product_matches_target(grant, product_id))
+        {
+            found = true;
+            let next_enabled = *target_enabled.get_or_insert(!grant.connection_enabled);
+            if grant.connection_enabled != next_enabled {
+                grant.connection_enabled = next_enabled;
+                changed += 1;
+            }
+        }
+    }
+    if !found {
+        return Err("connection_not_found".to_string());
+    }
+    let next = credentials_from_connections(connections, None, Some(&credentials));
+    if changed > 0 {
+        save_credentials(&next)?;
+        write_connector_state(&next)?;
+    }
+    Ok(json!({
+        "ok": true,
+        "product_id": product_id,
+        "account": account,
+        "connection_enabled": target_enabled.unwrap_or(true),
+        "authorized_products": next.authorized_products
+    }))
+}
+
 pub(crate) fn apply_authorization_epoch_bump(
     product_id: &str,
     status: Option<AuthorizationState>,
@@ -454,6 +508,33 @@ pub(crate) fn toggle_authorization_for_state(
             keys.clear();
         }
     } else {
+        let _ = start_worker(state, proxy);
+    }
+    Ok(payload)
+}
+
+pub(crate) fn set_connection_enabled_for_state(
+    state: &AppState,
+    proxy: EventLoopProxy<UserEvent>,
+    product_id: &str,
+    account: &str,
+    enabled: Option<bool>,
+) -> Result<Value, String> {
+    let payload = set_connection_enabled(product_id, account, enabled)?;
+    if !has_selected_profile_authorized_connections(&load_credentials()?) {
+        state.worker_running.store(false, Ordering::SeqCst);
+        state.realtime_connected.store(false, Ordering::SeqCst);
+        if let Ok(mut keys) = state.realtime_connection_keys.lock() {
+            keys.clear();
+        }
+        if let Ok(mut keys) = state.realtime_connected_keys.lock() {
+            keys.clear();
+        }
+    } else if payload
+        .get("connection_enabled")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
         let _ = start_worker(state, proxy);
     }
     Ok(payload)

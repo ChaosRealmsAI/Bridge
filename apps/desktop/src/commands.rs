@@ -101,6 +101,12 @@ pub(crate) fn run_command(
             let payload = toggle_authorization_for_state(state, proxy, &product_id, &account)?;
             Ok(payload)
         }
+        "toggle_connection" | "set_connection_enabled" => {
+            let product_id = product_param(params)?;
+            let account = required_param(params, "account")?;
+            let enabled = params.get("enabled").and_then(Value::as_bool);
+            set_connection_enabled_for_state(state, proxy, &product_id, &account, enabled)
+        }
         "remove_authorization" | "revoke_authorization" => {
             let product_id = product_param(params)?;
             let account_id =

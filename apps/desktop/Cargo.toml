@@ -1,6 +1,6 @@
 [package]
 name = "panda-bridge-desktop"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Panda Bridge lightweight desktop app"
 
@@ -30,7 +30,7 @@ windows-registry = "0.6.1"
 name = "Panda Bridge"
 identifier = "cc.otherline.panda-bridge"
 icon = ["apps/desktop/assets/PandaBridge.icns"]
-version = "0.1.0"
+version = "0.1.1"
 copyright = "Copyright Panda Bridge"
 category = "Developer Tool"
 short_description = "Secure local relay for Panda products"

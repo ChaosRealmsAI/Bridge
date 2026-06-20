@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import {
   BRIDGE_ERROR_MESSAGES,
   BridgeError,
@@ -16,6 +18,7 @@ import {
   createBridgeClient,
 } from "../src/index.js";
 
+const desktopRelease = JSON.parse(readFileSync(resolve("release/desktop.json"), "utf8"));
 const calls = [];
 const client = createBridgeClient({
   apiBase: "https://api.example.test",
@@ -94,7 +97,7 @@ assert.equal(
 );
 
 assert.equal(bridgeDesktopInstallDefaults.macos.fileName, "panda-bridge-macos.dmg");
-assert.equal(bridgeDesktopInstallDefaults.macos.versionedFileName, "panda-bridge-desktop-v0.1.0-macos.dmg");
+assert.equal(bridgeDesktopInstallDefaults.macos.versionedFileName, desktopRelease.targets.macos.versionedFileName);
 assert.equal(
   bridgeDesktopInstallTarget({ channel: "test" }).downloadUrl,
   "https://assets-bridge-test.chaos-realms.cc/downloads/panda-bridge-macos.dmg",
@@ -112,7 +115,7 @@ assert.equal(bridgeDesktopInstallTarget().sha256.length, 64);
 assert.equal(bridgeDesktopInstallTarget({ platform: "windows" }).fileName, "panda-bridge-windows-x64.zip");
 assert.equal(
   bridgeDesktopInstallTarget({ platform: "windows" }).versionedDownloadPath,
-  "/downloads/releases/v0.1.0/panda-bridge-desktop-v0.1.0-windows-x64.zip",
+  desktopRelease.targets["windows-x64"].versionedDownloadPath,
 );
 
 const installTarget = bridgeDesktopInstallTarget({ channel: "test" });
@@ -592,7 +595,7 @@ assert.equal(state.bridge_state, "ready");
 assert.equal(stateClient.calls[0].path, "/v1/bridge/state?product_id=bridge-demo");
 
 const install = client.install();
-assert.equal(install.version, "0.1.0");
+assert.equal(install.version, desktopRelease.version);
 assert.equal(install.openUrl, "panda-bridge://open");
 assert.equal(install.sha256.length, 64);
 

@@ -143,8 +143,9 @@ function runCheck(name, command, args, options = {}) {
 }
 
 function windowsPackageArtifactCheck() {
-  const zip = resolve("dist/desktop/windows/panda-bridge-windows-x64.zip");
-  const versionedZip = resolve("dist/desktop/windows/panda-bridge-desktop-v0.1.0-windows-x64.zip");
+  const target = JSON.parse(readFileSync("release/desktop.json", "utf8")).targets["windows-x64"];
+  const zip = resolve("dist/desktop/windows", target.fileName);
+  const versionedZip = resolve("dist/desktop/windows", target.versionedFileName);
   const manifest = resolve("dist/desktop/windows/Panda Bridge/manifest.json");
   const exe = resolve("dist/desktop/windows/Panda Bridge/PandaBridge.exe");
   const install = resolve("dist/desktop/windows/Panda Bridge/Install.ps1");

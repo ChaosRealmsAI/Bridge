@@ -1,6 +1,6 @@
 {
   "name": "panda-bridge",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "workspaces": [
@@ -64,6 +64,8 @@
     "desktop:package:windows:xwin": "node scripts/desktop/package-windows.mjs --xwin",
     "release:desktop:prepare": "node scripts/desktop/package-macos.mjs --release && npm run desktop:package:windows:xwin && node scripts/desktop/release-contract.mjs prepare",
     "release:desktop:verify": "node scripts/desktop/release-contract.mjs verify-artifacts",
+    "release:desktop:stage-public": "node scripts/desktop/release-contract.mjs stage-public",
+    "release:desktop:deploy-public": "npm run release:desktop:stage-public && npm run cloud:deploy && npm run release:desktop:audit-public",
     "release:desktop:audit-public": "node scripts/desktop/release-contract.mjs audit-public",
     "desktop:dev": "npm --workspace @panda-bridge/desktop run run",
     "desktop:build": "npm --workspace @panda-bridge/desktop run build",

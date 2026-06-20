@@ -1,11 +1,11 @@
 {
   "schemaVersion": "2026-06-21.panda-bridge.desktop-release.v1",
-  "releaseId": "panda-bridge-desktop-v0.1.0",
+  "releaseId": "panda-bridge-desktop-v0.1.1",
   "product": "panda-bridge-desktop",
   "appName": "Panda Bridge",
   "bundleIdentifier": "cc.otherline.panda-bridge",
   "protocol": "panda-bridge",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "channel": "stable",
   "assetBaseUrls": {
     "production": "https://assets.bridge.chaos-realms.cc",
@@ -13,7 +13,7 @@
   },
   "manifest": {
     "latestPath": "/downloads/panda-bridge-desktop/latest.json",
-    "versionedPath": "/downloads/releases/v0.1.0/panda-bridge-desktop-v0.1.0.json"
+    "versionedPath": "/downloads/releases/v0.1.1/panda-bridge-desktop-v0.1.1.json"
   },
   "targets": {
     "macos": {
@@ -21,12 +21,12 @@
       "package": "dmg",
       "distDir": "dist/desktop/macos",
       "fileName": "panda-bridge-macos.dmg",
-      "versionedFileName": "panda-bridge-desktop-v0.1.0-macos.dmg",
+      "versionedFileName": "panda-bridge-desktop-v0.1.1-macos.dmg",
       "downloadPath": "/downloads/panda-bridge-macos.dmg",
-      "versionedDownloadPath": "/downloads/releases/v0.1.0/panda-bridge-desktop-v0.1.0-macos.dmg",
+      "versionedDownloadPath": "/downloads/releases/v0.1.1/panda-bridge-desktop-v0.1.1-macos.dmg",
       "contentType": "application/x-apple-diskimage",
       "minimumBytes": 1048576,
-      "sha256": "7d908a82f4fa854c9b655b634b019c6d5897f8f6409d4eeffba27c990a014274"
+      "sha256": "1352877bdbbc2f0863563ae3bee95d32d689a90dc98599939c909b945d7d53bf"
     },
     "windows-x64": {
       "platform": "windows",
@@ -34,18 +34,20 @@
       "package": "portable-zip",
       "distDir": "dist/desktop/windows",
       "fileName": "panda-bridge-windows-x64.zip",
-      "versionedFileName": "panda-bridge-desktop-v0.1.0-windows-x64.zip",
+      "versionedFileName": "panda-bridge-desktop-v0.1.1-windows-x64.zip",
       "downloadPath": "/downloads/panda-bridge-windows-x64.zip",
-      "versionedDownloadPath": "/downloads/releases/v0.1.0/panda-bridge-desktop-v0.1.0-windows-x64.zip",
+      "versionedDownloadPath": "/downloads/releases/v0.1.1/panda-bridge-desktop-v0.1.1-windows-x64.zip",
       "contentType": "application/zip",
       "minimumBytes": 1048576,
-      "sha256": "92aa1ab30ffe6e3a3e15259306731de3880adbff088b06500b9406b1f698834a"
+      "sha256": "95cf2d5a7cff6702ae3d7e3ea54367dfad669115d1d7ec2ced93235901d5ffbd"
     }
   },
   "releaseGate": {
     "prepareCommand": "npm run release:desktop:prepare",
     "verifyCommand": "npm run release:desktop:verify",
     "publicAuditCommand": "npm run release:desktop:audit-public",
+    "stagePublicCommand": "npm run release:desktop:stage-public",
+    "deployPublicCommand": "npm run release:desktop:deploy-public",
     "productionUploadRequires": [
       "release packet with affected assets and rollback/roll-forward plan",
       "macOS DMG and Windows x64 zip produced by release:desktop:prepare",

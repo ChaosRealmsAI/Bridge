@@ -80,6 +80,7 @@ pub(crate) fn connection_products(credentials: &Credentials) -> Vec<ProductGrant
             name: name.clone(),
             origin: credentials.cloud_origin.clone(),
             authorization: AuthorizationState::Active,
+            connection_enabled: true,
             capabilities: Vec::new(),
             policy: Value::Null,
             epoch: 1,
@@ -94,7 +95,7 @@ pub(crate) fn connection_products(credentials: &Credentials) -> Vec<ProductGrant
 pub(crate) fn active_connection_products(credentials: &Credentials) -> Vec<ProductGrant> {
     connection_products(credentials)
         .into_iter()
-        .filter(|product| product.authorization.is_active())
+        .filter(|product| product.authorization.is_active() && product.connection_enabled)
         .collect()
 }
 
@@ -145,6 +146,10 @@ pub(crate) fn aggregate_authorized_products(connections: &[Credentials]) -> Vec<
     let mut products: Vec<ProductGrant> = Vec::new();
     for connection in connections {
         for product in connection_products(connection) {
+            let connection_enabled = product.connection_enabled;
+            let connected = product.authorization.is_active()
+                && connection_enabled
+                && connection.device_online == Some(true);
             let device = ProductGrantDevice {
                 id: connection.device_id.clone(),
                 name: connection.device_name.clone(),
@@ -162,11 +167,12 @@ pub(crate) fn aggregate_authorized_products(connections: &[Credentials]) -> Vec<
                     .clone()
                     .or_else(|| connection.cloud_origin.clone()),
                 authorized: product.authorization,
-                connected: connection.device_online,
+                connection_enabled,
+                connected: Some(connected),
                 connection: Some(
-                    if product.authorization.is_active() && connection.device_online == Some(true) {
+                    if connected {
                         "connected".to_string()
-                    } else if product.authorization.is_active() {
+                    } else if product.authorization.is_active() && connection_enabled {
                         "reconnecting".to_string()
                     } else {
                         "disabled".to_string()
@@ -181,6 +187,9 @@ pub(crate) fn aggregate_authorized_products(connections: &[Credentials]) -> Vec<
                 existing.capabilities = product.capabilities.clone();
                 existing.authorized_at = product.authorized_at.clone();
                 existing.local_roots = LocalRootBindings::default();
+                if product.connection_enabled {
+                    existing.connection_enabled = true;
+                }
                 if let Some(existing_account) = existing
                     .accounts
                     .iter_mut()
@@ -205,13 +214,19 @@ pub(crate) fn aggregate_authorized_products(connections: &[Credentials]) -> Vec<
                     if product.authorization.is_active() {
                         existing_account.authorized = AuthorizationState::Active;
                     }
+                    if product.connection_enabled {
+                        existing_account.connection_enabled = true;
+                    }
                     if account.connected == Some(true) {
                         existing_account.connected = Some(true);
                         existing_account.connection = Some("connected".to_string());
                     } else if existing_account.connected != Some(true)
                         && existing_account.authorized.is_active()
+                        && existing_account.connection_enabled
                     {
                         existing_account.connection = Some("reconnecting".to_string());
+                    } else if existing_account.connected != Some(true) {
+                        existing_account.connection = Some("disabled".to_string());
                     }
                 } else {
                     existing.accounts.push(account);
@@ -363,6 +378,7 @@ pub(crate) fn merge_authorized_products(
             name,
             origin: cloud_origin,
             authorization,
+            connection_enabled: true,
             capabilities,
             policy,
             epoch: epoch.max(1),

@@ -109,6 +109,9 @@ async function inspectScenario(name, options = {}) {
       allowButtonBusy: document.querySelector("#allowIntentButton")?.getAttribute("aria-busy") === "true",
       allowButtonText: document.querySelector("#allowIntentButton")?.textContent.trim() || "",
       allowButtonDisabled: Boolean(document.querySelector("#allowIntentButton")?.disabled),
+      accountConnectionSwitchChecked: document.querySelector(".acard .actrls .actrl:first-child .switch")?.getAttribute("aria-checked") || "",
+      accountAuthorizationSwitchChecked: document.querySelector(".acard .actrls .actrl:nth-child(2) .switch")?.getAttribute("aria-checked") || "",
+      accountStatusPills: [...document.querySelectorAll(".acard .pill")].map((item) => item.textContent.trim()),
       firstServerActionDisabled: Boolean(document.querySelector(".srv-act")?.disabled),
       firstServerActionBusy: document.querySelector(".srv-act")?.getAttribute("aria-busy") === "true",
       probeCallCount: window.__probeCallCount || 0,
@@ -124,7 +127,7 @@ async function inspectScenario(name, options = {}) {
   assert.deepEqual(errors, [], `${name}: page errors must be empty`);
   assert.equal(state.productCount, 1, `${name}: one product tab should render`);
   assert.equal(state.hasBurnSvg, true, `${name}: Burn tab SVG should render`);
-  assert.ok(screenshotBytes > 50_000, `${name}: screenshot should not be blank`);
+  assert.ok(screenshotBytes > (options.minScreenshotBytes ?? 50_000), `${name}: screenshot should not be blank`);
   assert.ok(visibleAtMs < 1_000, `${name}: first product UI should appear within 1000ms`);
 
   return { name, visibleAtMs, screenshot, screenshotBytes, state, logs };
@@ -152,12 +155,45 @@ assert.match(nativeStuck.state.text, /Local engine .* starting/i);
 assert.match(nativeStuck.state.text, /Connect Burn/);
 assert.equal(nativeStuck.state.hasEmptyLogo, true, "native-stuck first frame must render Burn SVG");
 
+const accountConnectionOff = await inspectScenario("account-connection-off", {
+  query: "?theme=dark",
+  minScreenshotBytes: 30_000,
+  async action(page) {
+    await page.waitForFunction(() => typeof ui !== "undefined" && !ui.booting && ui.status);
+    await page.locator(".acard .actrls .actrl:first-child .switch").click();
+    await page.waitForFunction(() => document.querySelector(".acard .actrls .actrl:first-child .switch")?.getAttribute("aria-checked") === "false");
+  },
+});
+assert.equal(accountConnectionOff.state.accountConnectionSwitchChecked, "false", "connection switch should turn off");
+assert.equal(accountConnectionOff.state.accountAuthorizationSwitchChecked, "true", "connection off must not pause authorization");
+assert.equal(accountConnectionOff.state.selectedProfile?.account?.authorized, true, "connection off keeps the account authorized");
+assert.equal(accountConnectionOff.state.selectedProfile?.account?.connection_enabled, false, "connection off disables only the local connection");
+assert.equal(accountConnectionOff.state.selectedProfile?.local_engine?.running, false, "connection off stops the local relay worker surface");
+assert.match(accountConnectionOff.state.accountStatusPills[0] || "", /Off|关闭|關閉|オフ/i, "connection off should render an explicit off state");
+
+const accountConnectionRestored = await inspectScenario("account-connection-restored", {
+  query: "?theme=dark",
+  minScreenshotBytes: 30_000,
+  async action(page) {
+    await page.waitForFunction(() => typeof ui !== "undefined" && !ui.booting && ui.status);
+    const connectionSwitch = page.locator(".acard .actrls .actrl:first-child .switch");
+    await connectionSwitch.click();
+    await page.waitForFunction(() => document.querySelector(".acard .actrls .actrl:first-child .switch")?.getAttribute("aria-checked") === "false");
+    await connectionSwitch.click();
+    await page.waitForFunction(() => document.querySelector(".acard .actrls .actrl:first-child .switch")?.getAttribute("aria-checked") === "true");
+  },
+});
+assert.equal(accountConnectionRestored.state.accountConnectionSwitchChecked, "true", "connection switch should restore on");
+assert.equal(accountConnectionRestored.state.accountAuthorizationSwitchChecked, "true", "authorization stays enabled after connection restore");
+assert.equal(accountConnectionRestored.state.selectedProfile?.account?.connection_enabled, true, "connection restore re-enables local connection");
+assert.match(accountConnectionRestored.state.accountStatusPills[0] || "", /Connected|已连接|已連接|接続済み/i, "restored connection should render connected");
+
 const officialUnprobedSettings = await inspectScenario("official-unprobed-settings", {
   query: "?settings=1&theme=dark",
   async action(page) {
     await page.waitForFunction(() => typeof ui !== "undefined" && !ui.booting && ui.status && ui.settings);
     await page.waitForTimeout(350);
-    await page.evaluate(() => {
+    await page.evaluate(async () => {
       ui.view = "settings";
       ui.health = {};
       ui.settings = {
@@ -512,7 +548,7 @@ const switchFailureRecovery = await inspectScenario("server-switch-failure-recov
   waitMs: 260,
   async action(page) {
     await page.waitForFunction(() => typeof ui !== "undefined" && !ui.booting && ui.status && ui.settings);
-    await page.evaluate(() => {
+    await page.evaluate(async () => {
       const failing = {
         id: "switch_timeout_profile",
         name: "Timeout Server",
@@ -550,7 +586,11 @@ const switchFailureRecovery = await inspectScenario("server-switch-failure-recov
       render();
       const first = selectServer(null, failing.id);
       const second = selectServer(null, failing.id);
-      return Promise.allSettled([first, second]);
+      const results = await Promise.allSettled([first, second]);
+      ui.settings = window.__switchFailureSettings;
+      ui.status = { ...ui.status, settings: ui.settings };
+      render();
+      return results;
     });
   },
 });
@@ -584,7 +624,7 @@ assert.equal(authSheetLoading.state.allowButtonBusy, true, "Allow button should 
 assert.equal(authSheetLoading.state.allowButtonDisabled, true, "Allow button should be disabled while confirming");
 assert.match(authSheetLoading.state.allowButtonText, /Processing|处理中|處理中|処理中/);
 
-const scenarios = [fallbackEmpty, nativeStuck, officialUnprobedSettings, missingLocalDeviceSettings, myServerSettings, officialServerError, officialServerPersistedError, duplicateRecheck, probeFailureBackoff, probeBackoffExpiry, probeTimeoutRecovery, switchFailureRecovery, authSheet, authSheetLoading];
+const scenarios = [fallbackEmpty, nativeStuck, accountConnectionOff, accountConnectionRestored, officialUnprobedSettings, missingLocalDeviceSettings, myServerSettings, officialServerError, officialServerPersistedError, duplicateRecheck, probeFailureBackoff, probeBackoffExpiry, probeTimeoutRecovery, switchFailureRecovery, authSheet, authSheetLoading];
 for (const item of scenarios) assertNoRawEmailLikeStateText(item);
 
 const summary = {

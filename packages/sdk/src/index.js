@@ -1,4 +1,4 @@
-export const BRIDGE_SDK_VERSION = "0.1.0";
+export const BRIDGE_SDK_VERSION = "0.1.1";
 
 export const BridgeRelayKeyBootstrapAadVersions = Object.freeze({
   bridge: "bridge-relay-key-bootstrap-v1",
@@ -130,31 +130,31 @@ export const bridgeDesktopInstallDefaults = Object.freeze({
     platform: "macos",
     appName: "Panda Bridge",
     fileName: "panda-bridge-macos.dmg",
-    versionedFileName: "panda-bridge-desktop-v0.1.0-macos.dmg",
-    version: "0.1.0",
+    versionedFileName: "panda-bridge-desktop-v0.1.1-macos.dmg",
+    version: "0.1.1",
     openUrl: "panda-bridge://open",
     downloadPath: "/downloads/panda-bridge-macos.dmg",
-    versionedDownloadPath: "/downloads/releases/v0.1.0/panda-bridge-desktop-v0.1.0-macos.dmg",
+    versionedDownloadPath: "/downloads/releases/v0.1.1/panda-bridge-desktop-v0.1.1-macos.dmg",
     downloadUrls: Object.freeze({
       production: "https://assets.bridge.chaos-realms.cc/downloads/panda-bridge-macos.dmg",
       test: "https://assets-bridge-test.chaos-realms.cc/downloads/panda-bridge-macos.dmg",
     }),
-    sha256: "7d908a82f4fa854c9b655b634b019c6d5897f8f6409d4eeffba27c990a014274",
+    sha256: "1352877bdbbc2f0863563ae3bee95d32d689a90dc98599939c909b945d7d53bf",
   }),
   windows: Object.freeze({
     platform: "windows",
     appName: "Panda Bridge",
     fileName: "panda-bridge-windows-x64.zip",
-    versionedFileName: "panda-bridge-desktop-v0.1.0-windows-x64.zip",
-    version: "0.1.0",
+    versionedFileName: "panda-bridge-desktop-v0.1.1-windows-x64.zip",
+    version: "0.1.1",
     openUrl: "panda-bridge://open",
     downloadPath: "/downloads/panda-bridge-windows-x64.zip",
-    versionedDownloadPath: "/downloads/releases/v0.1.0/panda-bridge-desktop-v0.1.0-windows-x64.zip",
+    versionedDownloadPath: "/downloads/releases/v0.1.1/panda-bridge-desktop-v0.1.1-windows-x64.zip",
     downloadUrls: Object.freeze({
       production: "https://assets.bridge.chaos-realms.cc/downloads/panda-bridge-windows-x64.zip",
       test: "https://assets-bridge-test.chaos-realms.cc/downloads/panda-bridge-windows-x64.zip",
     }),
-    sha256: "92aa1ab30ffe6e3a3e15259306731de3880adbff088b06500b9406b1f698834a",
+    sha256: "95cf2d5a7cff6702ae3d7e3ea54367dfad669115d1d7ec2ced93235901d5ffbd",
   }),
 });
 

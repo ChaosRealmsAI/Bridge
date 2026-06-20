@@ -180,10 +180,13 @@ pub(crate) fn upsert_desktop_account_status(
         .clone()
         .or_else(|| connection.account_id.clone())
         .unwrap_or_else(|| "Panda Account".to_string());
-    let connected = grant.authorization.is_active() && connection.device_online == Some(true);
+    let connection_enabled = grant.connection_enabled;
+    let connected = grant.authorization.is_active()
+        && connection_enabled
+        && connection.device_online == Some(true);
     let connection_state = if connected {
         "connected"
-    } else if grant.authorization.is_active() {
+    } else if grant.authorization.is_active() && connection_enabled {
         "reconnecting"
     } else {
         "disabled"
@@ -205,11 +208,17 @@ pub(crate) fn upsert_desktop_account_status(
         if grant.authorization.is_active() {
             existing.authorized = AuthorizationState::Active;
         }
+        if connection_enabled {
+            existing.connection_enabled = true;
+        }
         if connected {
             existing.connected = true;
             existing.connection = "connected".to_string();
-        } else if !existing.connected && existing.authorized.is_active() {
+        } else if !existing.connected && existing.authorized.is_active() && existing.connection_enabled
+        {
             existing.connection = "reconnecting".to_string();
+        } else if !existing.connected {
+            existing.connection = "disabled".to_string();
         }
         if existing.product_id.is_none() {
             existing.product_id = Some(grant.id.clone());
@@ -222,6 +231,7 @@ pub(crate) fn upsert_desktop_account_status(
         product_id: Some(grant.id.clone()),
         device_id: connection.device_id.clone(),
         authorized: grant.authorization,
+        connection_enabled,
         connected,
         connection: connection_state.to_string(),
     });
@@ -391,6 +401,9 @@ fn selected_account_status(
     let authorized = selected_grants
         .iter()
         .any(|grant| grant.authorization.is_active());
+    let connection_enabled = selected_grants
+        .iter()
+        .any(|grant| grant.authorization.is_active() && grant.connection_enabled);
     let authorization_state = if authorized {
         "active"
     } else if selected_grants
@@ -408,7 +421,7 @@ fn selected_account_status(
     };
     let product_ids = selected_grants
         .iter()
-        .filter(|grant| grant.authorization.is_active())
+        .filter(|grant| grant.authorization.is_active() && grant.connection_enabled)
         .map(|grant| grant.id.clone())
         .collect::<HashSet<_>>()
         .into_iter()
@@ -417,6 +430,7 @@ fn selected_account_status(
     SelectedAccountLiveStatus {
         authorized,
         authorization_state: authorization_state.to_string(),
+        connection_enabled,
         account_id: selected.and_then(|connection| connection.account_id.clone()),
         account_display: selected.and_then(|connection| connection.account_display.clone()),
         product_ids,
@@ -507,9 +521,11 @@ fn selected_transport_status(
         .map(|keys| selected_keys.iter().any(|key| keys.contains(key)))
         .unwrap_or(false);
     let realtime_connected =
-        selected_realtime_connected && selected_realtime_registered && account.authorized;
-    let polling_active = worker_running && account.authorized;
+        selected_realtime_connected && selected_realtime_registered && account.connection_enabled;
+    let polling_active = worker_running && account.connection_enabled;
     let realtime_state = if !account.authorized {
+        "idle"
+    } else if !account.connection_enabled {
         "idle"
     } else if !worker_running {
         "degraded"
@@ -522,7 +538,7 @@ fn selected_transport_status(
     };
     let polling_state = if polling_active {
         "active"
-    } else if account.authorized {
+    } else if account.authorized && account.connection_enabled {
         "stopped"
     } else {
         "idle"
@@ -533,7 +549,7 @@ fn selected_transport_status(
         Some("realtime_disconnected_polling_fallback".to_string())
     } else if polling_active {
         Some("selected_profile_realtime_not_connected_polling_fallback".to_string())
-    } else if account.authorized {
+    } else if account.authorized && account.connection_enabled {
         Some("worker_stopped".to_string())
     } else {
         None

@@ -101,6 +101,11 @@ async function main() {
     console.log(JSON.stringify({ ok: true, check: "desktop-release-public-audit", audit }, null, 2));
     return;
   }
+  if (command === "stage-public") {
+    const staged = await stagePublicRelease();
+    console.log(JSON.stringify({ ok: true, check: "desktop-release-stage-public", staged }, null, 2));
+    return;
+  }
   throw new Error(`unknown command: ${command}`);
 }
 
@@ -200,6 +205,8 @@ function assertPackageScripts() {
   assert.ok(pkg.scripts.check.includes("check:release-contract"), "npm run check must include release contract gate");
   assert.equal(pkg.scripts["release:desktop:prepare"], "node scripts/desktop/package-macos.mjs --release && npm run desktop:package:windows:xwin && node scripts/desktop/release-contract.mjs prepare");
   assert.equal(pkg.scripts["release:desktop:verify"], "node scripts/desktop/release-contract.mjs verify-artifacts");
+  assert.equal(pkg.scripts["release:desktop:stage-public"], "node scripts/desktop/release-contract.mjs stage-public");
+  assert.equal(pkg.scripts["release:desktop:deploy-public"], "npm run release:desktop:stage-public && npm run cloud:deploy && npm run release:desktop:audit-public");
   assert.equal(pkg.scripts["release:desktop:audit-public"], "node scripts/desktop/release-contract.mjs audit-public");
 }
 
@@ -282,6 +289,30 @@ async function prepareReleaseManifest() {
   };
 }
 
+async function stagePublicRelease() {
+  const contract = await assertDesktopReleaseContract({ artifacts: true });
+  const manifest = await prepareReleaseManifest();
+  const staged = [];
+  for (const [id, target] of Object.entries(contract.targets)) {
+    for (const versioned of [false, true]) {
+      const source = desktopReleaseArtifactPath(target, { versioned });
+      const destination = publicAssetPath(versioned ? target.versionedDownloadPath : target.downloadPath);
+      mkdirSync(dirname(destination), { recursive: true });
+      copyFileSync(source, destination);
+      const digest = artifactDigest(destination);
+      staged.push({ id, versioned, path: relative(destination), bytes: digest.bytes, sha256: digest.sha256 });
+    }
+  }
+  for (const versioned of [false, true]) {
+    const source = desktopReleaseManifestPath({ versioned });
+    const destination = publicAssetPath(versioned ? contract.manifest.versionedPath : contract.manifest.latestPath);
+    mkdirSync(dirname(destination), { recursive: true });
+    copyFileSync(source, destination);
+    staged.push({ id: "manifest", versioned, path: relative(destination), bytes: artifactDigest(destination).bytes });
+  }
+  return { manifest, assets: staged };
+}
+
 async function auditPublicRelease() {
   const contract = await assertDesktopReleaseContract();
   const results = [];
@@ -316,6 +347,10 @@ function readJson(file) {
 
 function relative(file) {
   return file.replace(`${root}/`, "");
+}
+
+function publicAssetPath(publicPath) {
+  return resolve(root, "apps/web-chat/public", String(publicPath).replace(/^\/+/, ""));
 }
 
 function escapeRegex(value) {
