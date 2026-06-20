@@ -289,7 +289,8 @@ async function runAgentSessionWatch(command, input, cwd, context) {
     const page = await readSessionWatchPage(source, input, project, cwd, context);
     const cursorNow = pageCursor(page);
     const totalNow = pageTotal(page);
-    const fingerprint = `${cursorNow}:${totalNow}:${cleanText(page.transcript_path)}:${page.messages?.length || 0}`;
+    const transcriptPath = pageTranscriptPath(page);
+    const fingerprint = `${cursorNow}:${totalNow}:${transcriptPath}:${page.messages?.length || 0}`;
     const changed = lastFingerprint
       ? fingerprint !== lastFingerprint
       : cursorNow > lastCursor || (lastTotal > 0 && totalNow > lastTotal);
@@ -306,7 +307,7 @@ async function runAgentSessionWatch(command, input, cwd, context) {
         profile_id: cleanText(input.profile_id || input.profileId),
         cursor: cursorNow,
         total_messages: totalNow,
-        transcript_path: cleanText(page.transcript_path),
+        transcript_path: transcriptPath,
         reason: "jsonl_changed",
       });
     }
@@ -370,6 +371,10 @@ function pageCursor(page) {
 
 function pageTotal(page) {
   return Math.max(0, positiveNumber(page?.total_messages ?? page?.total ?? page?.page?.total, 0));
+}
+
+function pageTranscriptPath(page) {
+  return cleanText(page?.transcript_path || page?.summary?.transcript_path || page?.page?.transcript_path);
 }
 
 function delay(ms) {
