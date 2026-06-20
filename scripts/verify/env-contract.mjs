@@ -16,6 +16,7 @@ if (existsSync(prodPath)) {
   assertIncludes(prod, 'BRIDGE_STORE_NAME = "bridge-production-store"', "production durable store name");
   assertIncludes(prod, 'BRIDGE_PUBLIC_API_BASE = "https://api.bridge.chaos-realms.cc"', "production API base");
   assertIncludes(prod, 'BRIDGE_WEB_ORIGIN = "https://bridge.chaos-realms.cc"', "production web origin");
+  assertIncludes(prod, '"BRIDGE_PANDA_BURN_DELEGATION_SECRET"', "production Burn delegation secret requirement");
   assertDoesNotInclude(prod, "api-bridge-test.chaos-realms.cc", "production config must not point to test API");
   assertDoesNotInclude(prod, "burn-test.chaos-realms.cc", "production config must not point to test Burn origin");
   assertDoesNotInclude(prod, deletedSupabaseRef, "production config must not point to deleted Supabase project");
@@ -29,6 +30,7 @@ if (existsSync(testPath)) {
   assertIncludes(test, 'BRIDGE_PUBLIC_API_BASE = "https://api-bridge-test.chaos-realms.cc"', "test API base");
   assertIncludes(test, 'BRIDGE_WEB_ORIGIN = "https://bridge-test.chaos-realms.cc"', "test web origin");
   assertIncludes(test, "https://burn-test.chaos-realms.cc", "test Burn origin");
+  assertIncludes(test, '"BRIDGE_PANDA_BURN_DELEGATION_SECRET"', "test Burn delegation secret requirement");
   assertDoesNotInclude(test, "https://token-burn.com", "Bridge test config must not authorize production Burn origin");
 }
 

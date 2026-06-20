@@ -86,6 +86,8 @@ Web:    https://bridge-test.chaos-realms.cc
 Assets: https://assets-bridge-test.chaos-realms.cc
 ```
 
+生产和测试必须成套使用。Burn 生产只接 `https://api.bridge.chaos-realms.cc`，Burn 测试只接 `https://api-bridge-test.chaos-realms.cc`；Bridge test product registry 不允许授权 `https://token-burn.com`。环境矩阵以 `/Users/Zhuanz/panda/my-company/resources/environment-matrix.json` 和 Burn 仓 `spec/L1/environment-contract.json` 为准，改动后运行 `npm run check:env-contract`。
+
 ## 本机控制样板
 
 `examples/relay-local-control` 是当前最小可运行证明：
@@ -109,6 +111,7 @@ npm run verify:relay-local-control:blackbox
 ```bash
 npm install
 npm run check
+npm run check:env-contract
 npm run check:relay-boundary
 npm run verify:relay-backpressure
 npm run check:e2ee
