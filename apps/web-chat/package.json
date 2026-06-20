@@ -1,0 +1,13 @@
+{
+  "name": "@bridge/web-chat",
+  "version": "0.1.0",
+  "type": "module",
+  "files": [
+    "public/index.html",
+    "public/main.js",
+    "public/styles.css"
+  ],
+  "scripts": {
+    "build": "node ../../scripts/build-web.mjs"
+  }
+}

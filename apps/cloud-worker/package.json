@@ -1,0 +1,20 @@
+{
+  "name": "@bridge/cloud-worker",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "src/index.js",
+  "files": [
+    "src/",
+    "test/",
+    "wrangler.example.toml",
+    "wrangler.selfhost.example.toml"
+  ],
+  "scripts": {
+    "dev": "npx wrangler dev",
+    "deploy": "npx wrangler deploy",
+    "test": "node test/index.js"
+  },
+  "dependencies": {
+    "@bridge/protocol": "0.1.0"
+  }
+}

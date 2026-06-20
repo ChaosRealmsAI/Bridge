@@ -1,0 +1,38 @@
+[package]
+name = "bridge-desktop"
+version = "0.1.1"
+edition = "2021"
+description = "Bridge lightweight desktop app"
+
+[dependencies]
+base64 = "0.22"
+ed25519-dalek = "2"
+keyring = { version = "3.6.3", features = ["apple-native", "windows-native"] }
+libc = "0.2"
+reqwest = { version = "0.13.4", default-features = false, features = ["blocking", "charset", "http2", "json", "native-tls", "system-proxy"] }
+png = "0.17"
+rfd = "0.17.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tao = "0.35.3"
+tungstenite = { version = "0.28", features = ["native-tls"] }
+unicode-normalization = "0.1"
+url = "2"
+urlencoding = "2"
+window-vibrancy = "0.7.1"
+wry = "0.55.1"
+
+[target.'cfg(windows)'.dependencies]
+windows-registry = "0.6.1"
+
+[package.metadata.bundle]
+name = "Bridge"
+identifier = "ai.chaosrealms.bridge"
+icon = ["apps/desktop/assets/Bridge.icns"]
+version = "0.1.1"
+copyright = "Copyright Bridge"
+category = "Developer Tool"
+short_description = "Secure local relay for Panda products"
+long_description = "Bridge connects Panda products to local managed adapters through a secure Bridge relay."
+osx_url_schemes = ["bridge"]

@@ -1,0 +1,14 @@
+{
+  "name": "@bridge/connector-cli",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": {
+    "bridge": "src/cli.mjs"
+  },
+  "scripts": {
+    "test": "node test/connector.test.mjs"
+  },
+  "dependencies": {
+    "@bridge/protocol": "0.1.0"
+  }
+}

@@ -1,0 +1,53 @@
+import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { resolve } from "node:path";
+
+const root = new URL("../../..", import.meta.url).pathname;
+const source = readFileSync(resolve(root, "apps/connector-cli/src/cli.mjs"), "utf8");
+
+for (const stale of [
+  "/v1/connectors/jobs",
+  "run-fixture",
+  "fake-codex",
+  "codex.",
+  "local_policy_denied",
+  'resolve(homedir(), ".bridge", "connector.json")',
+]) {
+  assert.equal(source.includes(stale), false, `connector CLI must not contain stale runtime marker: ${stale}`);
+}
+assert.match(source, /Application Support", "Bridge", "state"/);
+assert.match(source, /APPDATA/);
+assert.match(source, /XDG_STATE_HOME/);
+assert.match(source, /chmodSync\(path, mode\)/);
+assert.equal((source.match(/localHeaders\(state\.install_id\)/g) || []).length >= 5, true, "connector token requests must include install identity headers");
+
+const help = spawnSync("node", ["apps/connector-cli/src/cli.mjs", "help"], {
+  cwd: root,
+  encoding: "utf8",
+});
+assert.equal(help.status, 0, help.stderr);
+assert.match(help.stdout, /poll-relay/);
+assert.match(help.stdout, /relay-only/);
+
+const stateDir = mkdtempSync(resolve(tmpdir(), "bridge-connector-test-"));
+const doctor = spawnSync("node", [
+  "apps/connector-cli/src/cli.mjs",
+  "doctor",
+  "--api",
+  "http://127.0.0.1:9",
+  "--state",
+  resolve(stateDir, "missing.json"),
+], {
+  cwd: root,
+  encoding: "utf8",
+});
+assert.equal(doctor.status, 0, doctor.stderr);
+const payload = JSON.parse(doctor.stdout);
+assert.equal(payload.ok, false);
+assert.equal(payload.relay_only, true);
+assert.equal(payload.local.relay.envelopes, true);
+assert.deepEqual(payload.local.adapter_router.products, {});
+
+console.log("[connector.test] pass");

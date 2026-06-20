@@ -1,0 +1,60 @@
+{
+  "schemaVersion": "2026-06-21.bridge.desktop-release.v1",
+  "releaseId": "bridge-desktop-v0.1.1",
+  "product": "bridge-desktop",
+  "appName": "Bridge",
+  "bundleIdentifier": "ai.chaosrealms.bridge",
+  "protocol": "bridge",
+  "version": "0.1.1",
+  "channel": "stable",
+  "assetBaseUrls": {
+    "production": "https://assets.bridge.chaos-realms.cc",
+    "test": "https://assets-bridge-test.chaos-realms.cc"
+  },
+  "manifest": {
+    "latestPath": "/downloads/bridge-desktop/latest.json",
+    "versionedPath": "/downloads/releases/v0.1.1/bridge-desktop-v0.1.1.json"
+  },
+  "targets": {
+    "macos": {
+      "platform": "macos",
+      "package": "dmg",
+      "distDir": "dist/desktop/macos",
+      "fileName": "bridge-macos.dmg",
+      "versionedFileName": "bridge-desktop-v0.1.1-macos.dmg",
+      "downloadPath": "/downloads/bridge-macos.dmg",
+      "versionedDownloadPath": "/downloads/releases/v0.1.1/bridge-desktop-v0.1.1-macos.dmg",
+      "contentType": "application/x-apple-diskimage",
+      "minimumBytes": 1048576,
+      "sha256": "1352877bdbbc2f0863563ae3bee95d32d689a90dc98599939c909b945d7d53bf"
+    },
+    "windows-x64": {
+      "platform": "windows",
+      "arch": "x64",
+      "package": "portable-zip",
+      "distDir": "dist/desktop/windows",
+      "fileName": "bridge-windows-x64.zip",
+      "versionedFileName": "bridge-desktop-v0.1.1-windows-x64.zip",
+      "downloadPath": "/downloads/bridge-windows-x64.zip",
+      "versionedDownloadPath": "/downloads/releases/v0.1.1/bridge-desktop-v0.1.1-windows-x64.zip",
+      "contentType": "application/zip",
+      "minimumBytes": 1048576,
+      "sha256": "95cf2d5a7cff6702ae3d7e3ea54367dfad669115d1d7ec2ced93235901d5ffbd"
+    }
+  },
+  "releaseGate": {
+    "prepareCommand": "npm run release:desktop:prepare",
+    "verifyCommand": "npm run release:desktop:verify",
+    "publicAuditCommand": "npm run release:desktop:audit-public",
+    "stagePublicCommand": "npm run release:desktop:stage-public",
+    "deployPublicCommand": "npm run release:desktop:deploy-public",
+    "productionUploadRequires": [
+      "release packet with affected assets and rollback/roll-forward plan",
+      "macOS DMG and Windows x64 zip produced by release:desktop:prepare",
+      "macOS package summary reports Developer ID signing, hardened runtime, notarization, and stapling",
+      "release:desktop:verify passes against local artifacts and sha256",
+      "public upload target confirmed without printing credentials",
+      "release:desktop:audit-public passes after upload before announcing links"
+    ]
+  }
+}

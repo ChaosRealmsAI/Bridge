@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark" data-os="mac">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bridge</title>
+<style>__BRIDGE_DESKTOP_CSS__</style>
+</head>
+<body>
+<div class="win">
+  <div class="titlebar">
+    <div class="brand"><span class="mark brandMark"></span><b>Bridge</b></div>
+    <div class="tb-spacer"></div>
+    <div class="wincontrols">
+      <button aria-label="min"><svg width="11" height="1" viewBox="0 0 11 1"><rect width="11" height="1" fill="currentColor"/></svg></button>
+      <button aria-label="max"><svg width="10" height="10" viewBox="0 0 10 10"><rect x=".5" y=".5" width="9" height="9" rx="1" fill="none" stroke="currentColor"/></svg></button>
+      <button class="x" aria-label="close"><svg width="10" height="10" viewBox="0 0 10 10"><path d="M1 1l8 8M9 1L1 9" stroke="currentColor" stroke-width="1.3"/></svg></button>
+    </div>
+  </div>
+  <div class="body">
+    <aside class="rail">
+      <div class="rail-top">
+        <div class="lights"><i></i><i></i><i></i></div>
+        <div class="brand"><span class="mark brandMark"></span><b>Bridge</b></div>
+      </div>
+      <div class="rail-lab" id="productLabel">产品</div>
+      <div id="railTabs"></div>
+      <div class="spacer"></div>
+      <div class="engine" id="engine"></div>
+      <button class="settab" id="aboutTab" onclick="pickAbout()"><span class="ptile" id="aboutIco"></span><span class="pmeta"><span class="pname" id="aboutLabel">关于作者</span></span></button>
+      <button class="settab" id="settingsTab" onclick="pickSettings()"><span class="ptile" id="setIco"></span><span class="pmeta"><span class="pname" id="settingsLabel">设置</span></span></button>
+    </aside>
+    <main class="main" id="pane"></main>
+  </div>
+  <div id="modalRoot"></div>
+  <div class="toast" id="toast"><i class="d"></i><span id="toastTxt"></span></div>
+</div>
+<script>__BRIDGE_DESKTOP_ABOUT_JS__</script>
+<script>__BRIDGE_DESKTOP_JS__</script>
+</body>
+</html>

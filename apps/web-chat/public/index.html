@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Bridge Demo Relay</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <main class="shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">BD</div>
+        <div class="brand-copy">
+          <span class="eyebrow" data-domain-badge>bridge.chaos-realms.cc</span>
+          <h1>Bridge Demo</h1>
+          <p>安全加密中转</p>
+        </div>
+      </div>
+
+      <section class="panel status-panel">
+        <div class="row">
+          <span>Bridge demo 账号</span>
+          <strong data-session-status>检查中</strong>
+        </div>
+        <div class="row">
+          <span>Bridge 连接</span>
+          <strong data-device-status>未连接</strong>
+        </div>
+        <div class="row">
+          <span>就绪状态</span>
+          <strong data-readiness-status>检查中</strong>
+        </div>
+        <div class="row">
+          <span>API</span>
+          <strong data-api-base>local</strong>
+        </div>
+      </section>
+
+      <section class="panel login" data-login-panel>
+        <form data-login-form>
+          <label class="label" for="login-email">邮箱</label>
+          <input id="login-email" data-login-email type="email" autocomplete="email" placeholder="demo@bridge.example">
+          <label class="label" for="login-password">密码</label>
+          <input id="login-password" data-login-password type="password" autocomplete="current-password" placeholder="输入密码">
+          <button type="submit" class="primary">登录 / 创建测试账号</button>
+        </form>
+      </section>
+
+      <div class="actions account-actions" aria-label="Bridge demo account actions">
+        <button data-action="login">登录账号</button>
+        <button data-action="logout">退出账号</button>
+        <button data-action="refresh">刷新</button>
+        <button data-action="mobile">手机同步</button>
+      </div>
+
+      <section class="panel bridge-panel" data-bridge-panel data-bridge-state="loading">
+        <div class="bridge-head">
+          <div>
+          <span class="label">Bridge 设备</span>
+            <h2 data-bridge-title>检查中</h2>
+          </div>
+          <span class="state-dot" data-bridge-dot></span>
+        </div>
+        <p class="bridge-copy" data-bridge-copy>正在读取 Bridge 状态。</p>
+        <div class="bridge-primary" data-bridge-primary></div>
+        <div class="bridge-download" data-bridge-download hidden></div>
+        <div class="bridge-device-list" data-bridge-devices></div>
+        <details class="bridge-menu" data-bridge-menu hidden>
+          <summary>次要操作</summary>
+          <div class="bridge-menu-actions" data-bridge-menu-actions></div>
+        </details>
+      </section>
+
+      <section class="panel auth-scope" data-auth-scope-panel>
+        <div class="auth-scope-head">
+          <span class="label">授权范围</span>
+          <h2 data-auth-title>等待授权信息</h2>
+        </div>
+        <div class="scope-grid">
+          <span>来源</span>
+          <strong data-auth-origin>未生成</strong>
+          <span>边界</span>
+          <strong data-auth-root>未授权</strong>
+          <span>风险</span>
+          <strong data-auth-risk>未授权</strong>
+        </div>
+        <div class="capability-list" data-auth-capabilities></div>
+      </section>
+
+      <section class="panel mobile" data-mobile hidden>
+        <h2>手机同步链接</h2>
+        <p>手机打开后，会进入同一个 Bridge demo 账号。</p>
+        <a class="install-link" href="/" data-mobile-link>打开手机链接</a>
+      </section>
+    </aside>
+
+    <section class="chat">
+      <header class="chat-head">
+        <div>
+          <span class="route-label">product app / bridge cloud / desktop adapter</span>
+          <h2>Relay Authorization</h2>
+          <p>登录账号，连接 Bridge Desktop，检查 relay 就绪状态。</p>
+        </div>
+        <div class="runtime-stack">
+          <span class="pill" data-runtime-pill>local bridge</span>
+          <span class="origin" data-public-origin>localhost</span>
+        </div>
+      </header>
+
+      <div class="messages" data-messages>
+        <article class="message assistant">
+          <div class="avatar">BD</div>
+          <div class="bubble">
+            <div class="bubble-text">登录 Bridge demo 账号并连接本机后，产品应用就可以通过加密 relay envelope 调用本机 Product Adapter。</div>
+          </div>
+        </article>
+      </div>
+
+      <form class="composer" data-composer>
+        <textarea data-input rows="1" placeholder="Bridge Web demo 不发送产品明文"></textarea>
+        <button type="button" class="cancel" data-cancel hidden>停止</button>
+        <button type="submit" class="send" data-send>检查</button>
+      </form>
+    </section>
+  </main>
+  <script type="module" src="/main.js"></script>
+</body>
+</html>

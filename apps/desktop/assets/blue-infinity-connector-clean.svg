@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+  <title id="title">Blue Infinity Connector Logo</title>
+  <desc id="desc">White canvas with a smooth blue infinity bridge, two circular nodes, and a dotted connector line.</desc>
+  <defs>
+    <linearGradient id="loopGradient" x1="128" y1="512" x2="924" y2="512" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0b38bb"/>
+      <stop offset="0.28" stop-color="#006fea"/>
+      <stop offset="0.50" stop-color="#25d8ea"/>
+      <stop offset="0.72" stop-color="#0082ff"/>
+      <stop offset="1" stop-color="#0641d9"/>
+    </linearGradient>
+    <linearGradient id="barGradient" x1="292" y1="512" x2="734" y2="512" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#16a5ef"/>
+      <stop offset="0.48" stop-color="#25d8ea"/>
+      <stop offset="1" stop-color="#087df7"/>
+    </linearGradient>
+    <radialGradient id="leftNode" cx="34%" cy="34%" r="76%">
+      <stop offset="0" stop-color="#1ab7ff"/>
+      <stop offset="0.58" stop-color="#0a83f2"/>
+      <stop offset="1" stop-color="#0059d9"/>
+    </radialGradient>
+    <radialGradient id="rightNode" cx="34%" cy="34%" r="76%">
+      <stop offset="0" stop-color="#1ab7ff"/>
+      <stop offset="0.58" stop-color="#0a83f2"/>
+      <stop offset="1" stop-color="#0059d9"/>
+    </radialGradient>
+    <filter id="softLift" x="-12%" y="-18%" width="124%" height="136%" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="20" stdDeviation="24" flood-color="#024ecb" flood-opacity="0.16"/>
+      <feDropShadow dx="0" dy="5" stdDeviation="10" flood-color="#111827" flood-opacity="0.10"/>
+    </filter>
+  </defs>
+
+  <rect width="1024" height="1024" fill="#fff"/>
+  <g filter="url(#softLift)">
+    <path
+      d="M136 512
+         C136 406 228 356 354 356
+         C466 356 540 431 626 512
+         C712 593 770 668 878 668
+         C952 668 952 356 878 356
+         C770 356 712 431 626 512
+         C540 593 466 668 354 668
+         C228 668 136 618 136 512"
+      fill="none"
+      stroke="url(#loopGradient)"
+      stroke-width="82"
+      stroke-linecap="round"
+      stroke-linejoin="round"/>
+
+    <rect x="304" y="482" width="416" height="60" rx="30" fill="url(#barGradient)"/>
+    <circle cx="300" cy="512" r="56" fill="url(#leftNode)"/>
+    <circle cx="724" cy="512" r="56" fill="url(#rightNode)"/>
+
+    <g fill="#fff">
+      <circle cx="380" cy="512" r="7.5"/>
+      <circle cx="419" cy="512" r="7.5"/>
+      <circle cx="458" cy="512" r="7.5"/>
+      <circle cx="497" cy="512" r="7.5"/>
+      <circle cx="536" cy="512" r="7.5"/>
+      <circle cx="575" cy="512" r="7.5"/>
+      <circle cx="614" cy="512" r="7.5"/>
+      <circle cx="653" cy="512" r="7.5"/>
+    </g>
+  </g>
+</svg>

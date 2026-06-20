@@ -1,0 +1,11 @@
+{
+  "name": "@bridge/desktop",
+  "version": "0.1.1",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "check": "cargo test --manifest-path Cargo.toml",
+    "build": "cargo build --manifest-path Cargo.toml",
+    "run": "cargo run --manifest-path Cargo.toml --"
+  }
+}

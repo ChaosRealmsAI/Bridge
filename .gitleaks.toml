@@ -1,0 +1,8 @@
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Bridge worker relay-key bootstrap fake ciphertext fixture"
+condition = "AND"
+paths = ['''apps/cloud-worker/test/worker\.test\.mjs''']
+regexes = ['''ZmFrZS13cmFwcGVkLWtleQ==''']

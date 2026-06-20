@@ -1,0 +1,45 @@
+name = "my-bridge-cloud"
+main = "src/index.js"
+compatibility_date = "2026-06-04"
+workers_dev = false
+account_id = "replace-with-your-cloudflare-account-id"
+
+routes = [
+  { pattern = "api.bridge.example.com", custom_domain = true },
+  { pattern = "bridge.example.com", custom_domain = true },
+  { pattern = "assets.bridge.example.com", custom_domain = true }
+]
+
+[[r2_buckets]]
+binding = "BRIDGE_R2"
+bucket_name = "my-bridge-assets"
+
+[vars]
+BRIDGE_ENV = "selfhost"
+BRIDGE_WEB_ORIGIN = "https://bridge.example.com"
+BRIDGE_PUBLIC_API_BASE = "https://api.bridge.example.com"
+SESSION_COOKIE_NAME = "pb_session"
+SESSION_COOKIE_DOMAIN = ".bridge.example.com"
+BRIDGE_ALLOWED_ORIGINS = "https://bridge.example.com https://app.example.com"
+SUPABASE_URL = "https://replace-with-your-project.supabase.co"
+R2_PUBLIC_BASE_URL = "https://assets.bridge.example.com"
+BRIDGE_PRODUCT_REGISTRY_MODE = "replace"
+BRIDGE_PRODUCT_REGISTRY_JSON = "{\"products\":[{\"id\":\"acme-demo\",\"name\":\"Acme Demo\",\"official_origin\":\"https://app.example.com\",\"web_url\":\"https://app.example.com\"}]}"
+BRIDGE_PRODUCT_ALLOWED_ORIGINS = "{\"acme-demo\":[\"https://app.example.com\",\"https://bridge.example.com\"]}"
+
+[assets]
+directory = "../web-chat/public"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+run_worker_first = true
+
+[triggers]
+crons = ["17 * * * *"]
+
+[[durable_objects.bindings]]
+name = "BRIDGE_DEVICE_ROOMS"
+class_name = "BridgeDeviceRoom"
+
+[[migrations]]
+tag = "v1_bridge_device_rooms"
+new_sqlite_classes = ["BridgeDeviceRoom"]

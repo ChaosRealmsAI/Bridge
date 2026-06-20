@@ -1,0 +1,18 @@
+name: bridge
+description: >-
+  Generic Dart client SDK for the Bridge relay. Byte-for-byte compatible
+  with the Kotlin/Swift/JS SDKs: AES-256-GCM relay envelopes, AAD framing, gzip,
+  and ECDH-P256 relay-key bootstrap. Product-neutral — all identifiers are
+  supplied by the caller via BridgeRelayContext.
+version: 0.1.0
+publish_to: 'none'
+
+environment:
+  sdk: ^3.12.2
+
+dependencies:
+  cryptography: ^2.7.0
+
+dev_dependencies:
+  test: ^1.25.0
+  lints: ^5.0.0

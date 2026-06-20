@@ -1,0 +1,14 @@
+alter table if exists public.bridge_users enable row level security;
+alter table if exists public.bridge_sessions enable row level security;
+alter table if exists public.bridge_devices enable row level security;
+alter table if exists public.bridge_device_tokens enable row level security;
+alter table if exists public.bridge_pairing_codes enable row level security;
+alter table if exists public.bridge_session_links enable row level security;
+alter table if exists public.bridge_connect_intents enable row level security;
+alter table if exists public.bridge_authorizations enable row level security;
+alter table if exists public.bridge_jobs enable row level security;
+alter table if exists public.bridge_job_events enable row level security;
+alter table if exists public.bridge_audit_log enable row level security;
+alter table if exists public.bridge_password_attempts enable row level security;
+alter table if exists public.bridge_product_delegation_nonces enable row level security;
+alter table if exists public.bridge_authorization_import_proofs enable row level security;
