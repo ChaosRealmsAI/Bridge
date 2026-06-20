@@ -238,27 +238,109 @@ fn interrupt_codex_turn(
     project: PathBuf,
     request: AgentTurnInterruptRequest,
 ) -> Result<AgentTurnInterruptSuccess> {
-    let turn_id = request
+    if let Some(turn_id) = request
         .turn_id
         .as_deref()
-        .ok_or_else(|| anyhow!("turn_id is required for codex turn interrupt"))?;
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string)
+    {
+        if let Ok(thread_doc) = read_codex_app_server_thread(&project, &request.session_id) {
+            let thread = thread_doc.get("thread").unwrap_or(&thread_doc);
+            if !session_value_belongs_to_project(thread, &project) {
+                bail!("session not found in project: {}", request.session_id);
+            }
+        }
+        return codex_turn_interrupt_success(project, request.session_id, turn_id);
+    }
+
     let thread = read_codex_app_server_thread(&project, &request.session_id)?;
     let thread = thread.get("thread").unwrap_or(&thread);
     if !session_value_belongs_to_project(thread, &project) {
         bail!("session not found in project: {}", request.session_id);
     }
-    let provider_result = interrupt_codex_app_server_turn(&project, &request.session_id, turn_id)?;
+    let turn_id = find_interruptible_codex_turn_id(thread)
+        .ok_or_else(|| anyhow!("turn_id is required for codex turn interrupt"))?;
+    codex_turn_interrupt_success(project, request.session_id, turn_id)
+}
+
+fn codex_turn_interrupt_success(
+    project: PathBuf,
+    session_id: String,
+    turn_id: String,
+) -> Result<AgentTurnInterruptSuccess> {
+    let provider_result = interrupt_codex_app_server_turn(&project, &session_id, &turn_id)?;
     Ok(AgentTurnInterruptSuccess {
         ok: true,
         interface_version: AGENT_SESSION_INTERFACE_VERSION,
         source: Agent::Codex,
         project: project.to_string_lossy().to_string(),
-        session_id: request.session_id,
-        turn_id: Some(turn_id.to_string()),
+        session_id,
+        turn_id: Some(turn_id),
         status: "interrupted".to_string(),
         provider: provider_metadata_with_history(Agent::Codex, "codex_app_server_turn_interrupt"),
         provider_result: Some(provider_result),
     })
+}
+
+fn find_interruptible_codex_turn_id(thread: &Value) -> Option<String> {
+    let turns = thread.get("turns").and_then(Value::as_array)?;
+    turns
+        .iter()
+        .rev()
+        .find(|turn| turn_is_in_progress(turn))
+        .and_then(turn_id_from_value)
+        .or_else(|| turns.iter().rev().find_map(turn_id_from_value))
+}
+
+fn turn_is_in_progress(turn: &Value) -> bool {
+    let status = text_at(turn, &["/status", "/status/type", "/status/state"])
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    status.contains("inprogress") || status.contains("running")
+}
+
+fn turn_id_from_value(turn: &Value) -> Option<String> {
+    text_at(turn, &["/id", "/turnId", "/turn_id", "/turn/id"]).map(str::to_string)
+}
+
+fn text_at<'a>(value: &'a Value, paths: &[&str]) -> Option<&'a str> {
+    paths
+        .iter()
+        .filter_map(|path| value.pointer(path).and_then(Value::as_str))
+        .find(|text| !text.trim().is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn finds_in_progress_codex_turn_id_for_interrupt_fallback() {
+        let thread = json!({
+            "turns": [
+                { "id": "turn-old", "status": "completed" },
+                { "id": "turn-live", "status": "inProgress" }
+            ]
+        });
+        assert_eq!(
+            find_interruptible_codex_turn_id(&thread).as_deref(),
+            Some("turn-live")
+        );
+    }
+
+    #[test]
+    fn falls_back_to_latest_codex_turn_id_when_status_is_missing() {
+        let thread = json!({
+            "turns": [
+                { "id": "turn-old" },
+                { "id": "turn-latest" }
+            ]
+        });
+        assert_eq!(
+            find_interruptible_codex_turn_id(&thread).as_deref(),
+            Some("turn-latest")
+        );
+    }
 }
 
 fn run_session_turn(

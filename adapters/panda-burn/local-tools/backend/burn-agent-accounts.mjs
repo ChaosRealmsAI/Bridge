@@ -161,6 +161,7 @@ export function createAccountCommands(deps) {
       api_provider: cleanText(auth.api_provider),
       subscription_type: cleanText(auth.subscription_type),
       quota: availabilityQuotaSummary(quota),
+      stale_evidence: quota.stale_evidence || null,
     });
   }
 

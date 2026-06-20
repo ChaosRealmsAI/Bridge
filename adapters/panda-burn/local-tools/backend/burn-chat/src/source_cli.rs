@@ -268,7 +268,10 @@ fn print_json_line<T: Serialize>(value: &T) {
 fn progress_printer(source: Agent) -> impl FnMut(&Value) {
     let mut seq: u64 = 0;
     move |event| {
-        for block in display_blocks_from_event(source, event) {
+        let blocks = display_blocks_from_event(source, event);
+        let session_id = turn_handle_session_id(event);
+        let turn_id = turn_handle_turn_id(event);
+        if blocks.is_empty() && session_id.is_some() && turn_id.is_some() {
             seq += 1;
             print_json_line(&json!({
                 "ok": true,
@@ -276,10 +279,63 @@ fn progress_printer(source: Agent) -> impl FnMut(&Value) {
                 "schema": "burn.agent.turn.event.v1",
                 "source": source,
                 "seq": seq,
-                "status": "streaming",
+                "status": event_status(event),
+                "session_id": session_id,
+                "turn_id": turn_id,
+                "block": null,
+                "raw_json": event,
+            }));
+            return;
+        }
+        for block in blocks {
+            seq += 1;
+            print_json_line(&json!({
+                "ok": true,
+                "type": "progress",
+                "schema": "burn.agent.turn.event.v1",
+                "source": source,
+                "seq": seq,
+                "status": event_status(event),
+                "session_id": session_id,
+                "turn_id": turn_id,
                 "block": block,
                 "raw_json": event,
             }));
         }
     }
+}
+
+fn event_status(event: &Value) -> &'static str {
+    match event.get("method").and_then(Value::as_str) {
+        Some("turn/started") => "started",
+        Some("turn/completed") => "completed",
+        _ => "streaming",
+    }
+}
+
+fn turn_handle_session_id(event: &Value) -> Option<&str> {
+    text_at(
+        event,
+        &[
+            "/params/threadId",
+            "/params/turn/threadId",
+            "/session_id",
+            "/sessionId",
+            "/threadId",
+        ],
+    )
+}
+
+fn turn_handle_turn_id(event: &Value) -> Option<&str> {
+    text_at(
+        event,
+        &["/params/turn/id", "/params/turnId", "/turn_id", "/turnId"],
+    )
+}
+
+fn text_at<'a>(event: &'a Value, paths: &[&str]) -> Option<&'a str> {
+    paths
+        .iter()
+        .filter_map(|path| event.pointer(path).and_then(Value::as_str))
+        .find(|text| !text.trim().is_empty())
 }

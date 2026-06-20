@@ -18,7 +18,18 @@ for (const name of ["burn-chat", "burn-monitor"]) {
   copyFileSync(source, resolve(binDir, binary));
 }
 
-if (!existsSync(resolve(chatRoot, "node_modules"))) {
+// Install the burn-chat runtime deps (the Claude Agent SDK) when missing.
+// Guard on the actual SDK package, not just node_modules/ — a partial or
+// interrupted prior install otherwise leaves Claude turns broken at runtime.
+// `--ignore-scripts` is verified safe: the SDK imports without postinstall.
+const claudeSdkManifest = resolve(
+  chatRoot,
+  "node_modules",
+  "@anthropic-ai",
+  "claude-agent-sdk",
+  "package.json",
+);
+if (!existsSync(claudeSdkManifest)) {
   run("npm", ["ci", "--omit=dev", "--ignore-scripts"], { cwd: chatRoot });
 }
 

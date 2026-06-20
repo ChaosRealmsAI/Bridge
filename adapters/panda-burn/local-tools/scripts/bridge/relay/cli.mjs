@@ -1,10 +1,12 @@
 import { execFile, spawn } from "node:child_process";
+import { env as processEnv } from "node:process";
 import { createInterface } from "node:readline";
 import { cleanText, parseJsonObject } from "./utils.mjs";
 
 export function execCommand(command, args, options) {
+  const execOptions = optionsWithCommonCliPath(options);
   return new Promise((resolveExec, rejectExec) => {
-    execFile(command, args, options, (error, stdout, stderr) => {
+    execFile(command, args, execOptions, (error, stdout, stderr) => {
       if (error) {
         const wrapped = new Error(stderr.trim() || error.message);
         wrapped.code = error.code;
@@ -34,11 +36,14 @@ export function runCliJsonStream(context, args, options, onProgress) {
     stream: true,
   });
   return new Promise((resolveStream, rejectStream) => {
+    const spawnOptions = optionsWithCommonCliPath(options);
     const child = spawn(context.cli, args, {
-      cwd: options?.cwd,
-      env: options?.env,
+      cwd: spawnOptions.cwd,
+      env: spawnOptions.env,
+      detached: true,
       stdio: ["ignore", "pipe", "pipe"],
     });
+    options?.onChild?.(child);
     let stderr = "";
     let finalData = null;
     let stdoutTail = "";
@@ -49,7 +54,7 @@ export function runCliJsonStream(context, args, options, onProgress) {
     const timer = timeoutMs > 0
       ? setTimeout(() => {
         timedOut = true;
-        child.kill("SIGTERM");
+        terminateProcessTree(child, "SIGTERM");
       }, timeoutMs)
       : null;
 
@@ -68,7 +73,7 @@ export function runCliJsonStream(context, args, options, onProgress) {
         value = JSON.parse(trimmed);
       } catch (error) {
         rejectOnce(new Error(`invalid JSONL from burn CLI: ${error.message}; line=${trimmed.slice(0, 400)}`));
-        child.kill("SIGTERM");
+        terminateProcessTree(child, "SIGTERM");
         return;
       }
       if (value?.type === "progress" || value?.schema === "burn.agent.turn.event.v1") {
@@ -100,6 +105,14 @@ export function runCliJsonStream(context, args, options, onProgress) {
         rejectOnce(error);
         return;
       }
+      if (options?.wasInterrupted?.()) {
+        const error = new Error("agent turn interrupted");
+        error.code = "EINTERRUPTED";
+        error.signal = signal || "SIGTERM";
+        error.killed = true;
+        rejectOnce(error);
+        return;
+      }
       if (code !== 0) {
         const error = new Error(stderr.trim() || stdoutTail.trim() || `burn CLI exited with ${code}`);
         error.code = code;
@@ -124,8 +137,55 @@ export function runCliJsonStream(context, args, options, onProgress) {
   });
 }
 
+export function optionsWithCommonCliPath(options = {}) {
+  const suppliedEnv = options?.env && typeof options.env === "object" ? options.env : {};
+  const pathSeed = Object.prototype.hasOwnProperty.call(suppliedEnv, "PATH")
+    ? suppliedEnv.PATH
+    : processEnv.PATH;
+  const inputEnv = { ...processEnv, ...suppliedEnv };
+  return {
+    ...options,
+    env: {
+      ...inputEnv,
+      PATH: pathWithCommonCliDirs(pathSeed),
+    },
+  };
+}
+
+export function pathWithCommonCliDirs(pathValue) {
+  const parts = String(pathValue || "").split(":").filter(Boolean);
+  for (const dir of ["/usr/bin", "/bin", "/usr/sbin", "/sbin", "/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin", "/usr/local/sbin"]) {
+    if (!parts.includes(dir)) parts.push(dir);
+  }
+  return parts.join(":");
+}
+
+export function terminateProcessTree(child, signal = "SIGTERM") {
+  if (!child || !child.pid) return false;
+  let signaled = false;
+  try {
+    process.kill(-child.pid, signal);
+    signaled = true;
+  } catch {
+    try {
+      child.kill(signal);
+      signaled = true;
+    } catch {
+      signaled = false;
+    }
+  }
+  return signaled;
+}
+
 export function parseCliError(error, fallbackCode) {
   const raw = cleanText(error?.message || error);
+  if (error?.code === "EINTERRUPTED") {
+    return {
+      code: "chat_interrupted",
+      causeCode: cleanText(error?.signal || error?.code || ""),
+      message: "agent turn interrupted",
+    };
+  }
   if (error?.code === "ETIMEDOUT" || error?.killed === true) {
     return {
       code: "chat_timeout",

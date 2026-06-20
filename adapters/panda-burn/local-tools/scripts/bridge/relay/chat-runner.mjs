@@ -14,11 +14,17 @@ export async function runBurnSessionsShow(command, context) {
   const projectInput = cleanText(input.project_path || input.project || input.cwd || "");
   if (!projectInput) throw new Error("missing_project");
   const project = await resolveAuthorizedProject(projectInput, context.root, authorizedProjectRoots(context));
-  const args = ["sessions", "show", "--id", sessionId, "--project", project, "--json"];
+  const profileId = cleanText(input.profile_id || input.profileId);
+  const agent = cleanText(input.agent || input.source);
+  const profileAware = Boolean(profileId && agent);
+  const args = profileAware
+    ? ["agent", "source", "session", "show", "--source", agent, "--project", project, "--session-id", sessionId, "--profile-id", profileId, "--json"]
+    : ["sessions", "show", "--id", sessionId, "--project", project, "--json"];
   const cursor = Number(input.cursor || 0);
   const limit = Number(input.limit || 80);
   if (Number.isFinite(cursor) && cursor > 0) args.push("--cursor", String(Math.floor(cursor)));
   if (Number.isFinite(limit) && limit > 0) args.push("--limit", String(Math.floor(limit)));
+  if (profileAware && (input.latest === true || cleanText(input.order) === "latest")) args.push("--latest");
   try {
     const stdout = await runCli(context, args, { cwd: project, timeout: 30000, maxBuffer: 16 * 1024 * 1024 });
     return { ok: true, version: "burn-relay-v1", type: command.type, request_id: command.request_id || null, data: JSON.parse(stdout) };

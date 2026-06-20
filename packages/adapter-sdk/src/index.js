@@ -337,6 +337,38 @@ export function bridgeRelayKeyForEnvelope(envelope, relayKeys, defaultKeyBytes =
   return keyBytes;
 }
 
+function bridgeRelayKeyScopeFromAuthorizationContext(context = {}) {
+  const normalized = normalizeBridgeAuthorizationContext(context);
+  return bridgeRelayKeyScope(
+    normalized.product_id,
+    normalized.device_id,
+    normalized.authorization_id,
+    normalized.authorization_epoch,
+    normalized.relay_key_id,
+  );
+}
+
+function bridgeRelayScopedValueForEnvelope(envelope, scopedValues, defaultValue = null) {
+  const context = bridgeRelayKeyContextFromEnvelope(envelope);
+  const scoped = bridgeRelayKeyScope(
+    envelope?.product_id,
+    envelope?.device_id,
+    context.authorization_id,
+    context.authorization_epoch,
+    context.relay_key_id,
+  );
+  if (scopedValues?.has?.(scoped)) return scopedValues.get(scoped);
+  const product = bridgeRelayKeyScope(
+    envelope?.product_id,
+    "",
+    context.authorization_id,
+    context.authorization_epoch,
+    context.relay_key_id,
+  );
+  if (scopedValues?.has?.(product)) return scopedValues.get(product);
+  return defaultValue;
+}
+
 export async function createBridgeProductAdapterRuntime(options = {}) {
   const productId = cleanScalar(options.productId || options.product_id);
   if (!productId) throw new Error("product_id_required");
@@ -352,6 +384,8 @@ export async function createBridgeProductAdapterRuntime(options = {}) {
   const calls = [];
   const executions = [];
   const errors = [];
+  const authorizationMirrorsByRelayScope = new Map();
+  const activeRelayContextsByRelayScope = new Map();
   let authorizationMirror = normalizeAuthorizationMirror(options.authorizationMirror);
   let activeRelayContext = null;
   if ((options.requireAuthorizationMirror || false) && !authorizationMirror) {
@@ -375,11 +409,17 @@ export async function createBridgeProductAdapterRuntime(options = {}) {
       if (request.method === "POST" && url.pathname === "/v1/relay-key/bootstrap") {
         const bootstrap = await readJson(request);
         const imported = await importBridgeRelayKeyBootstrap(bootstrap, relayKeyState.keyPair.privateKey);
+        const relayScope = bridgeRelayKeyScopeFromAuthorizationContext(imported);
         const bootstrapMirror = authorizationMirrorFromBootstrap(bootstrap, imported);
-        const contextMirror = mirrorHasCompleteAuthorizationContext(authorizationMirror) ? authorizationMirror : bootstrapMirror;
-        const contextDenial = bridgeAdapterAuthorizationContextDenial(imported, contextMirror);
+        const scopedMirror = authorizationMirrorsByRelayScope.get(relayScope) || null;
+        const scopedRelayContext = activeRelayContextsByRelayScope.get(relayScope) || null;
+        const contextMirror = scopedMirror
+          || bootstrapMirror
+          || (mirrorHasCompleteAuthorizationContext(authorizationMirror) ? authorizationMirror : null);
+        const contextDenial = bridgeAdapterAuthorizationContextDenial(imported, contextMirror, scopedRelayContext);
         if (contextDenial) throw new Error(contextDenial.error);
-        authorizationMirror = selectRuntimeAuthorizationMirror(options, authorizationMirror, bootstrapMirror, imported);
+        const selectedMirror = selectRuntimeAuthorizationMirror(options, authorizationMirror, bootstrapMirror, imported);
+        authorizationMirror = selectedMirror;
         relayKeys.set(bridgeRelayKeyScope(
           imported.product_id,
           imported.device_id,
@@ -387,7 +427,9 @@ export async function createBridgeProductAdapterRuntime(options = {}) {
           imported.authorization_epoch,
           imported.key_id,
         ), imported.keyBytes);
-        activeRelayContext = imported;
+        if (selectedMirror) authorizationMirrorsByRelayScope.set(relayScope, cloneObject(selectedMirror));
+        activeRelayContext = { ...imported };
+        activeRelayContextsByRelayScope.set(relayScope, activeRelayContext);
         return writeJson(response, 200, {
           ok: true,
           status: "ready",
@@ -403,7 +445,13 @@ export async function createBridgeProductAdapterRuntime(options = {}) {
       }
 
       const envelope = await readJson(request);
-      const contextDenial = bridgeAdapterAuthorizationContextDenial(bridgeRelayContextFromEnvelope(envelope), authorizationMirror, activeRelayContext);
+      const envelopeAuthorizationMirror = bridgeRelayScopedValueForEnvelope(envelope, authorizationMirrorsByRelayScope, authorizationMirror);
+      const envelopeActiveRelayContext = bridgeRelayScopedValueForEnvelope(envelope, activeRelayContextsByRelayScope, activeRelayContext);
+      const contextDenial = bridgeAdapterAuthorizationContextDenial(
+        bridgeRelayContextFromEnvelope(envelope),
+        envelopeAuthorizationMirror,
+        envelopeActiveRelayContext,
+      );
       if (contextDenial) throw new Error(contextDenial.error);
       const keyBytes = bridgeRelayKeyForEnvelope(envelope, relayKeys, defaultKeyBytes);
       const cached = responseCache.get(envelope);
@@ -430,14 +478,22 @@ export async function createBridgeProductAdapterRuntime(options = {}) {
             schema_id: schemaId,
           });
           progressEnvelopes.push(progressEnvelope);
+          if (typeof options.onProgressEnvelope === "function") {
+            await options.onProgressEnvelope({
+              requestEnvelope: envelope,
+              progressEnvelope,
+              payload,
+              command,
+            });
+          }
           return progressEnvelope;
         };
         const payload = await options.dispatch(command, {
           ...(options.dispatchContext || {}),
           envelope,
           keyBytes,
-          authorizationMirror,
-          activeRelayContext,
+          authorizationMirror: envelopeAuthorizationMirror,
+          activeRelayContext: envelopeActiveRelayContext,
           emitProgress,
         });
         const responseEnvelope = await encryptBridgeRelayResponseEnvelope(envelope, payload, keyBytes, {
@@ -487,6 +543,10 @@ export async function createBridgeProductAdapterRuntime(options = {}) {
     },
     setAuthorizationMirror(next) {
       authorizationMirror = normalizeAuthorizationMirror(next);
+      const context = bridgeAuthorizationContextFromMirror(authorizationMirror);
+      if (context.relay_key_id && ["product_id", "device_id", "authorization_id", "authorization_epoch"].every((field) => Boolean(context[field]))) {
+        authorizationMirrorsByRelayScope.set(bridgeRelayKeyScopeFromAuthorizationContext(context), cloneObject(authorizationMirror));
+      }
     },
     get activeRelayContext() {
       return activeRelayContext;

@@ -24,13 +24,29 @@ USAGE
 }
 bin() {
   local name="$1"
-  if [ -x "$BIN/$name" ]; then
-    printf '%s\n' "$BIN/$name"
-  elif [ -x "$DEV_BIN/$name" ]; then
-    printf '%s\n' "$DEV_BIN/$name"
-  else
-    command -v "$name"
+	  if [ -x "$BIN/$name" ]; then
+	    printf '%s\n' "$BIN/$name"
+	  elif [ -x "$DEV_BIN/$name" ]; then
+	    printf '%s\n' "$DEV_BIN/$name"
+	  elif command -v "$name" >/dev/null 2>&1; then
+	    command -v "$name"
+	  else
+	    return 1
+	  fi
+	}
+rust_exec() {
+  local name="$1"
+  local manifest="$2"
+  shift 2
+  local target
+  if target="$(bin "$name")"; then
+    exec "$target" "$@"
   fi
+  if command -v cargo >/dev/null 2>&1; then
+    exec cargo run --quiet --manifest-path "$DIR/$manifest" -- "$@"
+  fi
+  echo "{\"ok\":false,\"error\":\"missing $name binary and cargo fallback\",\"code\":\"burn_cli_missing_rust_tool\"}" >&2
+  exit 127
 }
 node_bin() {
   if [ -n "${BURN_NODE:-}" ] && [ -x "$BURN_NODE" ]; then
@@ -51,11 +67,11 @@ sub="${1:-}"; [ $# -gt 0 ] && shift || true
 NODE_BIN="$(node_bin)"
 case "$sub" in
   ""|-h|--help|help)   usage ;;
-  sessions)            exec "$(bin burn-monitor)" "$@" ;;
+	  sessions)            rust_exec burn-monitor burn-monitor/Cargo.toml "$@" ;;
   store)               exec "$NODE_BIN" "$DIR/burn-store.mjs" "$@" ;;
   project)             exec "$NODE_BIN" "$DIR/burn-project.mjs" "$@" ;;
-  chat)                exec "$(bin burn-chat)" send "$@" ;;
-  source|sources)      exec "$(bin burn-chat)" "$sub" "$@" ;;
+	  chat)                rust_exec burn-chat burn-chat/Cargo.toml send "$@" ;;
+	  source|sources)      rust_exec burn-chat burn-chat/Cargo.toml "$sub" "$@" ;;
   agent)               exec "$NODE_BIN" "$DIR/burn-agent.mjs" "$@" ;;
   action)              exec "$NODE_BIN" "$DIR/burn-actions.mjs" "$@" ;;
   *) echo "{\"ok\":false,\"error\":\"unknown burn command: $sub\",\"code\":\"burn_cli_usage\"}" >&2; usage >&2; exit 2 ;;

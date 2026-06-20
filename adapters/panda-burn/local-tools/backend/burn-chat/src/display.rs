@@ -45,6 +45,16 @@ pub struct DisplayBlock {
     pub items: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub raw_json: Option<String>,
+    // Unified-merge fields (phone reconciles interface-live vs JSONL-truth by these).
+    // All Option + skip_serializing_if=None: older clients that ignore them are unaffected.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub block_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<usize>,
 }
 
 pub(crate) struct DisplayBuilder {
@@ -54,6 +64,9 @@ pub(crate) struct DisplayBuilder {
     pub(crate) skipped: usize,
     pub(crate) paths: BTreeSet<String>,
     pub(crate) next_id: usize,
+    // "live" = interface stream (display_blocks_from_event / from_values);
+    // "truth" = JSONL transcript (display_builder_from_jsonl). None = unset.
+    pub(crate) origin: Option<&'static str>,
 }
 
 pub fn parse_agent_display_from_jsonl(agent: Agent, contents: &str, reply: &str) -> ChatDisplay {
@@ -64,6 +77,7 @@ pub fn parse_agent_display_from_jsonl(agent: Agent, contents: &str, reply: &str)
 
 pub fn display_blocks_from_event(agent: Agent, value: &Value) -> Vec<DisplayBlock> {
     let mut builder = DisplayBuilder::new(agent);
+    builder.origin = Some("live");
     match agent {
         Agent::Claude => add_claude_event_block(&mut builder, value),
         Agent::Codex => add_codex_event_block(&mut builder, value),
@@ -122,6 +136,7 @@ fn display_builder_from_values(agent: Agent, values: &[Value], reply: &str) -> D
         .unwrap_or_else(|| values.len().saturating_sub(120));
 
     let mut builder = DisplayBuilder::new(agent);
+    builder.origin = Some("live");
     for value in values.iter().skip(start) {
         match agent {
             Agent::Claude => add_claude_event_block(&mut builder, value),
@@ -149,6 +164,7 @@ fn display_builder_from_jsonl(agent: Agent, contents: &str, reply: &str) -> Disp
         .unwrap_or_else(|| values.len().saturating_sub(120));
 
     let mut builder = DisplayBuilder::new(agent);
+    builder.origin = Some("truth");
     builder.skipped = skipped;
     for value in values.iter().skip(start) {
         match agent {
@@ -182,6 +198,16 @@ impl DisplayBuilder {
             skipped: 0,
             paths: BTreeSet::new(),
             next_id: 1,
+            origin: None,
+        }
+    }
+
+    /// Attach a stable cross-source reconciliation key to the most recently
+    /// pushed block. Callers that know the provider event id (codex call_id /
+    /// item id, claude tool_use id) call this immediately after `push`.
+    pub(crate) fn set_last_block_stable_key(&mut self, key: impl Into<String>) {
+        if let Some(block) = self.blocks.last_mut() {
+            block.block_id = Some(key.into());
         }
     }
 
@@ -272,6 +298,10 @@ impl DisplayBuilder {
             detail: detail.map(|value| tail_text(&value, 4_000)),
             items,
             raw_json,
+            block_id: None,
+            provider: Some(self.source.as_str().to_string()),
+            origin: self.origin.map(|value| value.to_string()),
+            cursor: None,
         }
     }
 

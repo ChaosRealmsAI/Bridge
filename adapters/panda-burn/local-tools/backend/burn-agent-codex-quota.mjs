@@ -224,7 +224,25 @@ function rateLimitWindows(limit, index) {
 function normalizeRateLimitWindow(limitId, kind, bucket) {
   if (!bucket || typeof bucket !== "object") return null;
   const used = firstNumber(bucket.usedPercent, bucket.used_percent, bucket.used_pct, bucket.percent);
-  return { limit_id: limitId, kind, used_percent: used, remaining_percent: used === null ? null : Math.max(0, 100 - used), window_minutes: firstNumber(bucket.windowDurationMins, bucket.window_duration_mins, bucket.window_minutes, bucket.windowMins), resets_at: normalizeTime(firstDefined(bucket.resetsAt, bucket.resets_at, bucket.resetAt, bucket.reset_at)) };
+  const remaining = firstNumber(bucket.remainingPercent, bucket.remaining_percent, bucket.remainingPercentage, bucket.remaining_percentage);
+  return {
+    limit_id: limitId,
+    kind,
+    used_percent: used,
+    remaining_percent: remaining === null ? used === null ? null : Math.max(0, 100 - used) : remaining,
+    window_minutes: firstNumber(
+      bucket.windowDurationMins,
+      bucket.windowDurationMinutes,
+      bucket.window_duration_mins,
+      bucket.window_duration_minutes,
+      bucket.window_minutes,
+      bucket.windowMinutes,
+      bucket.windowMins,
+      bucket.durationMinutes,
+      bucket.duration_minutes,
+    ),
+    resets_at: normalizeTime(firstDefined(bucket.resetsAt, bucket.resets_at, bucket.resetAt, bucket.reset_at)),
+  };
 }
 
 function normalizeCredits(root, rawLimits) {

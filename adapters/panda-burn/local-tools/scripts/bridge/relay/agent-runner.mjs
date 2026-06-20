@@ -2,7 +2,7 @@ import { env } from "node:process";
 import { appendChatMemoryEvent } from "../../../backend/burn-chat-memory-lib.mjs";
 import { agentAccountArgs } from "./agent-account-args.mjs";
 import { runUsageLedgerCommand } from "./agent-usage-ledger.mjs";
-import { parseCliError, runCli, runCliJsonStream } from "./cli.mjs";
+import { parseCliError, runCli, runCliJsonStream, terminateProcessTree } from "./cli.mjs";
 import { authorizedProjectRoots, resolveAuthorizedProject } from "./path-policy.mjs";
 import { cleanText, positiveNumber } from "./utils.mjs";
 
@@ -37,6 +37,7 @@ const AGENT_COMMANDS = new Set([
   "burn.agent.source.status",
   "burn.agent.sessions.list",
   "burn.agent.session.show",
+  "burn.agent.session.watch",
   "burn.agent.session.create",
   "burn.agent.session.continue",
   "burn.agent.turn.interrupt",
@@ -55,6 +56,13 @@ export async function runBurnAgentCommand(command, context) {
   const cwd = project
     ? await resolveAuthorizedProject(project, context.root, authorizedProjectRoots(context))
     : context.root;
+  if (command.type === "burn.agent.session.watch") {
+    return runAgentSessionWatch(command, input, cwd, context);
+  }
+  if (command.type === "burn.agent.turn.interrupt") {
+    const activeInterrupt = interruptActiveAgentTurn(command, input, cwd, context);
+    if (activeInterrupt) return activeInterrupt;
+  }
   await recordAgentMemory(context, command, input, cwd, {
     event_type: "user_prompt",
     role: "user",
@@ -65,11 +73,18 @@ export async function runBurnAgentCommand(command, context) {
   try {
     const args = await agentArgs(command.type, input, context);
     if (wantsStream(command.type, input)) {
+      const activeTurn = createActiveAgentTurn(context, command, input, cwd);
       const data = await runCliJsonStream(context, args, {
         cwd,
         timeout: positiveNumber(context.agentTimeoutMs, 60000),
         env: agentEnv(context),
-      }, (event) => emitAgentProgress(command, input, cwd, event, context));
+        wasInterrupted: () => activeTurn.status === "interrupted",
+        onChild: (child) => {
+          activeTurn.child = child;
+          activeTurn.pid = child.pid || 0;
+        },
+      }, (event) => emitAgentProgress(command, input, cwd, event, context, activeTurn))
+        .finally(() => cleanupActiveAgentTurn(context, activeTurn));
       await recordAgentMemory(context, command, input, cwd, {
         event_type: "assistant_final",
         role: "assistant",
@@ -205,6 +220,9 @@ async function agentArgs(type, input, context) {
     }
     return withProfile(args, input);
   }
+  if (type === "burn.agent.session.watch") {
+    return withProfile(await sessionShowArgs(source, input, context), input);
+  }
   if (type === "burn.agent.session.create") {
     return turnArgs("create", source, input, context);
   }
@@ -229,6 +247,133 @@ async function agentArgs(type, input, context) {
     return withProfile(args, input);
   }
   throw new Error("agent_command_not_allowed");
+}
+
+async function sessionShowArgs(source, input, context) {
+  const args = [
+    "source",
+    "session",
+    "show",
+    "--source",
+    source,
+    "--project",
+    await resolvedProject(input, context),
+    "--session-id",
+    required(input.session_id || input.id, "session_id"),
+    "--cursor",
+    String(cursor(input)),
+    "--limit",
+    String(limit(input, 1)),
+    "--json",
+  ];
+  if (input.latest === true || input.latest !== false || cleanText(input.order) === "latest") {
+    args.splice(args.length - 1, 0, "--latest");
+  }
+  return args;
+}
+
+async function runAgentSessionWatch(command, input, cwd, context) {
+  const source = required(input.source, "source");
+  const sessionId = required(input.session_id || input.id, "session_id");
+  const project = await resolvedProject(input, context);
+  const leaseMs = Math.max(5000, Math.min(positiveNumber(input.lease_ms || input.leaseMs, 30000), 120000));
+  const intervalMs = Math.max(750, Math.min(positiveNumber(input.interval_ms || input.intervalMs, 2000), 10000));
+  const startedAt = Date.now();
+  const deadline = startedAt + leaseMs;
+  let lastCursor = Math.max(0, positiveNumber(input.cursor, 0));
+  let lastTotal = Math.max(0, positiveNumber(input.total_messages || input.totalMessages || input.total, 0));
+  let lastFingerprint = "";
+  let emitted = 0;
+
+  while (Date.now() < deadline) {
+    const page = await readSessionWatchPage(source, input, project, cwd, context);
+    const cursorNow = pageCursor(page);
+    const totalNow = pageTotal(page);
+    const fingerprint = `${cursorNow}:${totalNow}:${cleanText(page.transcript_path)}:${page.messages?.length || 0}`;
+    const changed = lastFingerprint
+      ? fingerprint !== lastFingerprint
+      : cursorNow > lastCursor || (lastTotal > 0 && totalNow > lastTotal);
+    lastFingerprint = fingerprint;
+    if (changed) {
+      lastCursor = Math.max(lastCursor, cursorNow);
+      lastTotal = Math.max(lastTotal, totalNow);
+      emitted += 1;
+      await emitSessionWatchProgress(command, input, context, {
+        schema: "burn.agent.session.watch.event.v1",
+        source,
+        project,
+        session_id: sessionId,
+        profile_id: cleanText(input.profile_id || input.profileId),
+        cursor: cursorNow,
+        total_messages: totalNow,
+        transcript_path: cleanText(page.transcript_path),
+        reason: "jsonl_changed",
+      });
+    }
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    await delay(Math.min(intervalMs, remaining));
+  }
+
+  return {
+    ok: true,
+    version: "burn-relay-v1",
+    type: command.type,
+    request_id: command.request_id || null,
+    data: {
+      schema: "burn.agent.session.watch.final.v1",
+      source,
+      project,
+      session_id: sessionId,
+      profile_id: cleanText(input.profile_id || input.profileId),
+      cursor: lastCursor,
+      total_messages: lastTotal,
+      emitted,
+      status: "lease_expired",
+    },
+  };
+}
+
+async function readSessionWatchPage(source, input, project, cwd, context) {
+  const args = withProfile(await sessionShowArgs(source, {
+    ...input,
+    project,
+    cursor: 0,
+    limit: 1,
+    latest: true,
+  }, context), input);
+  const stdout = await runCli(context, args, {
+    cwd,
+    timeout: 30000,
+    maxBuffer: 16 * 1024 * 1024,
+    env: agentEnv(context),
+  });
+  return JSON.parse(stdout);
+}
+
+async function emitSessionWatchProgress(command, input, context, data) {
+  if (typeof context.emitProgress !== "function") return;
+  await context.emitProgress({
+    ok: true,
+    version: "burn-relay-v1",
+    type: command.type,
+    request_id: command.request_id || null,
+    progress: true,
+    schema: "burn.agent.session.watch.event.v1",
+    data,
+  });
+}
+
+function pageCursor(page) {
+  return Math.max(0, positiveNumber(page?.cursor ?? page?.page?.cursor, 0));
+}
+
+function pageTotal(page) {
+  return Math.max(0, positiveNumber(page?.total_messages ?? page?.total ?? page?.page?.total, 0));
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function turnArgs(kind, source, input, context) {
@@ -304,7 +449,46 @@ function wantsStream(type, input) {
   return input.stream === true || input.json_stream === true || input.jsonStream === true;
 }
 
-async function emitAgentProgress(command, input, project, event, context) {
+function agentEventSessionId(event) {
+  const raw = objectValue(event.raw_json);
+  return firstText([
+    event.session_id,
+    event.sessionId,
+    raw?.session_id,
+    raw?.sessionId,
+    raw?.params?.threadId,
+    raw?.params?.turn?.threadId,
+    raw?.result?.thread?.id,
+    raw?.result?.threadId,
+  ]);
+}
+
+function agentEventTurnId(event) {
+  const raw = objectValue(event.raw_json);
+  return firstText([
+    event.turn_id,
+    event.turnId,
+    raw?.turn_id,
+    raw?.turnId,
+    raw?.params?.turn?.id,
+    raw?.params?.turnId,
+    raw?.result?.turn?.id,
+  ]);
+}
+
+function firstText(values) {
+  for (const value of values) {
+    const text = cleanText(value);
+    if (text) return text;
+  }
+  return "";
+}
+
+function objectValue(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : null;
+}
+
+async function emitAgentProgress(command, input, project, event, context, activeTurn = null) {
   const commandId = cleanText(input.command_id || input.commandId || command.request_id);
   const source = cleanText(input.source);
   const progress = {
@@ -314,9 +498,12 @@ async function emitAgentProgress(command, input, project, event, context) {
     project,
     seq: positiveNumber(event.seq, 0),
     status: cleanText(event.status) || "streaming",
+    session_id: agentEventSessionId(event),
+    turn_id: agentEventTurnId(event),
     block: event.block || null,
     raw_json: event.raw_json || null,
   };
+  updateActiveAgentTurn(context, activeTurn, progress);
   await recordAgentMemory(context, command, input, project, {
     event_type: "agent_progress",
     role: "assistant",
@@ -336,6 +523,118 @@ async function emitAgentProgress(command, input, project, event, context) {
     progress: true,
     data: progress,
   });
+}
+
+function createActiveAgentTurn(context, command, input, project) {
+  const commandId = cleanText(input.command_id || input.commandId || command.request_id);
+  const entry = {
+    source: cleanText(input.source),
+    project: String(project || ""),
+    commandId,
+    sessionId: cleanText(input.session_id || input.sessionId || input.id),
+    turnId: "",
+    child: null,
+    pid: 0,
+    status: "running",
+    aliases: new Set(),
+    started_at: new Date().toISOString(),
+  };
+  registerActiveAgentTurn(context, entry);
+  return entry;
+}
+
+function updateActiveAgentTurn(context, entry, progress) {
+  if (!entry) return;
+  const sessionId = cleanText(progress.session_id || progress.sessionId);
+  const turnId = cleanText(progress.turn_id || progress.turnId);
+  if (sessionId) entry.sessionId = sessionId;
+  if (turnId) entry.turnId = turnId;
+  registerActiveAgentTurn(context, entry);
+}
+
+function registerActiveAgentTurn(context, entry) {
+  const registry = activeAgentTurnRegistry(context);
+  for (const key of activeAgentTurnKeys(entry)) {
+    entry.aliases.add(key);
+    registry.set(key, entry);
+  }
+}
+
+function cleanupActiveAgentTurn(context, entry) {
+  if (!entry) return;
+  entry.status = entry.status === "interrupted" ? "interrupted" : "closed";
+  const registry = activeAgentTurnRegistry(context);
+  for (const key of entry.aliases) {
+    if (registry.get(key) === entry) registry.delete(key);
+  }
+}
+
+function interruptActiveAgentTurn(command, input, project, context) {
+  const source = cleanText(input.source);
+  const sessionId = cleanText(input.session_id || input.sessionId || input.id);
+  const turnId = cleanText(input.turn_id || input.turnId);
+  const commandId = cleanText(input.command_id || input.commandId);
+  const entry = findActiveAgentTurn(context, { source, project: String(project || ""), sessionId, turnId, commandId });
+  if (!entry) return null;
+  entry.status = "interrupted";
+  entry.interrupted_at = new Date().toISOString();
+  const signaled = terminateProcessTree(entry.child, "SIGTERM");
+  setTimeout(() => terminateProcessTree(entry.child, "SIGKILL"), 2500).unref?.();
+  return {
+    ok: true,
+    version: "burn-relay-v1",
+    type: command.type,
+    request_id: command.request_id || null,
+    data: {
+      ok: true,
+      interface_version: "burn-agent-session-v1",
+      source,
+      project: entry.project,
+      session_id: sessionId || entry.sessionId,
+      turn_id: turnId || entry.turnId || null,
+      status: "interrupted",
+      provider: {
+        runtime: "burn_adapter_active_process",
+        transport: "local_process_signal",
+      },
+      provider_result: {
+        reason: "active_agent_turn_process_signalled",
+        pid: entry.pid || null,
+        signaled,
+      },
+    },
+  };
+}
+
+function findActiveAgentTurn(context, query) {
+  const registry = activeAgentTurnRegistry(context);
+  for (const key of activeAgentTurnQueryKeys(query)) {
+    const entry = registry.get(key);
+    if (entry) return entry;
+  }
+  return null;
+}
+
+function activeAgentTurnKeys(entry) {
+  return activeAgentTurnQueryKeys(entry).filter(Boolean);
+}
+
+function activeAgentTurnQueryKeys({ source, project, sessionId, turnId, commandId }) {
+  const s = cleanText(source);
+  const p = String(project || "");
+  const sid = cleanText(sessionId);
+  const tid = cleanText(turnId);
+  const cid = cleanText(commandId);
+  return [
+    tid && sid ? `turn:${s}:${p}:${sid}:${tid}` : "",
+    sid ? `session:${s}:${p}:${sid}` : "",
+    cid ? `command:${s}:${p}:${cid}` : "",
+  ].filter(Boolean);
+}
+
+function activeAgentTurnRegistry(context) {
+  if (!context.activeAgentTurns) context.activeAgentTurns = new Map();
+  return context.activeAgentTurns;
 }
 
 async function recordAgentMemory(context, command, input, project, event) {

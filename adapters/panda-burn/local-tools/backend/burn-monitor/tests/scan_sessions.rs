@@ -5,7 +5,7 @@ use chrono::Utc;
 use std::fs;
 use std::time::{Duration, SystemTime};
 use support::{
-    TempHome, assert_project_rollup, path_string, set_modified, write_claude_fixture,
+    TempHome, assert_project_rollup, path_string, session_ids, set_modified, write_claude_fixture,
     write_codex_fixture, write_file,
 };
 
@@ -55,6 +55,106 @@ fn scans_codex_and_claude_sessions_by_project() {
     assert_eq!(claude.agent, "claude");
     assert!(!claude.running);
     assert_eq!(claude.title, "I found the inactive session");
+}
+
+#[test]
+fn all_history_scan_includes_named_provider_roots() {
+    let temp = TempHome::new();
+    let project_path = temp.project("multi-root-project");
+    let project = path_string(&project_path);
+    let now = SystemTime::now();
+    let now_utc = chrono::DateTime::<Utc>::from(now);
+
+    let codex_default = write_codex_fixture(
+        &temp.path,
+        "codex-default-root",
+        &project,
+        "Default Codex root",
+    );
+    let codex_work = temp
+        .path
+        .join(".codex-work/sessions/2026/06/13/rollout-codex-work-root.jsonl");
+    write_file(
+        &codex_work,
+        &format!(
+            r#"{{"type":"session_meta","payload":{{"id":"codex-work-root","cwd":"{project}","timestamp":"2026-06-13T01:00:00Z"}}}}
+{{"type":"response_item","payload":{{"item":{{"type":"message","role":"user","content":[{{"type":"input_text","text":"Work Codex root"}}]}}}}}}"#
+        ),
+    );
+    let codex_r = temp
+        .path
+        .join(".codex-r-codex/sessions/2026/06/13/rollout-codex-r-root.jsonl");
+    write_file(
+        &codex_r,
+        &format!(
+            r#"{{"type":"session_meta","payload":{{"id":"codex-r-root","cwd":"{project}","timestamp":"2026-06-13T01:00:00Z"}}}}
+{{"type":"response_item","payload":{{"item":{{"type":"message","role":"user","content":[{{"type":"input_text","text":"R Codex root"}}]}}}}}}"#
+        ),
+    );
+    let claude_default = write_claude_fixture(
+        &temp.path,
+        "default-storage",
+        "claude-default-root",
+        &project,
+        "Default Claude root",
+    );
+    let claude_work = temp
+        .path
+        .join(".claude-work/projects/work-storage/claude-work-root.jsonl");
+    write_file(
+        &claude_work,
+        &format!(
+            r#"{{"type":"user","cwd":"{project}","sessionId":"claude-work-root","timestamp":"2026-06-13T02:00:00Z","message":{{"role":"user","content":[{{"type":"text","text":"Inspect work root"}}]}}}}
+{{"type":"assistant","cwd":"{project}","sessionId":"claude-work-root","timestamp":"2026-06-13T02:01:00Z","message":{{"role":"assistant","content":[{{"type":"text","text":"Work Claude root"}}]}}}}"#
+        ),
+    );
+
+    for path in [
+        codex_default,
+        codex_work,
+        codex_r,
+        claude_default,
+        claude_work,
+    ] {
+        set_modified(&path, now);
+    }
+
+    let report = scan_with_home_at(&temp.path, now_utc, 90);
+    let project_report = &report.by_project[0];
+
+    assert_eq!(report.scan_scope, "all_history");
+    assert_eq!(project_report.total, 5);
+    assert_eq!(
+        session_ids(project_report),
+        vec![
+            "claude-default-root",
+            "claude-work-root",
+            "codex-default-root",
+            "codex-r-root",
+            "codex-work-root",
+        ]
+    );
+    assert!(
+        report
+            .diagnostics
+            .source_roots
+            .iter()
+            .any(|root| root.ends_with(".codex-work/sessions"))
+    );
+    assert!(
+        report
+            .diagnostics
+            .source_roots
+            .iter()
+            .any(|root| root.ends_with(".codex-r-codex/sessions"))
+    );
+    assert!(
+        report
+            .diagnostics
+            .source_roots
+            .iter()
+            .any(|root| root.ends_with(".claude-work/projects"))
+    );
 }
 
 #[test]

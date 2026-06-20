@@ -13,11 +13,49 @@ pub use model::{
     Totals,
 };
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ScanScope {
+    AllHistory,
+    Configured,
+}
+
+impl ScanScope {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::AllHistory => "all_history",
+            Self::Configured => "configured",
+        }
+    }
+}
+
 pub fn scan() -> Report {
     let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
         return Report::empty(current_time());
     };
-    scan_configured_with_home(&home)
+    scan_with_home(&home)
+}
+
+pub fn scan_with_scope(scope: ScanScope) -> Report {
+    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+        return Report::empty(current_time());
+    };
+    scan_with_home_scope(&home, scope)
+}
+
+pub fn scan_with_home_scope(home: &Path, scope: ScanScope) -> Report {
+    scan_with_home_scope_at(home, scope, Utc::now(), scanner::running_window_secs())
+}
+
+pub fn scan_with_home_scope_at(
+    home: &Path,
+    scope: ScanScope,
+    now: DateTime<Utc>,
+    window_secs: i64,
+) -> Report {
+    match scope {
+        ScanScope::AllHistory => scan_with_home_at(home, now, window_secs),
+        ScanScope::Configured => scan_configured_with_home_at(home, now, window_secs),
+    }
 }
 
 pub fn scan_with_home(home: &Path) -> Report {
@@ -37,9 +75,16 @@ pub fn scan_configured_with_home_at(home: &Path, now: DateTime<Utc>, window_secs
 }
 
 pub fn source_roots() -> Vec<PathBuf> {
+    source_roots_for_scope(ScanScope::AllHistory)
+}
+
+pub fn source_roots_for_scope(scope: ScanScope) -> Vec<PathBuf> {
     std::env::var_os("HOME")
         .map(PathBuf::from)
-        .map(|home| scanner::configured_source_roots_from_home(&home))
+        .map(|home| match scope {
+            ScanScope::AllHistory => scanner::source_roots_from_home(&home),
+            ScanScope::Configured => scanner::configured_source_roots_from_home(&home),
+        })
         .unwrap_or_default()
 }
 

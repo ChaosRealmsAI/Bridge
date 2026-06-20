@@ -373,7 +373,7 @@ fn monitor_sessions(
     let project = std::fs::canonicalize(project).unwrap_or_else(|_| project.to_path_buf());
     let project_text = project.to_string_lossy().to_string();
     let source_name = source.as_str();
-    let sessions = burn_monitor::scan()
+    let sessions = burn_monitor::scan_with_scope(burn_monitor::ScanScope::Configured)
         .by_project
         .into_iter()
         .flat_map(|project| project.sessions.into_iter())

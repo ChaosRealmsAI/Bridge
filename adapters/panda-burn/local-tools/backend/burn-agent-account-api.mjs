@@ -31,6 +31,7 @@ export function createAccountApiCommands(deps, core) {
       const sourceProfile = profiles.find((profile) => profile.id === row.profile.id) || {};
       return { active_reason: cleanText(sourceProfile.active_reason), env_keys: activeEnvKeys(sourceProfile, cleanText), ...row };
     });
+    const active = accounts.find((row) => row.availability?.can_start_new_turn) || accounts[0] || null;
     return {
       ok: true,
       schema: "burn.agent.accounts.active.v1",
@@ -38,8 +39,16 @@ export function createAccountApiCommands(deps, core) {
       live_probe: live,
       source: source || "all",
       safety: accountAvailabilitySafetyPolicy(),
-      counts: accountAvailabilityCounts(accounts, profiles),
-      active: source ? accounts[0] || null : null,
+      counts: {
+        ...accountAvailabilityCounts(accounts, profiles),
+        active_candidates: accounts.length,
+        active_sources: uniqueSources(accounts).length,
+        source_specific: Boolean(source),
+      },
+      has_active_candidates: accounts.length > 0,
+      active,
+      active_candidates: accounts,
+      active_sources: uniqueSources(accounts),
       accounts,
     };
   }
@@ -74,9 +83,80 @@ export function createAccountApiCommands(deps, core) {
         claude: providerCapabilities({ live_auth: true, quota_windows: true, subscription_type: true, notes: ["5h/week quota windows are available after Burn receives official Claude Code statusLine rate_limits JSON"] }),
       },
       api: {
-        cli: { "burn agent account list": true, "burn agent account get": true, "burn agent account active": true, "burn agent login diagnostics": true, "burn agent claude quota-cache": true, "burn agent claude quota-refresh": true, "burn agent capabilities": true, "burn agent usage summary": true },
-        desktop_actions: { "agent.accounts.list": true, "agent.accounts.get": true, "agent.accounts.active": true, "agent.login.diagnostics": true, "agent.claude.quota.cache": true, "agent.claude.quota.refresh": true, "agent.capabilities.get": true, "agent.usage.summary": true },
-        bridge_commands: { "burn.agent.accounts.list": true, "burn.agent.accounts.get": true, "burn.agent.accounts.active": true, "burn.agent.login.diagnostics": true, "burn.agent.claude.quota.cache": true, "burn.agent.claude.quota.refresh": true, "burn.agent.capabilities.get": true, "burn.agent.usage.summary": true },
+        cli: {
+          "burn agent account list": true,
+          "burn agent account get": true,
+          "burn agent account active": true,
+          "burn agent login diagnostics": true,
+          "burn agent quota list": true,
+          "burn agent quota probe": true,
+          "burn agent claude quota-cache": true,
+          "burn agent claude quota-refresh": true,
+          "burn agent capabilities": true,
+          "burn agent usage summary": true,
+          "burn agent usage refresh/status/snapshot/totals/activity/heatmap/filters/diagnostics/pricing/dimensions/dimension/compact": true,
+          "burn agent sessions list": true,
+          "burn agent session show/create/continue": true,
+          "burn agent turn interrupt": true,
+        },
+        desktop_actions: {
+          "agent.accounts.list": true,
+          "agent.accounts.get": true,
+          "agent.accounts.active": true,
+          "agent.login.diagnostics": true,
+          "agent.quota.list": true,
+          "agent.quota.probe": true,
+          "agent.claude.quota.cache": true,
+          "agent.claude.quota.refresh": true,
+          "agent.capabilities.get": true,
+          "agent.usage.summary": true,
+          "agent.usage.refresh": true,
+          "agent.usage.status": true,
+          "agent.usage.snapshot": true,
+          "agent.usage.totals": true,
+          "agent.usage.activity": true,
+          "agent.usage.heatmap": true,
+          "agent.usage.filters": true,
+          "agent.usage.diagnostics": true,
+          "agent.usage.pricing": true,
+          "agent.usage.dimensions": true,
+          "agent.usage.dimension": true,
+          "agent.usage.compact": true,
+          "agent.sessions.list": true,
+          "agent.session.show": true,
+          "agent.session.create": true,
+          "agent.session.continue": true,
+          "agent.turn.interrupt": true,
+        },
+        bridge_commands: {
+          "burn.agent.accounts.list": true,
+          "burn.agent.accounts.get": true,
+          "burn.agent.accounts.active": true,
+          "burn.agent.login.diagnostics": true,
+          "burn.agent.quota.list": true,
+          "burn.agent.quota.probe": true,
+          "burn.agent.claude.quota.cache": true,
+          "burn.agent.claude.quota.refresh": true,
+          "burn.agent.capabilities.get": true,
+          "burn.agent.usage.summary": true,
+          "burn.agent.usage.refresh": true,
+          "burn.agent.usage.status": true,
+          "burn.agent.usage.snapshot": true,
+          "burn.agent.usage.totals": true,
+          "burn.agent.usage.activity": true,
+          "burn.agent.usage.heatmap": true,
+          "burn.agent.usage.filters": true,
+          "burn.agent.usage.diagnostics": true,
+          "burn.agent.usage.pricing": true,
+          "burn.agent.usage.dimensions": true,
+          "burn.agent.usage.dimension": true,
+          "burn.agent.usage.compact": true,
+          "burn.agent.sessions.list": true,
+          "burn.agent.session.show": true,
+          "burn.agent.session.create": true,
+          "burn.agent.session.continue": true,
+          "burn.agent.turn.interrupt": true,
+        },
       },
       safety: { no_provider_turns: true, claude_prompt_probe_disabled: true, external_quota_pages_disabled: true, secret_policy: "credential values, cookies, raw tokens, raw account ids and full emails are never emitted" },
     };
@@ -133,6 +213,10 @@ export function createAccountApiCommands(deps, core) {
 
 function activeEnvKeys(profile, cleanText) {
   return Array.isArray(profile.active_env_keys) ? profile.active_env_keys.map(cleanText).filter(Boolean) : [];
+}
+
+function uniqueSources(accounts) {
+  return [...new Set(accounts.map((row) => cleanTextValue(row.profile?.source)).filter(Boolean))].sort();
 }
 
 function diagnosticRow(row) {

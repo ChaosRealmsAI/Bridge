@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use burn_monitor::{Report, SessionMessageBlock};
+use burn_monitor::{Report, ScanScope, SessionMessageBlock};
 use clap::{Args, Parser, Subcommand};
 use notify::{RecursiveMode, Watcher};
 use std::io::{self, Write};
@@ -24,6 +24,8 @@ enum Command {
 
 #[derive(Args)]
 struct ListArgs {
+    #[arg(long, default_value = "all-history")]
+    scope: String,
     #[arg(long)]
     running: bool,
     #[arg(long)]
@@ -50,6 +52,8 @@ struct ShowArgs {
 
 #[derive(Args)]
 struct WatchArgs {
+    #[arg(long, default_value = "all-history")]
+    scope: String,
     #[arg(long)]
     json: bool,
 }
@@ -70,7 +74,9 @@ fn run() -> Result<()> {
 }
 
 fn list(args: ListArgs) -> Result<()> {
-    let report = burn_monitor::scan().filtered(args.running, args.project.as_deref());
+    let scope = parse_scan_scope(&args.scope)?;
+    let report =
+        burn_monitor::scan_with_scope(scope).filtered(args.running, args.project.as_deref());
     print_report(&report, args.json)
 }
 
@@ -107,27 +113,31 @@ fn show(args: ShowArgs) -> Result<()> {
 }
 
 fn watch(args: WatchArgs) -> Result<()> {
+    let scope = parse_scan_scope(&args.scope)?;
     let (tx, rx) = mpsc::channel();
     let mut watcher = notify::recommended_watcher(tx).context("create file watcher")?;
-    let watched = watch_existing_roots(&mut watcher)?;
+    let watched = watch_existing_roots(&mut watcher, scope)?;
 
     if watched == 0 {
         eprintln!("no session roots exist under HOME");
     }
-    print_watch_snapshot(args.json, None)?;
+    print_watch_snapshot(args.json, scope, None)?;
 
     for event in rx {
         match event {
-            Ok(event) => print_watch_snapshot(args.json, event.paths.first().cloned())?,
+            Ok(event) => print_watch_snapshot(args.json, scope, event.paths.first().cloned())?,
             Err(error) => eprintln!("watch error: {error}"),
         }
     }
     Ok(())
 }
 
-fn watch_existing_roots(watcher: &mut notify::RecommendedWatcher) -> Result<usize> {
+fn watch_existing_roots(
+    watcher: &mut notify::RecommendedWatcher,
+    scope: ScanScope,
+) -> Result<usize> {
     let mut watched = 0;
-    for root in burn_monitor::source_roots()
+    for root in burn_monitor::source_roots_for_scope(scope)
         .into_iter()
         .filter(|root| root.exists())
     {
@@ -139,8 +149,8 @@ fn watch_existing_roots(watcher: &mut notify::RecommendedWatcher) -> Result<usiz
     Ok(watched)
 }
 
-fn print_watch_snapshot(json: bool, changed: Option<PathBuf>) -> Result<()> {
-    let report = burn_monitor::scan();
+fn print_watch_snapshot(json: bool, scope: ScanScope, changed: Option<PathBuf>) -> Result<()> {
+    let report = burn_monitor::scan_with_scope(scope);
     if json {
         println!("{}", serde_json::to_string(&report)?);
     } else {
@@ -160,6 +170,14 @@ fn print_watch_snapshot(json: bool, changed: Option<PathBuf>) -> Result<()> {
     }
     io::stdout().flush()?;
     Ok(())
+}
+
+fn parse_scan_scope(raw: &str) -> Result<ScanScope> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "" | "all" | "all-history" | "all_history" | "history" => Ok(ScanScope::AllHistory),
+        "configured" | "active" | "profile" => Ok(ScanScope::Configured),
+        other => anyhow::bail!("invalid scan scope '{other}', expected all-history or configured"),
+    }
 }
 
 fn print_report(report: &Report, json: bool) -> Result<()> {

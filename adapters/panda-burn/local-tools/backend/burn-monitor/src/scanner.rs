@@ -17,15 +17,16 @@ const CACHE_PARSER_VERSION: u32 = 1;
 
 pub fn scan_home(home: &Path, now: DateTime<Utc>, window_secs: i64) -> Report {
     let roots = default_provider_roots_from_home(home);
-    scan_home_with_roots(home, &roots, now, window_secs)
+    scan_home_with_roots("all_history", home, &roots, now, window_secs)
 }
 
 pub fn scan_configured_home(home: &Path, now: DateTime<Utc>, window_secs: i64) -> Report {
     let roots = configured_provider_roots_from_home(home);
-    scan_home_with_roots(home, &roots, now, window_secs)
+    scan_home_with_roots("configured", home, &roots, now, window_secs)
 }
 
 fn scan_home_with_roots(
+    scope: &'static str,
     home: &Path,
     roots: &ProviderRoots,
     now: DateTime<Utc>,
@@ -34,7 +35,7 @@ fn scan_home_with_roots(
     let started = Instant::now();
     let scan_files = candidate_session_files(roots);
     let source_roots = roots.clone().source_roots();
-    let mut diagnostics = scan_diagnostics(&source_roots, window_secs);
+    let mut diagnostics = scan_diagnostics(scope, &source_roots, window_secs);
     let mut cache_plan = ScanCachePlan::load(home, &source_roots, &scan_files, &mut diagnostics);
     let resolver = ProjectResolver::new(home);
     let mut sessions = Vec::new();
@@ -99,14 +100,21 @@ pub(crate) fn configured_claude_project_roots_from_home(home: &Path) -> Vec<Path
     configured_provider_roots_from_home(home).claude_projects
 }
 
-fn scan_diagnostics(source_roots: &[PathBuf], window_secs: i64) -> ScanDiagnostics {
+fn scan_diagnostics(
+    scope: &'static str,
+    source_roots: &[PathBuf],
+    window_secs: i64,
+) -> ScanDiagnostics {
     ScanDiagnostics {
+        scope: scope.to_owned(),
         mode: "full_rescan".to_owned(),
         elapsed_ms: 0,
         source_roots: source_roots
             .iter()
             .map(|root| root.to_string_lossy().into_owned())
             .collect(),
+        partial: false,
+        errors: Vec::new(),
         cache: ScanCacheDiagnostics::default(),
         limits: ScanLimits {
             running_window_secs: window_secs,
@@ -139,9 +147,15 @@ impl ProviderRoots {
 
 pub(crate) fn default_provider_roots_from_home(home: &Path) -> ProviderRoots {
     ProviderRoots {
-        codex_sessions: vec![home.join(".codex").join("sessions")],
+        codex_sessions: provider_dirs(home, ".codex", home.join(".codex"))
+            .into_iter()
+            .map(|dir| dir.join("sessions"))
+            .collect(),
         codexctl: vec![home.join(".codexctl")],
-        claude_projects: vec![home.join(".claude").join("projects")],
+        claude_projects: provider_dirs(home, ".claude", home.join(".claude"))
+            .into_iter()
+            .map(|dir| dir.join("projects"))
+            .collect(),
     }
 }
 
@@ -157,11 +171,10 @@ fn configured_codex_session_roots(home: &Path) -> Vec<PathBuf> {
     if let Some(explicit) = configured_env_path("CODEX_HOME") {
         return dedupe_paths(vec![explicit.join("sessions")]);
     }
-    if configured_profile_id()
-        .as_deref()
-        .is_some_and(|id| id.starts_with("codex:"))
+    if let Some(dir) =
+        configured_profile_id().and_then(|id| provider_profile_dir(home, "codex", &id))
     {
-        return vec![home.join(".codex").join("sessions")];
+        return dedupe_paths(vec![dir.join("sessions")]);
     }
     provider_dirs(home, ".codex", home.join(".codex"))
         .into_iter()
@@ -170,12 +183,18 @@ fn configured_codex_session_roots(home: &Path) -> Vec<PathBuf> {
 }
 
 fn configured_codexctl_roots(home: &Path) -> Vec<PathBuf> {
-    if configured_env_path("CODEX_HOME").is_some()
-        || configured_profile_id()
-            .as_deref()
-            .is_some_and(|id| id.starts_with("codex:"))
-    {
+    if configured_env_path("CODEX_HOME").is_some() {
         return Vec::new();
+    }
+    if let Some(dir) =
+        configured_profile_id().and_then(|id| provider_profile_dir(home, "codex", &id))
+    {
+        return dir
+            .file_name()
+            .and_then(OsStr::to_str)
+            .is_some_and(|name| name == ".codexctl")
+            .then_some(vec![dir])
+            .unwrap_or_default();
     }
     vec![home.join(".codexctl")]
 }
@@ -184,13 +203,56 @@ fn configured_claude_project_roots(home: &Path) -> Vec<PathBuf> {
     if let Some(explicit) = configured_env_path("CLAUDE_CONFIG_DIR") {
         return dedupe_paths(vec![explicit.join("projects")]);
     }
-    if configured_profile_id().as_deref() == Some("claude:default") {
-        return vec![home.join(".claude").join("projects")];
+    if let Some(dir) =
+        configured_profile_id().and_then(|id| provider_profile_dir(home, "claude", &id))
+    {
+        return dedupe_paths(vec![dir.join("projects")]);
     }
     provider_dirs(home, ".claude", home.join(".claude"))
         .into_iter()
         .map(|dir| dir.join("projects"))
         .collect()
+}
+
+fn provider_profile_dir(home: &Path, provider: &str, profile_id: &str) -> Option<PathBuf> {
+    let suffix = profile_id.strip_prefix(&format!("{provider}:"))?;
+    if suffix == "default" {
+        return Some(home.join(format!(".{provider}")));
+    }
+    if suffix.is_empty()
+        || suffix.contains('/')
+        || suffix.contains('\\')
+        || suffix.split('.').any(|part| part == "..")
+    {
+        return None;
+    }
+    Some(home.join(format!(".{suffix}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::provider_profile_dir;
+    use std::path::Path;
+
+    #[test]
+    fn provider_profile_dir_maps_known_profile_ids() {
+        let home = Path::new("/tmp/home");
+
+        assert_eq!(
+            provider_profile_dir(home, "codex", "codex:default").unwrap(),
+            home.join(".codex")
+        );
+        assert_eq!(
+            provider_profile_dir(home, "codex", "codex:codex-work").unwrap(),
+            home.join(".codex-work")
+        );
+        assert_eq!(
+            provider_profile_dir(home, "claude", "claude:claude-work").unwrap(),
+            home.join(".claude-work")
+        );
+        assert!(provider_profile_dir(home, "codex", "claude:default").is_none());
+        assert!(provider_profile_dir(home, "codex", "codex:../bad").is_none());
+    }
 }
 
 fn provider_dirs(home: &Path, prefix: &str, default_dir: PathBuf) -> Vec<PathBuf> {

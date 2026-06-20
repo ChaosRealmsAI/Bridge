@@ -48,6 +48,7 @@
     "burn.agent.source.status",
     "burn.agent.sessions.list",
     "burn.agent.session.show",
+    "burn.agent.session.watch",
     "burn.agent.session.create",
     "burn.agent.session.continue",
     "burn.agent.turn.interrupt",
@@ -63,6 +64,7 @@
     "burn.agent.usage.pricing",
     "burn.agent.usage.dimensions",
     "burn.agent.usage.dimension",
-    "burn.agent.usage.compact"
+    "burn.agent.usage.compact",
+    "burn.voice.intent"
   ]
 }

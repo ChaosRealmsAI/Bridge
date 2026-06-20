@@ -340,11 +340,11 @@ async function activeCodexProfile(options = {}) {
   const auth = await readJson(authPath);
   const history = await historySummary(path.join(dir, "sessions"), activeHistoryOptions(options));
   const authHint = authHintPresent(auth) || existsSync(authPath);
-  const basename = path.basename(dir);
+  const identity = providerProfileIdentity("codex", dir, defaultDir, "Codex default", "Codex");
   return {
-    id: basename === ".codex" ? "codex:default" : `codex:${safeId(basename.replace(/^\./, ""))}`,
+    id: identity.id,
     source: "codex",
-    label: basename === ".codex" ? "Codex default" : `Codex ${basename}`,
+    label: identity.label,
     path: dir,
     path_display: maskHome(dir),
     runtime: "codex-app-server",
@@ -376,20 +376,19 @@ async function activeClaudeProfile(options = {}) {
     activeReason = envPath ? "CLAUDE_CONFIG_DIR_missing_default_profile" : "default_profile";
     activeEnvKeys = envPath ? ["CLAUDE_CONFIG_DIR", "HOME"] : ["HOME"];
   }
-  const basename = path.basename(dir);
-  const isDefault = basename === ".claude";
+  const identity = providerProfileIdentity("claude", dir, defaultDir, "Claude Code default", "Claude Code");
   const authFiles = [
     path.join(dir, ".credentials.json"),
     path.join(dir, "credentials.json"),
     path.join(dir, "settings.json"),
   ];
   const globalAuth = existsSync(path.join(homeDir(), ".claude.json"));
-  const authHint = authFiles.some((file) => existsSync(file)) || (isDefault && globalAuth);
+  const authHint = authFiles.some((file) => existsSync(file)) || (identity.isDefault && globalAuth);
   const history = await historySummary(path.join(dir, "projects"), activeHistoryOptions(options));
   return {
-    id: isDefault ? "claude:default" : `claude:${safeId(basename.replace(/^\./, ""))}`,
+    id: identity.id,
     source: "claude",
-    label: isDefault ? "Claude Code default" : `Claude Code ${basename}`,
+    label: identity.label,
     path: dir,
     path_display: maskHome(dir),
     runtime: "claude-agent-sdk",
@@ -399,7 +398,7 @@ async function activeClaudeProfile(options = {}) {
     auth_hint_present: authHint,
     history,
     store_paths: history.store_paths,
-    env: isDefault ? {} : { CLAUDE_CONFIG_DIR: dir },
+    env: identity.isDefault ? {} : { CLAUDE_CONFIG_DIR: dir },
     active_reason: activeReason,
     active_env_keys: activeEnvKeys,
   };
@@ -411,21 +410,22 @@ function activeHistoryOptions(options = {}) {
 }
 
 async function discoverCodex(options = {}) {
+  const defaultDir = path.join(homeDir(), ".codex");
   const dirs = await candidateDirs({
     explicit: process.env.CODEX_HOME,
     prefix: ".codex",
-    defaultDir: path.join(homeDir(), ".codex"),
+    defaultDir,
   });
   return Promise.all(dirs.map(async (dir) => {
     const authPath = path.join(dir, "auth.json");
     const auth = await readJson(authPath);
     const history = await historySummary(path.join(dir, "sessions"), options);
     const authHint = authHintPresent(auth) || existsSync(authPath);
-    const basename = path.basename(dir);
+    const identity = providerProfileIdentity("codex", dir, defaultDir, "Codex default", "Codex");
     return {
-      id: basename === ".codex" ? "codex:default" : `codex:${safeId(basename.replace(/^\./, ""))}`,
+      id: identity.id,
       source: "codex",
-      label: basename === ".codex" ? "Codex default" : `Codex ${basename}`,
+      label: identity.label,
       path: dir,
       path_display: maskHome(dir),
       runtime: "codex-app-server",
@@ -441,26 +441,26 @@ async function discoverCodex(options = {}) {
 }
 
 async function discoverClaude(options = {}) {
+  const defaultDir = path.join(homeDir(), ".claude");
   const dirs = await candidateDirs({
     explicit: process.env.CLAUDE_CONFIG_DIR,
     prefix: ".claude",
-    defaultDir: path.join(homeDir(), ".claude"),
+    defaultDir,
   });
   const globalAuth = existsSync(path.join(homeDir(), ".claude.json"));
   return Promise.all(dirs.map(async (dir) => {
-    const basename = path.basename(dir);
-    const isDefault = basename === ".claude";
+    const identity = providerProfileIdentity("claude", dir, defaultDir, "Claude Code default", "Claude Code");
     const authFiles = [
       path.join(dir, ".credentials.json"),
       path.join(dir, "credentials.json"),
       path.join(dir, "settings.json"),
     ];
-    const authHint = authFiles.some((file) => existsSync(file)) || (isDefault && globalAuth);
+    const authHint = authFiles.some((file) => existsSync(file)) || (identity.isDefault && globalAuth);
     const history = await historySummary(path.join(dir, "projects"), options);
     return {
-      id: isDefault ? "claude:default" : `claude:${safeId(basename.replace(/^\./, ""))}`,
+      id: identity.id,
       source: "claude",
-      label: isDefault ? "Claude Code default" : `Claude Code ${basename}`,
+      label: identity.label,
       path: dir,
       path_display: maskHome(dir),
       runtime: "claude-agent-sdk",
@@ -470,7 +470,7 @@ async function discoverClaude(options = {}) {
       auth_hint_present: authHint,
       history,
       store_paths: history.store_paths,
-      env: isDefault ? {} : { CLAUDE_CONFIG_DIR: dir },
+      env: identity.isDefault ? {} : { CLAUDE_CONFIG_DIR: dir },
     };
   }));
 }
@@ -494,6 +494,16 @@ async function candidateDirs({ explicit, prefix, defaultDir }) {
     add(path.join(home, entry.name));
   }
   return dirs;
+}
+
+function providerProfileIdentity(source, dir, defaultDir, defaultLabel, labelPrefix) {
+  const resolved = path.resolve(dir);
+  const defaultResolved = path.resolve(defaultDir);
+  if (resolved === defaultResolved) return { id: `${source}:default`, label: defaultLabel, isDefault: true };
+  const base = path.basename(resolved).replace(/^\./, "") || "profile";
+  const parent = path.basename(path.dirname(resolved)).replace(/^\./, "");
+  const suffixInput = safeId(base) === "default" && parent ? `${parent}-${base}` : base;
+  return { id: `${source}:${safeId(suffixInput)}`, label: `${labelPrefix} ${base}`, isDefault: false };
 }
 
 async function historySummary(root, options = {}) {

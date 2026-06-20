@@ -326,6 +326,37 @@ fn agent_session_cli_falls_back_to_monitor_for_codex_history() {
             .and_then(Value::as_str),
         Some("burn_monitor_transcript_fallback")
     );
+    let profile_id_list_value = run_json(
+        Command::new(env!("CARGO_BIN_EXE_burn-chat"))
+            .env("HOME", &home)
+            .env("BURN_CODEX_BIN", &missing_codex)
+            .env_remove("CODEX_HOME")
+            .env_remove("CLAUDE_CONFIG_DIR")
+            .env("BURN_AGENT_PROFILE_ID", "codex:codex-work")
+            .args([
+                "source",
+                "sessions",
+                "list",
+                "--source",
+                "codex",
+                "--project",
+                project,
+                "--json",
+            ]),
+    );
+    assert_eq!(
+        profile_id_list_value
+            .pointer("/sessions/0/id")
+            .and_then(Value::as_str),
+        Some("monitor-codex-session")
+    );
+    assert_eq!(
+        profile_id_list_value
+            .get("sessions")
+            .and_then(Value::as_array)
+            .map(|sessions| sessions.len()),
+        Some(1)
+    );
 
     let show_value = run_json(
         Command::new(env!("CARGO_BIN_EXE_burn-chat"))
@@ -359,6 +390,156 @@ fn agent_session_cli_falls_back_to_monitor_for_codex_history() {
             .pointer("/messages/1/blocks/0/text")
             .and_then(Value::as_str),
         Some("Raw Codex history is indexed")
+    );
+}
+
+#[test]
+fn agent_session_cli_falls_back_to_monitor_for_claude_configured_history() {
+    let home = unique_temp_dir("burn-agent-source-claude-monitor-home");
+    let project_dir = home.join("projects").join("claude-history-project");
+    fs::create_dir_all(&project_dir).expect("create temp project dir");
+    fs::write(
+        project_dir.join("Cargo.toml"),
+        "[package]\nname = \"fixture\"\n",
+    )
+    .expect("write project marker");
+    let project = project_dir.to_str().expect("temp dir should be utf8");
+    let default_transcript = home
+        .join(".claude")
+        .join("projects")
+        .join("default-storage")
+        .join("default-claude-session.jsonl");
+    fs::create_dir_all(
+        default_transcript
+            .parent()
+            .expect("default transcript parent"),
+    )
+    .expect("create default transcript dir");
+    fs::write(
+        &default_transcript,
+        &format!(
+            r#"{{"type":"user","cwd":"{project}","sessionId":"default-claude-session","timestamp":"2026-06-20T00:00:00Z","message":{{"role":"user","content":[{{"type":"text","text":"Default Claude history should be ignored when CLAUDE_CONFIG_DIR is explicit"}}]}}}}"#
+        ),
+    )
+    .expect("write default claude transcript");
+
+    let config_dir = home.join(".claude-work");
+    let transcript = config_dir
+        .join("projects")
+        .join("work-storage")
+        .join("monitor-claude-session.jsonl");
+    fs::create_dir_all(transcript.parent().expect("transcript parent"))
+        .expect("create transcript dir");
+    fs::write(
+        &transcript,
+        &format!(
+            r#"{{"type":"user","cwd":"{project}","sessionId":"monitor-claude-session","timestamp":"2026-06-20T01:00:00Z","message":{{"role":"user","content":[{{"type":"text","text":"List configured Claude history"}}]}}}}
+{{"type":"assistant","cwd":"{project}","sessionId":"monitor-claude-session","timestamp":"2026-06-20T01:01:00Z","message":{{"role":"assistant","content":[{{"type":"text","text":"Configured Claude history is indexed"}}]}}}}"#
+        ),
+    )
+    .expect("write claude transcript");
+
+    let missing_runner = home.join("missing-claude-agent-sdk-runner.mjs");
+    let list_value = run_json(
+        Command::new(env!("CARGO_BIN_EXE_burn-chat"))
+            .env("HOME", &home)
+            .env("BURN_CLAUDE_AGENT_SDK_RUNNER", &missing_runner)
+            .env_remove("CODEX_HOME")
+            .env("CLAUDE_CONFIG_DIR", &config_dir)
+            .env_remove("BURN_AGENT_PROFILE_ID")
+            .args([
+                "source",
+                "sessions",
+                "list",
+                "--source",
+                "claude",
+                "--project",
+                project,
+                "--json",
+            ]),
+    );
+    assert_eq!(
+        list_value.pointer("/sessions/0/id").and_then(Value::as_str),
+        Some("monitor-claude-session")
+    );
+    assert_eq!(
+        list_value
+            .get("sessions")
+            .and_then(Value::as_array)
+            .map(|sessions| sessions.len()),
+        Some(1)
+    );
+    assert_eq!(
+        list_value
+            .pointer("/sessions/0/transcript_path")
+            .and_then(Value::as_str),
+        Some(transcript.to_str().expect("transcript should be utf8"))
+    );
+
+    let profile_id_list_value = run_json(
+        Command::new(env!("CARGO_BIN_EXE_burn-chat"))
+            .env("HOME", &home)
+            .env("BURN_CLAUDE_AGENT_SDK_RUNNER", &missing_runner)
+            .env_remove("CODEX_HOME")
+            .env_remove("CLAUDE_CONFIG_DIR")
+            .env("BURN_AGENT_PROFILE_ID", "claude:claude-work")
+            .args([
+                "source",
+                "sessions",
+                "list",
+                "--source",
+                "claude",
+                "--project",
+                project,
+                "--json",
+            ]),
+    );
+    assert_eq!(
+        profile_id_list_value
+            .pointer("/sessions/0/id")
+            .and_then(Value::as_str),
+        Some("monitor-claude-session")
+    );
+    assert_eq!(
+        profile_id_list_value
+            .get("sessions")
+            .and_then(Value::as_array)
+            .map(|sessions| sessions.len()),
+        Some(1)
+    );
+
+    let show_value = run_json(
+        Command::new(env!("CARGO_BIN_EXE_burn-chat"))
+            .env("HOME", &home)
+            .env("BURN_CLAUDE_AGENT_SDK_RUNNER", &missing_runner)
+            .env_remove("CODEX_HOME")
+            .env("CLAUDE_CONFIG_DIR", &config_dir)
+            .env_remove("BURN_AGENT_PROFILE_ID")
+            .args([
+                "source",
+                "session",
+                "show",
+                "--source",
+                "claude",
+                "--project",
+                project,
+                "--session-id",
+                "monitor-claude-session",
+                "--json",
+            ]),
+    );
+    let _ = fs::remove_dir_all(&home);
+    assert_eq!(
+        show_value
+            .pointer("/messages/0/blocks/0/text")
+            .and_then(Value::as_str),
+        Some("List configured Claude history")
+    );
+    assert_eq!(
+        show_value
+            .pointer("/messages/1/blocks/0/text")
+            .and_then(Value::as_str),
+        Some("Configured Claude history is indexed")
     );
 }
 

@@ -5,6 +5,7 @@ use std::path::Path;
 #[derive(Clone, Debug, Serialize)]
 pub struct Report {
     pub generated_at: String,
+    pub scan_scope: String,
     pub running_total: usize,
     pub by_project: Vec<ProjectReport>,
     pub projects: Vec<ProjectSummary>,
@@ -104,9 +105,12 @@ pub struct Totals {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct ScanDiagnostics {
+    pub scope: String,
     pub mode: String,
     pub elapsed_ms: u64,
     pub source_roots: Vec<String>,
+    pub partial: bool,
+    pub errors: Vec<String>,
     pub cache: ScanCacheDiagnostics,
     pub limits: ScanLimits,
 }
@@ -140,9 +144,12 @@ pub struct ScanLimits {
 impl Default for ScanDiagnostics {
     fn default() -> Self {
         Self {
+            scope: "unknown".to_owned(),
             mode: "unmeasured".to_owned(),
             elapsed_ms: 0,
             source_roots: Vec::new(),
+            partial: false,
+            errors: Vec::new(),
             cache: ScanCacheDiagnostics::default(),
             limits: ScanLimits::default(),
         }
@@ -185,6 +192,7 @@ impl Report {
     pub fn empty(generated_at: String) -> Self {
         Self {
             generated_at,
+            scan_scope: "unknown".to_owned(),
             running_total: 0,
             by_project: Vec::new(),
             projects: Vec::new(),
@@ -249,6 +257,7 @@ impl Report {
 
         Self {
             generated_at,
+            scan_scope: "unknown".to_owned(),
             running_total,
             by_project,
             projects,
@@ -258,6 +267,7 @@ impl Report {
     }
 
     pub fn with_scan_diagnostics(mut self, diagnostics: ScanDiagnostics) -> Self {
+        self.scan_scope = diagnostics.scope.clone();
         self.diagnostics = diagnostics;
         self
     }

@@ -38,6 +38,7 @@ export async function startBurnRelayAdapter(options = {}) {
   const burnAppHome = options.burnAppHome || options.burn_app_home || env.BURN_APP_HOME || "";
   const cliExecutions = [];
   const syncExecutions = [];
+  const activeAgentTurns = new Map();
   let authorizationMirror = normalizeAuthorizationMirror(options.authorizationMirror || env.BURN_AUTHORIZATION_MIRROR_JSON);
   const requireAuthorizationMirror = Boolean(options.requireAuthorizationMirror || env.BURN_REQUIRE_AUTHORIZATION_MIRROR === "1");
   if (requireAuthorizationMirror && !authorizationMirror) {
@@ -63,11 +64,13 @@ export async function startBurnRelayAdapter(options = {}) {
       burnAppHome,
       cliExecutions,
       syncExecutions,
+      activeAgentTurns,
       chatTimeoutMs: positiveNumber(options.chatTimeoutMs || env.BURN_RELAY_CHAT_TIMEOUT_MS, 240000),
       codexMaxTimeoutMs: positiveNumber(options.codexMaxTimeoutMs || env.BURN_RELAY_CODEX_TIMEOUT_MS, 210000),
       agentTimeoutMs: positiveNumber(options.agentTimeoutMs || env.BURN_RELAY_AGENT_TIMEOUT_MS, 60000),
       usageLedgerTimeoutMs: positiveNumber(options.usageLedgerTimeoutMs || env.BURN_RELAY_USAGE_TIMEOUT_MS, 300000),
     },
+    onProgressEnvelope: options.onProgressEnvelope,
     dispatch(command, context) {
       const activeAuthorizationMirror = mirrorHasLocalRoots(context.authorizationMirror)
         ? context.authorizationMirror
@@ -81,6 +84,7 @@ export async function startBurnRelayAdapter(options = {}) {
         burnAppHome,
         cliExecutions,
         syncExecutions,
+        activeAgentTurns,
         chatTimeoutMs: positiveNumber(options.chatTimeoutMs || env.BURN_RELAY_CHAT_TIMEOUT_MS, 240000),
         codexMaxTimeoutMs: positiveNumber(options.codexMaxTimeoutMs || env.BURN_RELAY_CODEX_TIMEOUT_MS, 210000),
         agentTimeoutMs: positiveNumber(options.agentTimeoutMs || env.BURN_RELAY_AGENT_TIMEOUT_MS, 60000),

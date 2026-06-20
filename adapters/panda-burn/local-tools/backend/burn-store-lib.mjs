@@ -28,18 +28,7 @@ export async function initBurnStore(options = {}) {
   const home = path.resolve(options.home || defaultBurnHome());
   const now = new Date().toISOString();
   await fs.mkdir(home, { recursive: true });
-  for (const dir of [
-    "events",
-    "outbox",
-    "read-model",
-    "data",
-    "data/agent-usage",
-    "devices",
-    "diagnostics",
-    "projects",
-    "projects/public",
-    "preferences",
-  ]) {
+  for (const dir of requiredStoreDirs()) {
     await fs.mkdir(path.join(home, dir), { recursive: true });
   }
   const metaPath = path.join(home, "meta.json");
@@ -84,11 +73,7 @@ export async function doctorBurnStore(options = {}) {
   const checks = [
     check("app_home_exists", existsSync(status.app_home)),
     check("meta_exists", existsSync(path.join(status.app_home, "meta.json"))),
-    check("events_dir_exists", existsSync(path.join(status.app_home, "events"))),
-    check("read_model_dir_exists", existsSync(path.join(status.app_home, "read-model"))),
-    check("usage_data_dir_exists", existsSync(path.join(status.app_home, "data", "agent-usage"))),
-    check("projects_dir_exists", existsSync(path.join(status.app_home, "projects"))),
-    check("preferences_dir_exists", existsSync(path.join(status.app_home, "preferences"))),
+    ...requiredStoreDirs().map((dir) => check(`${safeCheckId(dir)}_dir_exists`, existsSync(path.join(status.app_home, dir)))),
     check("schema_current", status.store_exists && status.schema === BURN_STORE_SCHEMA),
   ];
   return { ...status, checks, ok: checks.every((item) => item.ok) };
@@ -97,12 +82,15 @@ export async function doctorBurnStore(options = {}) {
 function statusPayload(home, meta, initialized, project = process.cwd()) {
   const exists = existsSync(path.join(home, "meta.json"));
   const schemaCurrent = exists && meta.schema === BURN_STORE_SCHEMA;
+  const diagnostics = storeDiagnostics(home, meta, exists, schemaCurrent);
+  const storeReady = schemaCurrent && diagnostics.required_dirs_present;
   const payload = {
     ok: true,
     schema: meta.schema || "",
+    response_schema: "burn.store.status.v1",
     product: "burn",
     store_exists: exists,
-    store_ready: schemaCurrent,
+    store_ready: storeReady,
     initialized,
     storage_scope: meta.storage_scope || "device_app_home",
     app_home: home,
@@ -111,8 +99,45 @@ function statusPayload(home, meta, initialized, project = process.cwd()) {
     device_hash: meta.device_hash || "",
     store_id: meta.store_id || "",
     updated_at: meta.updated_at || "",
+    diagnostics,
   };
   return payload;
+}
+
+function storeDiagnostics(home, meta, metaExists, schemaCurrent) {
+  const missingRequiredDirs = requiredStoreDirs().filter((dir) => !existsSync(path.join(home, dir)));
+  const appHomeExists = existsSync(home);
+  let readyReason = "ready";
+  if (!appHomeExists) readyReason = "app_home_missing";
+  else if (!metaExists) readyReason = "meta_missing";
+  else if (!schemaCurrent) readyReason = "schema_mismatch";
+  else if (missingRequiredDirs.length) readyReason = "required_dirs_missing";
+  return {
+    schema_expected: BURN_STORE_SCHEMA,
+    schema_found: meta.schema || "",
+    app_home_exists: appHomeExists,
+    meta_exists: metaExists,
+    schema_current: schemaCurrent,
+    required_dirs_present: missingRequiredDirs.length === 0,
+    missing_required_dirs: missingRequiredDirs,
+    ready_reason: readyReason,
+    storage_scope: meta.storage_scope || "device_app_home",
+  };
+}
+
+function requiredStoreDirs() {
+  return [
+    "events",
+    "outbox",
+    "read-model",
+    "data",
+    "data/agent-usage",
+    "devices",
+    "diagnostics",
+    "projects",
+    "projects/public",
+    "preferences",
+  ];
 }
 
 export function stableHash(value) {
@@ -129,6 +154,10 @@ async function reconcileDeviceRecords(home, currentDeviceHash) {
 
 function check(id, ok) {
   return { id, ok: Boolean(ok) };
+}
+
+function safeCheckId(value) {
+  return String(value || "").replace(/[^a-zA-Z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "path";
 }
 
 async function readJson(file) {

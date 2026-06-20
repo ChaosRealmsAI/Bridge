@@ -35,6 +35,7 @@
     "burn.agent.source.status",
     "burn.agent.sessions.list",
     "burn.agent.session.show",
+    "burn.agent.session.watch",
     "burn.agent.session.create",
     "burn.agent.session.continue",
     "burn.agent.turn.interrupt",
@@ -50,6 +51,1126 @@
     "burn.agent.usage.pricing",
     "burn.agent.usage.dimensions",
     "burn.agent.usage.dimension",
-    "burn.agent.usage.compact"
-  ]
+    "burn.agent.usage.compact",
+    "burn.voice.intent"
+  ],
+  "contracts": {
+    "burn.voice.intent": {
+      "surface": "local-tool",
+      "tool": "local-tools/scripts/voice/burn-voice-intent.mjs",
+      "category": "voice-intent",
+      "callable_by": "ai-worker",
+      "description": "AI-callable Burn voice intent emitter for an active call. Thin surface: it builds and validates a stable voice intent and either prints it (dry-run) or posts it to Burn Voice Cloud. It does not implement ASR/TTS, queueing, timeline delivery, or provider access.",
+      "intents": ["speak", "wait", "sound", "cancel", "status", "progress", "ask"],
+      "modes": {
+        "dry-run": "Default. Build and print the exact JSON payload with no network call.",
+        "gateway": "POST the intent envelope to Burn Voice Cloud using BURN_VOICE_GATEWAY_URL and a scoped BURN_VOICE_CALL_TOKEN."
+      },
+      "input": {
+        "intent": {
+          "type": "enum",
+          "required": true,
+          "values": ["speak", "wait", "sound", "cancel", "status", "progress", "ask"]
+        },
+        "call_id": {
+          "type": "string",
+          "required": true,
+          "from": "--call-id or BURN_VOICE_CALL_ID"
+        },
+        "session_id": {
+          "type": "string",
+          "required": false,
+          "from": "--session-id or BURN_VOICE_SESSION_ID"
+        },
+        "text": {
+          "type": "string",
+          "required": false,
+          "semantics": "Required for speak/ask."
+        },
+        "sound_ref": {
+          "type": "string",
+          "required": false,
+          "semantics": "Required for sound."
+        },
+        "priority": {
+          "type": "enum",
+          "required": false,
+          "values": ["low", "normal", "high", "urgent"]
+        },
+        "ids": {
+          "type": "object",
+          "required": false,
+          "semantics": "Optional overrides for generationId/nodeId/segmentId/intentId; auto-generated when omitted."
+        }
+      },
+      "pagination": {
+        "supported": false,
+        "semantics": "Single intent emission; no paginated output."
+      },
+      "output": {
+        "schema": "burn.voice.intent.v1",
+        "requiredFields": [
+          "intentId",
+          "callId",
+          "sessionId",
+          "generationId",
+          "nodeId",
+          "segmentId",
+          "name",
+          "kind",
+          "priority",
+          "text",
+          "soundRef",
+          "source",
+          "params",
+          "createdAt"
+        ],
+        "semantics": {
+          "envelope": "Top-level object carries ok, schema, mode, intent, and a redaction note; gateway mode adds a redacted gateway result.",
+          "intent": "Canonical voice intent with stable ids; text or soundRef is populated per intent kind, the other stays an empty string.",
+          "kind": "speech (speak/ask), audio (sound), control (wait/cancel), or query (status/progress).",
+          "source": "Emitter identity; defaults to \"ai\" since the AI owns speech intent."
+        }
+      },
+      "emptySemantics": "There is no empty result; a well-formed call always returns exactly one intent object.",
+      "security": {
+        "call_token": "Scoped call token is read from BURN_VOICE_CALL_TOKEN/--call-token, sent only as an Authorization: Bearer header, and never echoed; output shows Bearer ***redacted***.",
+        "gateway_url": "Sensitive query params and userinfo in surfaced urls are masked.",
+        "payload": "Intent payload carries speech/audio/control intent only — no provider keys or secrets."
+      },
+      "errors": {
+        "voice_intent_unknown": "Intent name is not one of the recognized voice intents.",
+        "voice_intent_missing_call_id": "No callId provided via flag or environment.",
+        "voice_intent_missing_text": "speak/ask called without --text.",
+        "voice_intent_missing_sound_ref": "sound called without --sound-ref.",
+        "voice_intent_bad_priority": "priority is not low|normal|high|urgent.",
+        "voice_intent_bad_mode": "Both --gateway and --dry-run were requested.",
+        "voice_gateway_url_missing": "gateway mode without BURN_VOICE_GATEWAY_URL/--gateway-url.",
+        "voice_gateway_timeout": "Gateway request exceeded the configured timeout.",
+        "voice_gateway_post_failed": "Gateway request failed before a response was received."
+      }
+    },
+    "burn.agent.accounts.list": {
+      "output": {
+        "schema": "burn.agent.accounts.v1",
+        "requiredFields": ["ok", "schema", "generated_at", "live_probe", "safety", "counts", "runtimes", "accounts"],
+        "accountRowRequiredFields": ["schema", "profile", "account", "availability", "health", "frontend"],
+        "semantics": {
+          "profile": "safe local profile inventory with masked path_display and history counts only",
+          "account": "safe public identity fields only; full emails, raw account ids, tokens, cookies and credentials are never emitted",
+          "availability": "launchability/auth state; unknowns use empty strings or nulls plus code/message",
+          "availability.quota": "stable summary fields; Claude stale quota keeps windows empty and exposes quota_unavailable_reason/stale_evidence separately",
+          "frontend": "Flutter-friendly display status and badge fields"
+        }
+      }
+    },
+    "burn.agent.accounts.get": {
+      "output": {
+        "schema": "burn.agent.account.get.v1",
+        "requiredFields": ["ok", "schema", "generated_at", "live_probe", "safety", "counts", "account"],
+        "semantics": {
+          "account": "same row shape as burn.agent.accounts.list accounts[] or null when profile_id is unknown"
+        }
+      }
+    },
+    "burn.agent.accounts.active": {
+      "output": {
+        "schema": "burn.agent.accounts.active.v1",
+        "requiredFields": ["ok", "schema", "generated_at", "live_probe", "source", "safety", "counts", "has_active_candidates", "active", "active_candidates", "active_sources", "accounts"],
+        "semantics": {
+          "source_specific": "when source is codex or claude, active is the active source profile row when present",
+          "no_source": "active_candidates/accounts contain all active source candidates; active is the first launchable candidate when possible so consumers do not see an empty shape while source-specific candidates exist",
+          "active_reason": "CODEX_HOME, CLAUDE_CONFIG_DIR, provider default, or missing-env fallback reason",
+          "env_keys": "safe environment key names only; never values"
+        }
+      }
+    },
+    "burn.agent.quota.list": {
+      "output": {
+        "schema": "burn.agent.account-quota.v1",
+        "requiredFields": ["ok", "schema", "generated_at", "live_probe", "safety", "counts", "runtimes", "accounts"],
+        "quotaRequiredFields": ["provider", "source_kind", "authoritative", "live_status", "allowed", "plan_type", "remaining_display", "quota_unavailable_reason", "windows", "five_hour_remaining_display", "five_hour_resets_at", "weekly_remaining_display", "weekly_resets_at", "statusline_cache", "stale_evidence", "safety_note"],
+        "semantics": {
+          "codex_live": "live mode uses official Codex app-server account/rateLimits/read and starts no model turn",
+          "claude_live": "Claude exact quota windows are populated only from fresh official Claude Code statusLine rate_limits cache",
+          "claude_stale": "stale or missing Claude quota keeps windows and remaining fields empty; reason and stale_evidence are separate diagnostic fields"
+        }
+      }
+    },
+    "burn.agent.login.diagnostics": {
+      "output": {
+        "schema": "burn.agent.login-diagnostics.v1",
+        "requiredFields": ["ok", "schema", "generated_at", "live_probe", "safety", "counts", "runtimes", "diagnostics"],
+        "diagnosticRequiredFields": ["profile_id", "source", "status", "can_start_new_turn", "needs_login", "code", "message", "suggested_action", "suggested_command", "account", "profile"]
+      }
+    },
+    "burn.store.status": {
+      "input": {
+        "create": {
+          "type": "boolean",
+          "default": false,
+          "description": "Read-only status by default; relay callers do not initialize or migrate the store through status."
+        }
+      },
+      "pagination": {
+        "supported": false
+      },
+      "output": {
+        "schema": "burn.store.status.v1",
+        "requiredFields": ["schema", "response_schema", "store_schema", "product", "store_exists", "store_ready", "initialized", "storage_scope", "app_home_display", "account_hash", "device_hash", "store_id", "store_id_hash", "updated_at", "diagnostics", "checks"],
+        "semantics": {
+          "schema": "relay response schema; storage schema is exposed separately as store_schema",
+          "app_home_display": "relay-safe local display path; raw absolute paths are not required by Flutter",
+          "store_id": "Burn-owned app store id, not a provider account id",
+          "diagnostics": "schema and required-directory readiness reasons with no secrets"
+        }
+      },
+      "emptySemantics": "A missing or uninitialized store is a successful read with store_exists/store_ready/initialized=false and diagnostics.ready_reason explaining why; it is not a transport error.",
+      "errors": {
+        "burn_store_failed": "Store metadata could not be inspected; response uses the standard relay error envelope with code/message and no data payload.",
+        "local_policy_denied": "Relay authorization or root policy rejected the command before store inspection."
+      }
+    },
+    "burn.store.doctor": {
+      "input": {
+        "create": {
+          "type": "boolean",
+          "default": false,
+          "description": "Doctor is read-only unless a future explicit repair command is introduced."
+        }
+      },
+      "pagination": {
+        "supported": false
+      },
+      "output": {
+        "schema": "burn.store.status.v1",
+        "requiredFields": ["schema", "response_schema", "store_schema", "product", "store_exists", "store_ready", "initialized", "storage_scope", "app_home_display", "account_hash", "device_hash", "store_id", "store_id_hash", "updated_at", "diagnostics", "checks"],
+        "semantics": {
+          "schema": "relay response schema; storage schema is exposed separately as store_schema",
+          "checks": "per-check booleans for app home, meta, required directories and schema currency"
+        }
+      },
+      "emptySemantics": "Missing store state returns checks with ok=false and diagnostics; consumers render setup/repair state rather than treating the command as absent.",
+      "errors": {
+        "burn_store_failed": "Store diagnostics could not be inspected.",
+        "local_policy_denied": "Relay authorization or root policy rejected the command."
+      }
+    },
+    "burn.snapshot.get": {
+      "input": {
+        "scan_scope": {
+          "type": "string",
+          "default": "all-history",
+          "allowed": [
+            "all-history",
+            "all",
+            "configured",
+            "active"
+          ],
+          "description": "all-history scans every local Codex/Claude history root discovered under HOME and ignores active CODEX_HOME/BURN_AGENT_PROFILE_ID root constraints; configured/active keeps runner/profile-specific env behavior."
+        },
+        "sessions_cursor": {
+          "type": "number",
+          "default": 0
+        },
+        "sessions_limit": {
+          "type": "number",
+          "default": 500
+        },
+        "runtime_tuning": {
+          "scan_ttl_env": "BURN_SNAPSHOT_SCAN_TTL_MS",
+          "scan_ttl_default_ms": 60000,
+          "scan_timeout_env": "BURN_SNAPSHOT_SCAN_TIMEOUT_MS",
+          "scan_timeout_default_ms": 180000,
+          "description": "snapshot.get all-history scans are expensive on machines with hundreds of local Codex/Claude transcripts; the adapter coalesces inflight scans and keeps a short warm cache across one user refresh."
+        }
+      },
+      "output": {
+        "scan": {
+          "schema": "burn.snapshot.scan.v1",
+          "requiredFields": [
+            "requested_scope",
+            "scope",
+            "source_roots",
+            "counts",
+            "diagnostics",
+            "partial",
+            "errors",
+            "page"
+          ],
+          "counts": [
+            "projects",
+            "sessions",
+            "running",
+            "scanned",
+            "valid",
+            "skipped",
+            "returned_projects",
+            "returned_sessions"
+          ],
+          "diagnostics": [
+            "mode",
+            "elapsed_ms",
+            "cache",
+            "limits"
+          ],
+          "page": [
+            "projects",
+            "sessions"
+          ],
+          "emptyAndErrorSemantics": "Unknown or unavailable diagnostics are empty strings/nulls; partial=true and errors[] identify cache/read/write or scan partial states. Provider raw histories are read-only."
+        }
+      }
+    },
+    "burn.sessions.list": {
+      "options": {
+        "--scope": {
+          "type": "string",
+          "default": "all-history",
+          "allowed": [
+            "all-history",
+            "all",
+            "configured",
+            "active"
+          ],
+          "description": "all-history is the catalog/default scan; configured/active preserves active profile or CODEX_HOME/CLAUDE_CONFIG_DIR behavior."
+        }
+      },
+      "output": {
+        "scan_scope": "all_history|configured",
+        "diagnostics": {
+          "scope": "all_history|configured",
+          "source_roots": "string[]",
+          "elapsed_ms": "number",
+          "partial": "boolean",
+          "errors": "string[]",
+          "cache": "object"
+        }
+      }
+    },
+    "burn.agent.sessions.list": {
+      "input": {
+        "source": {
+          "type": "string",
+          "required": true,
+          "allowed": ["codex", "claude"],
+          "description": "Provider runtime to read."
+        },
+        "project": {
+          "type": "string",
+          "required": true,
+          "description": "Authorized project path or project identifier resolved by adapter path policy."
+        },
+        "profile_id": {
+          "type": "string",
+          "required": false,
+          "description": "Optional explicit discovered profile id such as codex:default or claude:default."
+        },
+        "limit": {
+          "type": "number",
+          "default": 50,
+          "min": 1,
+          "max": 200
+        }
+      },
+      "pagination": {
+        "supported": false,
+        "semantics": "The command returns the newest bounded session list for the selected source/project/profile. Pagination for full transcript content is on burn.agent.session.show."
+      },
+      "output": {
+        "schema": "burn.agent.sessions-list.v1",
+        "requiredFields": ["ok", "interface_version", "source", "project", "sessions", "provider"],
+        "sessionRequiredFields": ["id", "title", "updated_at", "created_at", "message_count", "status"],
+        "semantics": {
+          "sessions": "Newest provider sessions already scoped by source/project/profile; no raw transcript payloads.",
+          "provider": "Runtime, transport, profile and diagnostic fields; unknown values are empty strings/nulls."
+        }
+      },
+      "emptySemantics": "No sessions is a successful response with sessions=[] and provider diagnostics. Flutter renders an empty history state.",
+      "errors": {
+        "missing_source": "source is required.",
+        "missing_project": "project is required or cannot be resolved inside authorized roots.",
+        "local_policy_denied": "Project path is outside authorized roots.",
+        "profile_unavailable": "No usable profile can satisfy the request.",
+        "burn_agent_failed": "Provider CLI or adapter source command failed; the relay envelope includes code/message/cause_code."
+      }
+    },
+    "burn.agent.session.show": {
+      "input": {
+        "source": {
+          "type": "string",
+          "required": true,
+          "allowed": ["codex", "claude"]
+        },
+        "project": {
+          "type": "string",
+          "required": true
+        },
+        "session_id": {
+          "type": "string",
+          "required": true
+        },
+        "profile_id": {
+          "type": "string",
+          "required": false
+        },
+        "cursor": {
+          "type": "number",
+          "default": 0,
+          "min": 0
+        },
+        "limit": {
+          "type": "number",
+          "default": 50,
+          "min": 1,
+          "max": 200
+        },
+        "latest": {
+          "type": "boolean",
+          "default": false,
+          "description": "When true, adapter may return the newest page instead of cursor order."
+        }
+      },
+      "pagination": {
+        "supported": true,
+        "cursor": "Zero-based provider-normalized message cursor.",
+        "limit": "Maximum normalized messages returned; capped at 200.",
+        "responseFields": ["cursor", "prev_cursor", "next_cursor", "end_of_history", "total_messages", "order"]
+      },
+      "output": {
+        "schema": "burn.agent.session.v1",
+        "requiredFields": ["ok", "interface_version", "source", "project", "summary", "messages", "cursor", "next_cursor", "end_of_history", "total_messages", "provider"],
+        "messageRequiredFields": ["id", "role", "text", "created_at", "status", "blocks"],
+        "semantics": {
+          "messages": "Normalized readable transcript blocks only; provider raw JSON is not required by Flutter and must stay redacted unless exposed through a debug-only artifact.",
+          "cursor_fields": "Pagination state is emitted as top-level cursor/prev_cursor/next_cursor/end_of_history/total_messages fields. Flutter accepts an optional nested page object only for forward compatibility.",
+          "provider": "Runtime/profile diagnostics with explicit unknowns."
+        }
+      },
+      "emptySemantics": "An existing empty session returns messages=[] with end_of_history=true and next_cursor=null. Unknown session returns a provider not-found error, not an empty success.",
+      "errors": {
+        "missing_session_id": "session_id is required.",
+        "session_not_found": "No provider history row matches the requested session_id/profile/project.",
+        "local_policy_denied": "Project is outside authorized roots.",
+        "burn_agent_failed": "Provider source show command failed."
+      }
+    },
+    "burn.agent.session.watch": {
+      "input": {
+        "source": {
+          "type": "string",
+          "required": true,
+          "allowed": ["codex", "claude"]
+        },
+        "project": {
+          "type": "string",
+          "required": true
+        },
+        "session_id": {
+          "type": "string",
+          "required": true
+        },
+        "profile_id": {
+          "type": "string",
+          "required": false,
+          "description": "Owning profile for Resume/history routing."
+        },
+        "cursor": {
+          "type": "number",
+          "required": false,
+          "description": "Phone's current transcript cursor; watch emits when latest page advances."
+        },
+        "lease_ms": {
+          "type": "number",
+          "default": 30000,
+          "min": 5000,
+          "max": 120000
+        }
+      },
+      "pagination": {
+        "supported": false,
+        "semantics": "Short-lived watch lease emits progress events only; phone pulls burn.agent.session.show/messagePage for durable JSONL truth."
+      },
+      "output": {
+        "schema": "burn.agent.session.watch.final.v1",
+        "requiredFields": ["schema", "source", "project", "session_id", "cursor", "total_messages", "emitted", "status"],
+        "progressSchema": "burn.agent.session.watch.event.v1",
+        "progressRequiredFields": ["schema", "source", "project", "session_id", "cursor", "total_messages", "reason"],
+        "semantics": {
+          "event": "A lightweight wakeup that the selected session transcript changed. It is not the message payload.",
+          "final": "Lease completion marker; caller may immediately re-arm while the chat screen remains open."
+        }
+      },
+      "emptySemantics": "No changes during the lease is a successful final response with emitted=0.",
+      "errors": {
+        "missing_source": "source is required.",
+        "missing_project": "project is required.",
+        "missing_session_id": "session_id is required.",
+        "local_policy_denied": "Project is outside authorized roots.",
+        "burn_agent_failed": "Provider source show command failed during watch polling."
+      }
+    },
+    "burn.agent.session.create": {
+      "input": {
+        "source": {
+          "type": "string",
+          "required": true,
+          "allowed": ["codex", "claude"]
+        },
+        "project": {
+          "type": "string",
+          "required": true
+        },
+        "prompt": {
+          "type": "string",
+          "required": true
+        },
+        "profile_id": {
+          "type": "string",
+          "required": false
+        },
+        "model": {
+          "type": "string",
+          "required": false
+        },
+        "mode": {
+          "type": "string",
+          "required": false
+        },
+        "options": {
+          "type": "object",
+          "required": false,
+          "description": "Provider SDK options allowed by the managed adapter."
+        },
+        "stream": {
+          "type": "boolean",
+          "default": false
+        },
+        "command_id": {
+          "type": "string",
+          "required": false,
+          "description": "Client stable id used to correlate progress and interruption."
+        }
+      },
+      "pagination": {
+        "supported": false
+      },
+      "output": {
+        "schema": "burn.agent.session-turn.v1",
+        "requiredFields": ["ok", "interface_version", "source", "project", "session_id", "turn_id", "reply", "provider"],
+        "streamEventSchema": "burn.agent.turn.event.v1",
+        "semantics": {
+          "stream_false": "Final response is returned in data after provider turn completes.",
+          "stream_true": "Progress events use schema burn.agent.turn.event.v1 and final response keeps the same final shape.",
+          "turn_id": "May be empty/null for providers that do not expose a durable turn id; interrupt should then use command_id/session_id fallback."
+        }
+      },
+      "emptySemantics": "Prompt cannot be empty. Provider may return empty reply text only with status/code diagnostics; Flutter must render a failed or empty provider response state.",
+      "errors": {
+        "missing_prompt": "prompt is required.",
+        "profile_unavailable": "No launchable account/profile can start a new turn.",
+        "local_policy_denied": "Project is outside authorized roots.",
+        "burn_agent_failed": "Provider command failed; code/message/cause_code are relay-visible."
+      }
+    },
+    "burn.agent.session.continue": {
+      "input": {
+        "source": {
+          "type": "string",
+          "required": true,
+          "allowed": ["codex", "claude"]
+        },
+        "project": {
+          "type": "string",
+          "required": true
+        },
+        "session_id": {
+          "type": "string",
+          "required": true
+        },
+        "prompt": {
+          "type": "string",
+          "required": true
+        },
+        "profile_id": {
+          "type": "string",
+          "required": false
+        },
+        "model": {
+          "type": "string",
+          "required": false
+        },
+        "mode": {
+          "type": "string",
+          "required": false
+        },
+        "options": {
+          "type": "object",
+          "required": false
+        },
+        "stream": {
+          "type": "boolean",
+          "default": false
+        },
+        "command_id": {
+          "type": "string",
+          "required": false
+        }
+      },
+      "pagination": {
+        "supported": false
+      },
+      "output": {
+        "schema": "burn.agent.session-turn.v1",
+        "requiredFields": ["ok", "interface_version", "source", "project", "session_id", "turn_id", "reply", "provider"],
+        "streamEventSchema": "burn.agent.turn.event.v1",
+        "semantics": {
+          "session_id": "Echoes the continued session id or provider-normalized id.",
+          "turn_id": "Provider turn id when available.",
+          "provider": "Includes runtime/profile/transport and unknown fields explicitly empty."
+        }
+      },
+      "emptySemantics": "Empty prompt is rejected. If the session has no readable prior messages but provider accepts continuation, the final turn shape is still returned.",
+      "errors": {
+        "missing_session_id": "session_id is required.",
+        "missing_prompt": "prompt is required.",
+        "session_not_found": "Session cannot be resolved for the source/project/profile.",
+        "local_policy_denied": "Project is outside authorized roots.",
+        "burn_agent_failed": "Provider continue command failed."
+      }
+    },
+    "burn.agent.turn.interrupt": {
+      "input": {
+        "source": {
+          "type": "string",
+          "required": true,
+          "allowed": ["codex", "claude"]
+        },
+        "project": {
+          "type": "string",
+          "required": true
+        },
+        "session_id": {
+          "type": "string",
+          "required": true
+        },
+        "turn_id": {
+          "type": "string",
+          "required": false
+        },
+        "command_id": {
+          "type": "string",
+          "required": false
+        },
+        "profile_id": {
+          "type": "string",
+          "required": false
+        }
+      },
+      "pagination": {
+        "supported": false
+      },
+      "output": {
+        "schema": "burn.agent.turn-interrupt.v1",
+        "requiredFields": ["ok", "interface_version", "source", "project", "session_id", "turn_id", "status", "provider", "provider_result"],
+        "semantics": {
+          "active_process": "If the adapter owns an active local process, it sends SIGTERM then SIGKILL fallback and returns status=interrupted.",
+          "provider_fallback": "If no active process registry match exists, provider-specific interrupt support may be attempted through the CLI.",
+          "id_matching": "turn_id is preferred; session_id and command_id are fallback correlation keys."
+        }
+      },
+      "emptySemantics": "No matching active process is a structured not-found/provider error, not a false success.",
+      "errors": {
+        "missing_session_id": "session_id is required.",
+        "turn_not_found": "No active process or provider turn matches the identifiers.",
+        "local_policy_denied": "Project is outside authorized roots.",
+        "burn_agent_failed": "Provider interrupt command failed."
+      }
+    },
+    "burn.agent.usage.summary": {
+      "input": {
+        "project": {
+          "type": "string",
+          "required": false,
+          "default": "authorized relay root"
+        },
+        "source": {
+          "type": "string",
+          "required": false,
+          "allowed": ["codex", "claude"]
+        },
+        "profile_id": {
+          "type": "string",
+          "required": false
+        },
+        "profile_ids": {
+          "type": "string[]|comma-string",
+          "required": false
+        },
+        "exclude_profile_ids": {
+          "type": "string[]|comma-string",
+          "required": false
+        },
+        "period": {
+          "type": "string",
+          "required": false,
+          "allowed": ["day", "week", "month", "all"]
+        },
+        "from": {
+          "type": "ISO-8601 date/datetime",
+          "required": false
+        },
+        "to": {
+          "type": "ISO-8601 date/datetime",
+          "required": false
+        },
+        "timezone": {
+          "type": "IANA timezone",
+          "required": false
+        },
+        "max_files": {
+          "type": "number",
+          "required": false
+        },
+        "max_depth": {
+          "type": "number",
+          "required": false
+        },
+        "force": {
+          "type": "boolean",
+          "default": false,
+          "description": "For non-refresh commands, force may rebuild Burn-owned derived cache only; provider raw history is read-only."
+        }
+      },
+      "pagination": {
+        "supported": false,
+        "semantics": "Summary is aggregate. Drill-down commands use their own bounded limit fields."
+      },
+      "output": {
+        "schema": "panda-burn.agent-usage-ledger.v1|burn.agent.usage-summary.v1",
+        "requiredFields": ["ok", "schema", "generated_at", "filters", "totals", "by_source", "by_profile", "coverage", "warnings"],
+        "semantics": {
+          "totals": "input/output/total token and cost totals when exact local parse is available; unavailable totals are null with exact_token_totals_available=false.",
+          "coverage": "history files scanned, skipped, max_files/max_depth limits, partial/error state and cache status.",
+          "by_source/by_profile": "Arrays may be empty; rows use safe profile ids and masked paths only."
+        }
+      },
+      "emptySemantics": "No matching history returns ok=true with zero counts, empty row arrays, null costs, and coverage explaining filters.",
+      "errors": {
+        "usage_ledger_failed": "Local usage ledger command failed.",
+        "local_policy_denied": "Project is outside authorized roots.",
+        "invalid_filter": "Filter or date range is malformed."
+      }
+    },
+    "burn.agent.usage.refresh": {
+      "input": {
+        "project": {
+          "type": "string",
+          "required": false,
+          "default": "authorized relay root"
+        },
+        "source": {
+          "type": "string",
+          "required": false,
+          "allowed": ["codex", "claude"]
+        },
+        "profile_ids": {
+          "type": "string[]|comma-string",
+          "required": false
+        },
+        "from": {
+          "type": "ISO-8601 date/datetime",
+          "required": false
+        },
+        "to": {
+          "type": "ISO-8601 date/datetime",
+          "required": false
+        },
+        "max_files": {
+          "type": "number",
+          "required": false
+        },
+        "max_depth": {
+          "type": "number",
+          "required": false
+        }
+      },
+      "pagination": {
+        "supported": false
+      },
+      "output": {
+        "schema": "panda-burn.agent-usage-refresh.v1",
+        "requiredFields": ["ok", "schema", "generated_at", "refreshed", "coverage", "cache", "warnings"],
+        "semantics": {
+          "refreshed": "True when Burn-owned derived usage cache was rebuilt or updated.",
+          "cache": "Burn app store/cache metadata only; provider raw histories are never written."
+        }
+      },
+      "emptySemantics": "No matching files returns ok=true, refreshed=false, and coverage.scanned=0.",
+      "errors": {
+        "usage_ledger_failed": "Cache refresh failed.",
+        "local_policy_denied": "Project is outside authorized roots."
+      }
+    },
+    "burn.agent.usage.status": {
+      "input": {
+        "project": {
+          "type": "string",
+          "required": false,
+          "default": "authorized relay root"
+        }
+      },
+      "pagination": {
+        "supported": false
+      },
+      "output": {
+        "schema": "panda-burn.agent-usage-status.v1",
+        "requiredFields": ["ok", "schema", "generated_at", "store_ready", "cache", "last_refresh", "coverage", "warnings"],
+        "semantics": {
+          "store_ready": "Burn-owned local usage store/cache readiness, not provider account status.",
+          "last_refresh": "Null when no cache has been built."
+        }
+      },
+      "emptySemantics": "No cache returns ok=true with cache.exists=false and last_refresh=null.",
+      "errors": {
+        "usage_ledger_failed": "Status could not be read.",
+        "local_policy_denied": "Project is outside authorized roots."
+      }
+    },
+    "burn.agent.usage.snapshot": {
+      "input": {
+        "project": {
+          "type": "string",
+          "required": false,
+          "default": "authorized relay root"
+        },
+        "from": {
+          "type": "ISO-8601 date/datetime",
+          "required": false
+        },
+        "to": {
+          "type": "ISO-8601 date/datetime",
+          "required": false
+        },
+        "timezone": {
+          "type": "IANA timezone",
+          "required": false
+        }
+      },
+      "pagination": {
+        "supported": false
+      },
+      "output": {
+        "schema": "panda-burn.agent-usage-snapshot.v1",
+        "requiredFields": ["ok", "schema", "generated_at", "filters", "summary", "totals", "activity", "heatmap", "dimensions", "coverage", "warnings"],
+        "semantics": {
+          "summary": "Same aggregate meaning as usage.summary.",
+          "activity/heatmap/dimensions": "Pre-shaped Flutter dashboard data; arrays are safe to render empty."
+        }
+      },
+      "emptySemantics": "No matching usage returns zero totals and empty activity/heatmap/dimensions arrays.",
+      "errors": {
+        "usage_ledger_failed": "Snapshot could not be produced.",
+        "local_policy_denied": "Project is outside authorized roots."
+      }
+    },
+    "burn.agent.usage.totals": {
+      "input": {
+        "project": {
+          "type": "string",
+          "required": false,
+          "default": "authorized relay root"
+        },
+        "source": {
+          "type": "string",
+          "required": false,
+          "allowed": ["codex", "claude"]
+        },
+        "from": {
+          "type": "ISO-8601 date/datetime",
+          "required": false
+        },
+        "to": {
+          "type": "ISO-8601 date/datetime",
+          "required": false
+        },
+        "timezone": {
+          "type": "IANA timezone",
+          "required": false
+        }
+      },
+      "pagination": {
+        "supported": false
+      },
+      "output": {
+        "schema": "panda-burn.agent-usage-totals.v1",
+        "requiredFields": ["ok", "schema", "generated_at", "filters", "totals", "currency", "exact_token_totals_available", "cost_totals_available", "coverage", "warnings"],
+        "semantics": {
+          "totals": "Token/cost totals or nulls with availability booleans.",
+          "currency": "Empty string when costs are unavailable."
+        }
+      },
+      "emptySemantics": "No usage returns zero token counts when exact totals are available, otherwise null totals and availability=false.",
+      "errors": {
+        "usage_ledger_failed": "Totals could not be produced.",
+        "local_policy_denied": "Project is outside authorized roots."
+      }
+    },
+    "burn.agent.usage.activity": {
+      "input": {
+        "project": {
+          "type": "string",
+          "required": false,
+          "default": "authorized relay root"
+        },
+        "from": {
+          "type": "ISO-8601 date/datetime",
+          "required": false
+        },
+        "to": {
+          "type": "ISO-8601 date/datetime",
+          "required": false
+        },
+        "timezone": {
+          "type": "IANA timezone",
+          "required": false
+        },
+        "limit": {
+          "type": "number",
+          "required": false,
+          "default": 100
+        }
+      },
+      "pagination": {
+        "supported": true,
+        "responseFields": ["page.limit", "page.returned", "page.has_more"],
+        "semantics": "Activity is bounded by limit; future cursor fields may be added without breaking current consumers."
+      },
+      "output": {
+        "schema": "panda-burn.agent-usage-activity.v1",
+        "requiredFields": ["ok", "schema", "generated_at", "filters", "activity", "page", "coverage", "warnings"],
+        "activityRowRequiredFields": ["bucket", "source", "profile_id", "sessions", "turns", "input_tokens", "output_tokens", "total_tokens", "cost"]
+      },
+      "emptySemantics": "No matching usage returns activity=[] and page.has_more=false.",
+      "errors": {
+        "usage_ledger_failed": "Activity view could not be produced.",
+        "local_policy_denied": "Project is outside authorized roots."
+      }
+    },
+    "burn.agent.usage.heatmap": {
+      "input": {
+        "project": {
+          "type": "string",
+          "required": false,
+          "default": "authorized relay root"
+        },
+        "from": {
+          "type": "ISO-8601 date/datetime",
+          "required": false
+        },
+        "to": {
+          "type": "ISO-8601 date/datetime",
+          "required": false
+        },
+        "timezone": {
+          "type": "IANA timezone",
+          "required": false
+        }
+      },
+      "pagination": {
+        "supported": false
+      },
+      "output": {
+        "schema": "panda-burn.agent-usage-heatmap.v1",
+        "requiredFields": ["ok", "schema", "generated_at", "filters", "heatmap", "coverage", "warnings"],
+        "heatmapCellRequiredFields": ["day", "hour", "turns", "total_tokens", "cost"]
+      },
+      "emptySemantics": "No matching usage returns heatmap=[]; Flutter renders a blank heatmap state.",
+      "errors": {
+        "usage_ledger_failed": "Heatmap view could not be produced.",
+        "local_policy_denied": "Project is outside authorized roots."
+      }
+    },
+    "burn.agent.usage.filters": {
+      "input": {
+        "project": {
+          "type": "string",
+          "required": false,
+          "default": "authorized relay root"
+        }
+      },
+      "pagination": {
+        "supported": false
+      },
+      "output": {
+        "schema": "panda-burn.agent-usage-filters.v1",
+        "requiredFields": ["ok", "schema", "generated_at", "sources", "profiles", "projects", "date_range", "coverage", "warnings"],
+        "semantics": {
+          "profiles": "Safe ids/labels only; raw account ids and raw paths are not emitted.",
+          "date_range": "Null bounds when no usage has been indexed."
+        }
+      },
+      "emptySemantics": "No usage returns empty sources/profiles/projects and date_range bounds null.",
+      "errors": {
+        "usage_ledger_failed": "Filter options could not be produced.",
+        "local_policy_denied": "Project is outside authorized roots."
+      }
+    },
+    "burn.agent.usage.diagnostics": {
+      "input": {
+        "project": {
+          "type": "string",
+          "required": false,
+          "default": "authorized relay root"
+        }
+      },
+      "pagination": {
+        "supported": false
+      },
+      "output": {
+        "schema": "panda-burn.agent-usage-diagnostics.v1",
+        "requiredFields": ["ok", "schema", "generated_at", "store", "coverage", "partial", "errors", "warnings"],
+        "semantics": {
+          "store": "Burn-owned usage cache/store diagnostics.",
+          "partial": "True when some local history files could not be parsed but safe partial data exists."
+        }
+      },
+      "emptySemantics": "No usage cache/history returns ok=true with coverage counts at 0 and warnings explaining missing inputs.",
+      "errors": {
+        "usage_ledger_failed": "Diagnostics could not be produced.",
+        "local_policy_denied": "Project is outside authorized roots."
+      }
+    },
+    "burn.agent.usage.pricing": {
+      "input": {
+        "project": {
+          "type": "string",
+          "required": false,
+          "default": "authorized relay root"
+        },
+        "source": {
+          "type": "string",
+          "required": false,
+          "allowed": ["codex", "claude"]
+        }
+      },
+      "pagination": {
+        "supported": false
+      },
+      "output": {
+        "schema": "panda-burn.agent-usage-pricing.v1",
+        "requiredFields": ["ok", "schema", "generated_at", "currency", "models", "fallbacks", "warnings"],
+        "semantics": {
+          "models": "Pricing assumptions used for local cost estimates; may be empty when costs are unavailable.",
+          "fallbacks": "Explains unknown provider/model pricing assumptions."
+        }
+      },
+      "emptySemantics": "Unknown pricing returns models=[] and cost_totals_available=false in usage views.",
+      "errors": {
+        "usage_ledger_failed": "Pricing table could not be read."
+      }
+    },
+    "burn.agent.usage.dimensions": {
+      "input": {
+        "project": {
+          "type": "string",
+          "required": false,
+          "default": "authorized relay root"
+        }
+      },
+      "pagination": {
+        "supported": false
+      },
+      "output": {
+        "schema": "panda-burn.agent-usage-dimensions.v1",
+        "requiredFields": ["ok", "schema", "generated_at", "dimensions", "coverage", "warnings"],
+        "dimensionRequiredFields": ["name", "label", "values"]
+      },
+      "emptySemantics": "No usage returns dimensions with known names and values=[] so Flutter can render disabled filters.",
+      "errors": {
+        "usage_ledger_failed": "Dimension list could not be produced.",
+        "local_policy_denied": "Project is outside authorized roots."
+      }
+    },
+    "burn.agent.usage.dimension": {
+      "input": {
+        "project": {
+          "type": "string",
+          "required": false,
+          "default": "authorized relay root"
+        },
+        "dimension": {
+          "type": "string",
+          "required": true,
+          "allowed": ["source", "profile", "project", "model", "day", "hour"]
+        },
+        "limit": {
+          "type": "number",
+          "required": false,
+          "default": 100
+        }
+      },
+      "pagination": {
+        "supported": true,
+        "responseFields": ["page.limit", "page.returned", "page.has_more"]
+      },
+      "output": {
+        "schema": "panda-burn.agent-usage-dimension.v1",
+        "requiredFields": ["ok", "schema", "generated_at", "dimension", "values", "page", "coverage", "warnings"],
+        "valueRequiredFields": ["id", "label", "turns", "total_tokens", "cost"]
+      },
+      "emptySemantics": "No values for a valid dimension returns values=[] and page.has_more=false.",
+      "errors": {
+        "missing_dimension": "dimension is required.",
+        "invalid_dimension": "dimension is not one of the public usage dimensions.",
+        "usage_ledger_failed": "Dimension view could not be produced.",
+        "local_policy_denied": "Project is outside authorized roots."
+      }
+    },
+    "burn.agent.usage.compact": {
+      "input": {
+        "project": {
+          "type": "string",
+          "required": false,
+          "default": "authorized relay root"
+        },
+        "view": {
+          "type": "string",
+          "required": false,
+          "allowed": ["summary", "totals", "activity", "heatmap"]
+        },
+        "from": {
+          "type": "ISO-8601 date/datetime",
+          "required": false
+        },
+        "to": {
+          "type": "ISO-8601 date/datetime",
+          "required": false
+        },
+        "limit": {
+          "type": "number",
+          "required": false,
+          "default": 50
+        }
+      },
+      "pagination": {
+        "supported": true,
+        "responseFields": ["page.limit", "page.returned", "page.has_more"],
+        "semantics": "Only rows in the selected compact view are bounded."
+      },
+      "output": {
+        "schema": "panda-burn.agent-usage-compact.v1",
+        "requiredFields": ["ok", "schema", "generated_at", "view", "summary", "rows", "page", "coverage", "warnings"],
+        "semantics": {
+          "summary": "Small card-ready totals.",
+          "rows": "Compact view rows safe for Flutter list/chart rendering."
+        }
+      },
+      "emptySemantics": "No usage returns a zero/empty summary and rows=[].",
+      "errors": {
+        "usage_ledger_failed": "Compact usage view could not be produced.",
+        "local_policy_denied": "Project is outside authorized roots."
+      }
+    }
+  }
 }

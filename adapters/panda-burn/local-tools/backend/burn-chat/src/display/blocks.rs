@@ -32,6 +32,28 @@ pub(crate) fn ensure_final_reply(builder: &mut DisplayBuilder, reply: &str) {
     }
 }
 
+/// Stable cross-source reconciliation key for a tool-call / tool-result block.
+/// Codex rollout uses `call_id`; codex app-server items use `id`/`callId`;
+/// claude tool_use uses `id` (toolu_...), tool_result uses `tool_use_id`.
+/// Top-level only, so we never grab a nested/unrelated id.
+pub(crate) fn stable_block_key(value: &Value) -> Option<String> {
+    for key in [
+        "call_id",
+        "callId",
+        "tool_use_id",
+        "toolUseId",
+        "id",
+        "itemId",
+    ] {
+        if let Some(text) = value.get(key).and_then(Value::as_str) {
+            if !text.trim().is_empty() {
+                return Some(text.to_string());
+            }
+        }
+    }
+    None
+}
+
 pub(crate) fn add_tool_call_block(builder: &mut DisplayBuilder, title: &str, value: &Value) {
     builder.collect_paths(value);
     let name = value
@@ -59,6 +81,9 @@ pub(crate) fn add_tool_call_block(builder: &mut DisplayBuilder, title: &str, val
         Vec::new(),
         None,
     );
+    if let Some(key) = stable_block_key(value) {
+        builder.set_last_block_stable_key(key);
+    }
 }
 
 pub(crate) fn add_reasoning_block(builder: &mut DisplayBuilder, value: &Value) {
@@ -110,6 +135,59 @@ pub(crate) fn add_tool_result_block(builder: &mut DisplayBuilder, title: &str, v
         Vec::new(),
         None,
     );
+    if let Some(key) = stable_block_key(value) {
+        builder.set_last_block_stable_key(key);
+    }
+}
+
+/// Codex `update_plan` tool call -> a structured `plan` block. Plan lives at
+/// `input.plan` (app-server object) or `arguments` JSON string (rollout), each
+/// step `{step, status}`. Steps are encoded as "status\u{1}text" in `items` so
+/// the phone rebuilds PlanStep(text, state). Returns false if there's no plan.
+pub(crate) fn add_plan_block(builder: &mut DisplayBuilder, value: &Value) -> bool {
+    let plan = value
+        .get("input")
+        .and_then(|input| input.get("plan").cloned())
+        .or_else(|| {
+            value
+                .get("arguments")
+                .and_then(Value::as_str)
+                .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+                .and_then(|parsed| parsed.get("plan").cloned())
+        });
+    let Some(steps) = plan.as_ref().and_then(Value::as_array) else {
+        return false;
+    };
+    if steps.is_empty() {
+        return false;
+    }
+    let mut items = Vec::with_capacity(steps.len());
+    let mut done = 0usize;
+    for step in steps {
+        let text = step.get("step").and_then(Value::as_str).unwrap_or("");
+        let status = step
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("pending");
+        if status == "completed" {
+            done += 1;
+        }
+        items.push(format!("{status}\u{1}{text}"));
+    }
+    let summary = format!("计划 {done}/{} 步", items.len());
+    builder.push(
+        "plan",
+        "normal",
+        "计划",
+        "Codex 计划",
+        summary,
+        false,
+        None,
+        None,
+        items,
+        None,
+    );
+    true
 }
 
 pub(crate) fn add_file_change_block(builder: &mut DisplayBuilder, value: &Value) {

@@ -10,7 +10,8 @@ export async function runUsageLedgerCommand(command, context) {
   const project = await resolvedProject(input, context);
   const args = usageLedgerArgs(command.type, input, project);
   try {
-    const stdout = await execCommand(execPath, [burnCli(context), ...args], {
+    const launch = usageLedgerLaunch(burnCli(context), args);
+    const stdout = await execCommand(launch.command, launch.args, {
       cwd: project,
       timeout: positiveNumber(context.usageLedgerTimeoutMs || env.BURN_RELAY_USAGE_TIMEOUT_MS, 300000),
       maxBuffer: 64 * 1024 * 1024,
@@ -43,6 +44,11 @@ export async function runUsageLedgerCommand(command, context) {
       cause_code: parsed.causeCode,
     };
   }
+}
+
+function usageLedgerLaunch(cli, args) {
+  if (cli.endsWith(".mjs")) return { command: execPath, args: [cli, ...args] };
+  return { command: cli, args };
 }
 
 function usageLedgerArgs(type, input, project) {

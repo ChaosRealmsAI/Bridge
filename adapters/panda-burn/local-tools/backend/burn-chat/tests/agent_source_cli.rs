@@ -178,9 +178,6 @@ rl.on("line", (line) => {
         ])
         .output()
         .expect("run burn-chat source session continue");
-    let _ = fs::remove_file(&runner);
-    let _ = fs::remove_dir_all(&dir);
-
     assert!(
         continue_output.status.success(),
         "stderr: {}",
@@ -198,6 +195,58 @@ rl.on("line", (line) => {
             .and_then(Value::as_str),
         Some("codex-existing-thread")
     );
+
+    let stream_output = Command::new(env!("CARGO_BIN_EXE_burn-chat"))
+        .env("BURN_CODEX_BIN", &runner)
+        .args([
+            "source",
+            "session",
+            "continue",
+            "--source",
+            "codex",
+            "--project",
+            dir.to_str().expect("temp dir should be utf8"),
+            "--session-id",
+            "codex-existing-thread",
+            "--prompt",
+            "resume stream",
+            "--json-stream",
+            "--json",
+        ])
+        .output()
+        .expect("run burn-chat source session continue json stream");
+    let _ = fs::remove_file(&runner);
+    let _ = fs::remove_dir_all(&dir);
+
+    assert!(
+        stream_output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&stream_output.stderr)
+    );
+    let stream_lines: Vec<Value> = String::from_utf8_lossy(&stream_output.stdout)
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("stream line JSON"))
+        .collect();
+    let handle_progress = stream_lines
+        .iter()
+        .find(|value| value.pointer("/turn_id").and_then(Value::as_str) == Some("turn-source-1"))
+        .expect("turn_id progress line");
+    assert_eq!(
+        handle_progress
+            .pointer("/session_id")
+            .and_then(Value::as_str),
+        Some("codex-existing-thread")
+    );
+    assert_eq!(
+        handle_progress
+            .pointer("/raw_json/params/turn/id")
+            .and_then(Value::as_str),
+        Some("turn-source-1")
+    );
+    assert!(stream_lines
+        .iter()
+        .any(|value| value.pointer("/schema").and_then(Value::as_str)
+            == Some("burn.agent.turn.final.v1")));
 }
 
 #[test]

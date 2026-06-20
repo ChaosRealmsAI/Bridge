@@ -10,8 +10,12 @@ import { cleanText, displayPath, lastActivityLabel, pageItems, projectName, sha2
 // sessions() transcript fallback) within the window reuse one scan instead of
 // re-walking the whole HOME tree. Read-only: this never touches chat runtime.
 // Pagination/auth shaping still runs fresh per request, so params are honored.
-// Tune/disable via BURN_SNAPSHOT_SCAN_TTL_MS (default 5000, 0 disables).
-const SCAN_TTL_MS = Math.max(0, Number(process.env.BURN_SNAPSHOT_SCAN_TTL_MS ?? 5000) || 0);
+// Tune/disable via BURN_SNAPSHOT_SCAN_TTL_MS (default 60000, 0 disables).
+// The full all-history scan walks every local Codex/Claude transcript root.
+// Keep a warm result long enough for Projects/Monitor/Usage/Session fallback
+// to share it during one user refresh instead of re-walking HOME repeatedly.
+const SCAN_TTL_MS = Math.max(0, Number(process.env.BURN_SNAPSHOT_SCAN_TTL_MS ?? 60000) || 0);
+const SCAN_TIMEOUT_MS = Math.max(30000, Number(process.env.BURN_SNAPSHOT_SCAN_TIMEOUT_MS ?? 180000) || 180000);
 const scanCache = new Map();
 
 function readScanCache(key) {
@@ -66,9 +70,18 @@ export async function buildSnapshot(context, input = {}) {
   const requestedLimit = Number(input.sessions_limit || input.max_sessions_per_project || input.limit || DEFAULT_SESSIONS_LIMIT);
   const sessionsLimit = Math.max(1, Math.min(Number.isFinite(requestedLimit) ? requestedLimit : DEFAULT_SESSIONS_LIMIT, MAX_SESSIONS_LIMIT));
   const sessionsCursor = Math.max(0, Math.floor(Number(input.sessions_cursor || input.cursor || 0) || 0));
+  const scanScope = normalizeScanScope(input.scan_scope || input.scanScope || input.scope || "all-history");
   const authorizedRoots = await snapshotAuthorizedRoots(context);
-  const scanKey = `scan:${context.cli}\n${context.root}`;
-  const report = await cachedScan(scanKey, () => runBurnSessionsList(context.cli, context.root));
+  const scanKey = [
+    "scan",
+    scanScope.value,
+    context.cli,
+    context.root,
+    process.env.CODEX_HOME || "",
+    process.env.CLAUDE_CONFIG_DIR || "",
+    process.env.BURN_AGENT_PROFILE_ID || "",
+  ].join("\n");
+  const report = await cachedScan(scanKey, () => runBurnSessionsList(context.cli, context.root, scanScope.cli));
   const profileDiscovery = await cachedScan(`profiles:${context.cli}\n${context.root}`, () => runAgentProfileDiscover(context));
   const generatedAt = report.generated_at || new Date().toISOString();
   const snapshotId = cleanText(input.snapshot_id || `snap_${sha256(`${context.root}\n${generatedAt}`).slice(0, 16)}`);
@@ -142,6 +155,17 @@ export async function buildSnapshot(context, input = {}) {
     || a.name.localeCompare(b.name));
   byProject.sort((a, b) => projects.findIndex((p) => p.id === a.id) - projects.findIndex((p) => p.id === b.id));
   running.sort((a, b) => Date.parse(b.updated_at || 0) - Date.parse(a.updated_at || 0));
+  const sessionsSection = {
+    section: "sessions",
+    cursor: sessionsCursor,
+    limit: sessionsLimit,
+    next_cursor: byProject.some((project) => project.session_page?.has_more) ? sessionsCursor + sessionsLimit : null,
+    has_more: byProject.some((project) => project.session_page?.has_more),
+    end_of_list: byProject.every((project) => project.session_page?.end_of_list !== false),
+    page_error_code: "",
+    dedupe_count: 0,
+    payload_bytes: Buffer.byteLength(JSON.stringify(byProject.flatMap((project) => project.sessions || [])), "utf8"),
+  };
 
   return withPayloadBytes({
     generated_at: generatedAt,
@@ -152,28 +176,83 @@ export async function buildSnapshot(context, input = {}) {
     running,
     projects,
     by_project: byProject,
-    scanned: report.scanned || null,
-    skipped: report.skipped || null,
+    scanned: Number(report.totals?.scanned || report.scanned || 0) || null,
+    skipped: Number(report.totals?.skipped || report.skipped || 0) || null,
+    scan: normalizedScanReport(report, scanScope, projects, byProject, sessionsSection),
     agent_profiles: profileDiscovery ? publicProfileDiscovery(profileDiscovery) : null,
     sections: {
-      sessions: {
-        section: "sessions",
-        cursor: sessionsCursor,
-        limit: sessionsLimit,
-        next_cursor: byProject.some((project) => project.session_page?.has_more) ? sessionsCursor + sessionsLimit : null,
-        has_more: byProject.some((project) => project.session_page?.has_more),
-        end_of_list: byProject.every((project) => project.session_page?.end_of_list !== false),
-        page_error_code: "",
-        dedupe_count: 0,
-        payload_bytes: Buffer.byteLength(JSON.stringify(byProject.flatMap((project) => project.sessions || [])), "utf8"),
-      },
+      sessions: sessionsSection,
     },
   });
 }
 
-async function runBurnSessionsList(cli, workdir) {
-  const stdout = await execCommand(cli, ["sessions", "list", "--json"], { cwd: workdir, timeout: 60000, maxBuffer: 16 * 1024 * 1024 });
+async function runBurnSessionsList(cli, workdir, scanScope) {
+  const stdout = await execCommand(cli, ["sessions", "list", "--scope", scanScope, "--json"], { cwd: workdir, timeout: SCAN_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024 });
   return JSON.parse(stdout);
+}
+
+function normalizeScanScope(raw) {
+  const value = cleanText(raw).toLowerCase().replace(/_/g, "-");
+  if (!value || value === "all" || value === "all-history" || value === "history") {
+    return { value: "all_history", cli: "all-history" };
+  }
+  if (value === "configured" || value === "active" || value === "profile") {
+    return { value: "configured", cli: "configured" };
+  }
+  const error = new Error(`invalid scan_scope: ${raw}`);
+  error.code = "invalid_scan_scope";
+  throw error;
+}
+
+function normalizedScanReport(report, scanScope, projects, byProject, sessionsSection) {
+  const diagnostics = report && typeof report.diagnostics === "object" ? report.diagnostics : {};
+  const totals = report && typeof report.totals === "object" ? report.totals : {};
+  const sourceRoots = Array.isArray(diagnostics.source_roots) ? diagnostics.source_roots.map(cleanText).filter(Boolean) : [];
+  const errors = scanErrors(diagnostics);
+  return {
+    schema: "burn.snapshot.scan.v1",
+    requested_scope: scanScope.value,
+    scope: cleanText(report?.scan_scope || diagnostics.scope) || scanScope.value,
+    source_roots: sourceRoots,
+    counts: {
+      projects: Number(totals.projects || report?.by_project?.length || 0),
+      sessions: Number(totals.sessions || 0),
+      running: Number(totals.running || report?.running_total || 0),
+      scanned: Number(totals.scanned || report?.scanned || 0),
+      valid: Number(totals.valid || 0),
+      skipped: Number(totals.skipped || report?.skipped || 0),
+      returned_projects: projects.length,
+      returned_sessions: byProject.reduce((sum, project) => sum + (Array.isArray(project.sessions) ? project.sessions.length : 0), 0),
+    },
+    diagnostics: {
+      mode: cleanText(diagnostics.mode),
+      elapsed_ms: Number(diagnostics.elapsed_ms || 0),
+      cache: diagnostics.cache || null,
+      limits: diagnostics.limits || null,
+    },
+    partial: Boolean(diagnostics.partial || errors.length),
+    errors,
+    page: {
+      projects: {
+        returned: projects.length,
+        total: Number(totals.projects || report?.by_project?.length || 0),
+        authorized_filter_applied: true,
+      },
+      sessions: sessionsSection,
+    },
+  };
+}
+
+function scanErrors(diagnostics) {
+  const errors = Array.isArray(diagnostics?.errors) ? diagnostics.errors.map(cleanText).filter(Boolean) : [];
+  for (const [code, message] of [
+    ["cache_read_error", diagnostics?.cache?.read_error],
+    ["cache_write_error", diagnostics?.cache?.write_error],
+  ]) {
+    const text = cleanText(message);
+    if (text) errors.push(`${code}: ${text}`);
+  }
+  return errors;
 }
 
 async function runAgentProfileDiscover(context) {

@@ -1,8 +1,8 @@
 use serde_json::Value;
 
 use super::blocks::{
-    add_file_change_block, add_raw_if_useful, add_reasoning_block, add_tool_call_block,
-    add_tool_result_block,
+    add_file_change_block, add_plan_block, add_raw_if_useful, add_reasoning_block,
+    add_tool_call_block, add_tool_result_block,
 };
 use super::utils::{compact_json, summarize};
 use super::DisplayBuilder;
@@ -60,7 +60,13 @@ pub(crate) fn add_codex_event_block(builder: &mut DisplayBuilder, value: &Value)
             add_reasoning_block(builder, event);
         }
         "function_call" | "custom_tool_call" | "web_search_call" | "tool_search_call" => {
-            add_tool_call_block(builder, "Codex 工具调用", event)
+            // update_plan -> structured plan block; otherwise a normal tool call.
+            if event.get("name").and_then(Value::as_str) == Some("update_plan")
+                && add_plan_block(builder, event)
+            {
+            } else {
+                add_tool_call_block(builder, "Codex 工具调用", event)
+            }
         }
         "function_call_output"
         | "custom_tool_call_output"
@@ -150,7 +156,12 @@ fn add_codex_app_server_event_block(builder: &mut DisplayBuilder, value: &Value,
                     add_reasoning_block(builder, item);
                 }
                 "functionCall" | "customToolCall" | "webSearchCall" | "toolSearchCall" => {
-                    add_tool_call_block(builder, "Codex 工具调用", item)
+                    if item.get("name").and_then(Value::as_str) == Some("update_plan")
+                        && add_plan_block(builder, item)
+                    {
+                    } else {
+                        add_tool_call_block(builder, "Codex 工具调用", item)
+                    }
                 }
                 "fileChange" => add_file_change_block(builder, item),
                 "functionCallOutput"

@@ -216,6 +216,86 @@ test("product adapter runtime handles envelope dispatch, progress, and replay wi
   }
 });
 
+test("product adapter runtime keeps relay authorization contexts scoped across bootstraps", async () => {
+  const seen = [];
+  const runtime = await createBridgeProductAdapterRuntime({
+    productId: "product-a",
+    schemaId: "product-relay-v1",
+    async dispatch(command, context) {
+      seen.push({
+        type: command.type,
+        device_id: context.activeRelayContext?.device_id,
+        authorization_id: context.activeRelayContext?.authorization_id,
+      });
+      return {
+        ok: true,
+        type: command.type,
+        device_id: context.activeRelayContext?.device_id,
+        authorization_id: context.activeRelayContext?.authorization_id,
+      };
+    },
+  });
+
+  try {
+    const first = await bootstrapRelayKey(runtime, {
+      deviceId: "dev_scope_1",
+      authorizationId: "auth_scope_1",
+      authorizationEpoch: "2",
+    });
+    const second = await bootstrapRelayKey(runtime, {
+      deviceId: "dev_scope_2",
+      authorizationId: "auth_scope_2",
+      authorizationEpoch: "3",
+    });
+
+    const firstRequest = await scopedRelayEnvelope(first, {
+      channelId: "chan_scope_1",
+      requestKey: "req_scope_1",
+      type: "product.first",
+    });
+    const firstResponse = await postJson(runtime.url, firstRequest);
+    assert.deepEqual(await decryptBridgeRelayEnvelope(firstResponse.response_envelope, first.key), {
+      ok: true,
+      type: "product.first",
+      device_id: "dev_scope_1",
+      authorization_id: "auth_scope_1",
+    });
+
+    const secondRequest = await scopedRelayEnvelope(second, {
+      channelId: "chan_scope_2",
+      requestKey: "req_scope_2",
+      type: "product.second",
+    });
+    const secondResponse = await postJson(runtime.url, secondRequest);
+    assert.deepEqual(await decryptBridgeRelayEnvelope(secondResponse.response_envelope, second.key), {
+      ok: true,
+      type: "product.second",
+      device_id: "dev_scope_2",
+      authorization_id: "auth_scope_2",
+    });
+
+    assert.deepEqual(seen.map((item) => item.authorization_id), ["auth_scope_1", "auth_scope_2"]);
+
+    const wrongContext = await encryptBridgeRelayEnvelope({ type: "product.wrong" }, first.key, {
+      product_id: "product-a",
+      device_id: "dev_scope_1",
+      channel_id: "chan_wrong",
+      seq: 1,
+      request_key: "req_wrong",
+      authorization_id: "auth_scope_wrong",
+      authorization_epoch: "2",
+      relay_key_id: first.relayKeyId,
+      adapter_id: "product-a",
+      schema_id: "product-relay-v1",
+    });
+    const rejected = await postRaw(runtime.url, wrongContext);
+    assert.equal(rejected.status, 400);
+    assert.match(JSON.stringify(rejected.payload), /relay_key_missing|authorization_context_mismatch|relay_key_context_mismatch|adapter_denied/);
+  } finally {
+    await runtime.close();
+  }
+});
+
 test("relay key lookup supports scoped and default adapter keys", () => {
   const key = Buffer.alloc(32, 4);
   const relayKeys = new Map();
@@ -229,6 +309,109 @@ test("relay key lookup supports scoped and default adapter keys", () => {
   assert.equal(bridgeRelayKeyForEnvelope({ product_id: "product-b", device_id: "dev_2" }, new Map(), key), key);
 });
 
+async function bootstrapRelayKey(runtime, input) {
+  const key = webcrypto.getRandomValues(new Uint8Array(32));
+  const exchange = runtime.relayKeyExchange;
+  const relayKeyId = exchange.key_id;
+  const aadText = [
+    "bridge-relay-key-bootstrap-v1",
+    "product-a",
+    input.deviceId,
+    input.authorizationId,
+    input.authorizationEpoch,
+    relayKeyId,
+  ].join("|");
+  const wrapped = await wrapRelayKeyForDesktop(key, exchange, aadText);
+  const bootstrap = {
+    status: "ready",
+    product_id: "product-a",
+    device_id: input.deviceId,
+    authorization_id: input.authorizationId,
+    authorization_epoch: input.authorizationEpoch,
+    key_id: relayKeyId,
+    algorithm: "ECDH-P256+A256GCM",
+    wrapped_key: wrapped,
+    authorization_mirror: {
+      status: "active",
+      product_id: "product-a",
+      authorization_epoch: Number(input.authorizationEpoch),
+      authorization_context: {
+        product_id: "product-a",
+        device_id: input.deviceId,
+        authorization_id: input.authorizationId,
+        authorization_epoch: input.authorizationEpoch,
+        relay_key_id: relayKeyId,
+      },
+      policy: { capabilities: ["relay.envelope", "relay.ack"] },
+    },
+  };
+  await postJson(runtime.url.replace(/\/v1\/relay-envelope$/, "/v1/relay-key/bootstrap"), bootstrap);
+  return { ...input, key, relayKeyId };
+}
+
+async function scopedRelayEnvelope(scope, input) {
+  return encryptBridgeRelayEnvelope({ type: input.type }, scope.key, {
+    product_id: "product-a",
+    device_id: scope.deviceId,
+    channel_id: input.channelId,
+    seq: 1,
+    request_key: input.requestKey,
+    authorization_id: scope.authorizationId,
+    authorization_epoch: scope.authorizationEpoch,
+    relay_key_id: scope.relayKeyId,
+    adapter_id: "product-a",
+    schema_id: "product-relay-v1",
+  });
+}
+
+async function wrapRelayKeyForDesktop(relayKey, exchange, aadText) {
+  const desktopPublicKey = await webcrypto.subtle.importKey(
+    "jwk",
+    { ...exchange.public_jwk, ext: true },
+    { name: "ECDH", namedCurve: "P-256" },
+    false,
+    [],
+  );
+  const appKeyPair = await webcrypto.subtle.generateKey(
+    { name: "ECDH", namedCurve: "P-256" },
+    true,
+    ["deriveBits"],
+  );
+  const appPublicJwk = await webcrypto.subtle.exportKey("jwk", appKeyPair.publicKey);
+  const shared = new Uint8Array(await webcrypto.subtle.deriveBits(
+    { name: "ECDH", public: desktopPublicKey },
+    appKeyPair.privateKey,
+    256,
+  ));
+  const aad = new TextEncoder().encode(aadText);
+  const version = new TextEncoder().encode("bridge-relay-key-bootstrap-v1");
+  const material = new Uint8Array(shared.length + version.length + aad.length);
+  material.set(shared, 0);
+  material.set(version, shared.length);
+  material.set(aad, shared.length + version.length);
+  const wrappingKeyBytes = new Uint8Array(await webcrypto.subtle.digest("SHA-256", material));
+  const wrappingKey = await webcrypto.subtle.importKey("raw", wrappingKeyBytes, { name: "AES-GCM" }, false, ["encrypt"]);
+  const nonce = webcrypto.getRandomValues(new Uint8Array(12));
+  const ciphertext = new Uint8Array(await webcrypto.subtle.encrypt(
+    { name: "AES-GCM", iv: nonce, additionalData: aad },
+    wrappingKey,
+    relayKey,
+  ));
+  return {
+    algorithm: "ECDH-P256+A256GCM",
+    key_id: exchange.key_id,
+    app_public_jwk: {
+      kty: "EC",
+      crv: "P-256",
+      x: appPublicJwk.x,
+      y: appPublicJwk.y,
+    },
+    nonce_b64: Buffer.from(nonce).toString("base64"),
+    ciphertext_b64: Buffer.from(ciphertext).toString("base64"),
+    aad_b64: Buffer.from(aad).toString("base64"),
+  };
+}
+
 async function postJson(url, body) {
   const response = await fetch(url, {
     method: "POST",
@@ -238,4 +421,14 @@ async function postJson(url, body) {
   const payload = await response.json();
   assert.equal(response.status, 200, JSON.stringify(payload));
   return payload;
+}
+
+async function postRaw(url, body) {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const payload = await response.json();
+  return { status: response.status, payload };
 }
