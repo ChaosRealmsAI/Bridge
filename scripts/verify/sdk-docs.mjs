@@ -6,9 +6,9 @@ import { resolve } from "node:path";
 const root = resolve(new URL("../..", import.meta.url).pathname);
 
 const sdkReadme = read("packages/sdk/README.md");
-const callingGuide = read("docs/sdk-calling-guide.md");
-const productIntegration = read("docs/product-integration.md");
-const desktopUserGuide = read("docs/desktop-user-guide.md");
+const callingGuide = read("spec/L4/reference-materials/docs/sdk-calling-guide.md");
+const productIntegration = read("spec/L4/reference-materials/docs/product-integration.md");
+const desktopUserGuide = read("spec/L4/reference-materials/docs/desktop-user-guide.md");
 const sdkSource = read("packages/sdk/src/index.js");
 const sdkTypes = read("packages/sdk/src/index.d.ts");
 const serverSource = read("packages/sdk/src/server.js");
@@ -59,8 +59,8 @@ for (const marker of [
 
 for (const doc of [
   ["packages/sdk/README.md", sdkReadme],
-  ["docs/sdk-calling-guide.md", callingGuide],
-  ["docs/product-integration.md", productIntegration],
+  ["spec/L4/reference-materials/docs/sdk-calling-guide.md", callingGuide],
+  ["spec/L4/reference-materials/docs/product-integration.md", productIntegration],
 ]) {
   const [name, text] = doc;
   for (const marker of [
@@ -80,8 +80,8 @@ for (const doc of [
 }
 
 for (const doc of [
-  ["docs/sdk-calling-guide.md", callingGuide],
-  ["docs/product-integration.md", productIntegration],
+  ["spec/L4/reference-materials/docs/sdk-calling-guide.md", callingGuide],
+  ["spec/L4/reference-materials/docs/product-integration.md", productIntegration],
 ]) {
   const [name, text] = doc;
   assert.ok(text.includes("未发布到 npm"), `${name} must state current npm publication status`);
@@ -116,7 +116,7 @@ assert.equal(adapterPackage.exports["."].default, "./src/index.js");
 assert.ok(packageJson.scripts["check:sdk-docs"]?.includes("scripts/verify/sdk-docs.mjs"), "root package must expose check:sdk-docs");
 
 for (const [name, text] of [
-  ["docs/desktop-user-guide.md", desktopUserGuide],
+  ["spec/L4/reference-materials/docs/desktop-user-guide.md", desktopUserGuide],
 ]) {
   for (const marker of [
     "AI runtime",
@@ -138,7 +138,7 @@ for (const [name, text] of [
 console.log(JSON.stringify({
   ok: true,
   check: "bridge-sdk-docs",
-  docs: ["packages/sdk/README.md", "docs/sdk-calling-guide.md", "docs/product-integration.md", "examples/minimal-caller/README.md", "docs/desktop-user-guide.md"],
+  docs: ["packages/sdk/README.md", "spec/L4/reference-materials/docs/sdk-calling-guide.md", "spec/L4/reference-materials/docs/product-integration.md", "examples/minimal-caller/README.md", "spec/L4/reference-materials/docs/desktop-user-guide.md"],
   packages: [sdkPackage.name, adapterPackage.name],
 }));
 

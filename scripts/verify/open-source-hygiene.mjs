@@ -41,6 +41,7 @@ const forbiddenTrackedGeneratedSegments = new Set([
 ]);
 
 const forbiddenTrackedReleaseBinary = /\.(?:7z|aab|apk|appimage|dmg|exe|ipa|msi|pkg|rar|tar|tgz|txz|whl|xip|zip)$/i;
+const publicSpecDocsPrefix = "spec/L4/reference-materials/docs/";
 
 const privateSupabaseRefs = [
   "jfoiiqg" + "frdosiwmkkfsf",
@@ -64,6 +65,12 @@ const existingUntrackedScanned = untracked.filter((file) => existsSync(file) && 
 const contentScanFiles = [...existingTracked, ...existingUntrackedScanned];
 const contentScanSkip = new Set([".gitignore", "scripts/verify/open-source-hygiene.mjs"]);
 for (const file of existingTracked) {
+  if (file.startsWith("spec/")) {
+    assert.ok(
+      isAllowedTrackedSpecFile(file),
+      `private spec path is tracked outside public reference-doc whitelist: ${file}`,
+    );
+  }
   assert.equal(
     forbiddenTrackedPrefixes.some((prefix) => file.startsWith(prefix)),
     false,
@@ -130,6 +137,7 @@ function trackedGeneratedSegment(file) {
 }
 
 function shouldScanUntracked(file) {
+  if (isAllowedTrackedSpecFile(file)) return true;
   if (file.startsWith("spec/")) return false;
   if (file.startsWith(".pandacode/")) return false;
   if (file.startsWith(".git/")) return false;
@@ -142,4 +150,8 @@ function shouldScanUntracked(file) {
 function contentRuleAllowed(file, rule) {
   return rule.label === "pandacode runtime"
     && file.startsWith("adapters/panda-burn/local-tools/backend/");
+}
+
+function isAllowedTrackedSpecFile(file) {
+  return file.startsWith(publicSpecDocsPrefix) && file.endsWith(".md");
 }

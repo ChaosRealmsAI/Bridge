@@ -51,4 +51,4 @@ await ack();
 
 文件里 `desktopClaim` / `desktopConfirm` / `connectorReadAndReply` / `connector` 这些 helper **不是**调用方的活，它们模拟原生桌面端与本机连接器（用的是公开的 connector API）。生产环境里这部分由真实的 Panda Bridge Desktop 完成。
 
-Bridge 只负责授权、连接状态、HMAC delegated call 和 opaque relay 传输；业务协议、payload 加密和 key wrapping 都在产品侧。授权是用户的唯一决策（`active` / `paused` / 删除），连接全自动，调用方只读 `connected`。完整说明见 [`docs/product-integration.md`](../../docs/product-integration.md)。
+Bridge 只负责授权、连接状态、HMAC delegated call 和 opaque relay 传输；业务协议、payload 加密和 key wrapping 都在产品侧。授权是用户的唯一决策（`active` / `paused` / 删除），连接全自动，调用方只读 `connected`。完整说明见 [`spec/L4/reference-materials/docs/product-integration.md`](../../spec/L4/reference-materials/docs/product-integration.md)。

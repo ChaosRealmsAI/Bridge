@@ -392,9 +392,9 @@ function desktopUiFiles() {
 function activeDocFiles() {
   return [
     "README.md",
-    "docs/desktop-user-guide.md",
-    "docs/sdk-calling-guide.md",
-    "docs/product-integration.md",
+    "spec/L4/reference-materials/docs/desktop-user-guide.md",
+    "spec/L4/reference-materials/docs/sdk-calling-guide.md",
+    "spec/L4/reference-materials/docs/product-integration.md",
     "packages/sdk/README.md",
     "examples/sdk-call-examples/README.md",
     "examples/minimal-caller/README.md",

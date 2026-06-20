@@ -68,7 +68,7 @@ npm run desktop:package:windows:xwin
 
 默认给用户使用我们提供的 Bridge Cloud，用户不需要自建服务器。
 
-桌面端也支持用户自己维护 Bridge Cloud。用户可以在设置里添加自托管 API，Desktop 会通过 `/v1/health` 和 `/v1/diagnostics` 验证服务器；左侧产品列表仍来自固定 Panda 产品目录，服务器 Profile 只决定授权、presence 和 relay 使用哪个 Bridge API。自托管部署和本机 Adapter 配置见 [`docs/self-hosting.md`](docs/self-hosting.md)。
+桌面端也支持用户自己维护 Bridge Cloud。用户可以在设置里添加自托管 API，Desktop 会通过 `/v1/health` 和 `/v1/diagnostics` 验证服务器；左侧产品列表仍来自固定 Panda 产品目录，服务器 Profile 只决定授权、presence 和 relay 使用哪个 Bridge API。自托管部署和本机 Adapter 配置见 [`spec/L4/reference-materials/docs/self-hosting.md`](spec/L4/reference-materials/docs/self-hosting.md)。
 
 官方托管资源：
 

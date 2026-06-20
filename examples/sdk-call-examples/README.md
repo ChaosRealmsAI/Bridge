@@ -26,4 +26,4 @@ npm run verify:sdk-examples
 
 Bridge SDK 不提供产品业务 helper。产品 command schema、加密 session、明文处理和本机执行都在调用方产品和 Product Adapter 内完成。
 
-更小的接入路线看 [`examples/minimal-caller/`](../minimal-caller/)；完整接入说明见 [`docs/product-integration.md`](../../docs/product-integration.md)。
+更小的接入路线看 [`examples/minimal-caller/`](../minimal-caller/)；完整接入说明见 [`spec/L4/reference-materials/docs/product-integration.md`](../../spec/L4/reference-materials/docs/product-integration.md)。
