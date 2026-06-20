@@ -26,6 +26,7 @@ Object.assign(TEXT["zh-CN"],{authorizing:"处理中…"});
 Object.assign(TEXT["zh-TW"],{authorizing:"處理中…"});
 Object.assign(TEXT.en,{authorizing:"Processing…"});
 Object.assign(TEXT.ja,{authorizing:"処理中…"});
+Object.assign(TEXT["zh-CN"],{aboutAuthor:"关于作者"});Object.assign(TEXT["zh-TW"],{aboutAuthor:"關於作者"});Object.assign(TEXT.en,{aboutAuthor:"About"});Object.assign(TEXT.ja,{aboutAuthor:"作者について"});
 Object.assign(TEXT["zh-CN"],{addServerTitle:"添加自托管服务器",addServerDesc:"连接你自己部署的 Bridge 服务器，数据只在你和服务器之间流转。",serverUrlLabel:"服务器地址",pairTokenHint:"在你的 Bridge 服务器上生成一次性配对 Token，粘贴到这里完成配对。",pairingBusy:"配对中…",healthOnline:"在线",healthDegraded:"重连中",healthOffline:"离线",healthChecking:"检测中…",healthUnknown:"未检测",currentTag:"当前",officialTag:"官方",selfhostTag:"自托管",recheck:"重新检测",removeServerConfirm:"移除 {name}？",removeServerDesc:"将从这台电脑删除该服务器配置，已配对的设备凭证也会失效。"});
 Object.assign(TEXT["zh-TW"],{addServerTitle:"新增自託管伺服器",addServerDesc:"連接你自己部署的 Bridge 伺服器，資料只在你與伺服器之間流轉。",serverUrlLabel:"伺服器位址",pairTokenHint:"在你的 Bridge 伺服器上產生一次性配對 Token，貼到這裡完成配對。",pairingBusy:"配對中…",healthOnline:"線上",healthDegraded:"重新連線中",healthOffline:"離線",healthChecking:"檢測中…",healthUnknown:"未檢測",currentTag:"目前",officialTag:"官方",selfhostTag:"自託管",recheck:"重新檢測",removeServerConfirm:"移除 {name}？",removeServerDesc:"將從這台電腦刪除該伺服器設定，已配對的裝置憑證也會失效。"});
 Object.assign(TEXT.en,{addServerTitle:"Pair a self-hosted server",addServerDesc:"Connect to your own Bridge server — traffic stays between you and that server.",serverUrlLabel:"Server address",pairTokenHint:"Generate a one-time Pairing Token on your Bridge server, then paste it here.",pairingBusy:"Pairing…",healthOnline:"Online",healthDegraded:"Reconnecting",healthOffline:"Offline",healthChecking:"Checking…",healthUnknown:"Not checked",currentTag:"Active",officialTag:"Official",selfhostTag:"Self-hosted",recheck:"Re-check",removeServerConfirm:"Remove {name}?",removeServerDesc:"This removes the server from this computer; its paired device credential is revoked."});
@@ -38,6 +39,7 @@ Object.assign(TEXT["zh-CN"],{devicePresent:"设备在线",devicePaired:"已配�
 Object.assign(TEXT["zh-TW"],{devicePresent:"裝置線上",devicePaired:"已配對",deviceUnpaired:"未配對",authActive:"已授權",authNone:"未授權",engineStopped:"本機引擎已停止",adapterMissing:"Adapter 缺失",engineReady:"本機就緒",transportRealtime:"即時通道",transportPolling:"輪詢備援",transportIdle:"傳輸閒置",healthIncompatible:"不相容"});
 Object.assign(TEXT.en,{devicePresent:"Device present",devicePaired:"Paired",deviceUnpaired:"Unpaired",authActive:"Authorized",authNone:"Not authorized",engineStopped:"Engine stopped",adapterMissing:"Adapter missing",engineReady:"Local ready",transportRealtime:"Realtime",transportPolling:"Polling fallback",transportIdle:"Transport idle",healthIncompatible:"Incompatible"});
 Object.assign(TEXT.ja,{devicePresent:"デバイスオンライン",devicePaired:"ペアリング済み",deviceUnpaired:"未ペアリング",authActive:"承認済み",authNone:"未承認",engineStopped:"エンジン停止",adapterMissing:"Adapter なし",engineReady:"ローカル準備完了",transportRealtime:"リアルタイム",transportPolling:"ポーリング代替",transportIdle:"転送待機",healthIncompatible:"非対応"});
+Object.assign(TEXT["zh-CN"],{probeHealth:"health",probeDiagnostics:"diagnostics",probeFailedAt:"失败阶段",serverProbeTimedOut:"检测超时，请重新检测"});Object.assign(TEXT["zh-TW"],{probeHealth:"health",probeDiagnostics:"diagnostics",probeFailedAt:"失敗階段",serverProbeTimedOut:"檢測逾時，請重新檢測"});Object.assign(TEXT.en,{probeHealth:"health",probeDiagnostics:"diagnostics",probeFailedAt:"failed at",serverProbeTimedOut:"Check timed out. Re-check the server."});Object.assign(TEXT.ja,{probeHealth:"health",probeDiagnostics:"diagnostics",probeFailedAt:"失敗段階",serverProbeTimedOut:"確認がタイムアウトしました。再確認してください"});
 Object.assign(TEXT["zh-CN"],{localComputer:"本机电脑",computerName:"电脑名称",computerModel:"机型",computerSystem:"系统",computerFingerprint:"本机指纹"});
 Object.assign(TEXT["zh-TW"],{localComputer:"本機電腦",computerName:"電腦名稱",computerModel:"機型",computerSystem:"系統",computerFingerprint:"本機指紋"});
 Object.assign(TEXT.en,{localComputer:"Local Computer",computerName:"Computer name",computerModel:"Model",computerSystem:"System",computerFingerprint:"Local fingerprint"});
@@ -47,7 +49,8 @@ Object.assign(TEXT["zh-TW"],{localComputerUnavailable:"本機資訊暫不可用"
 Object.assign(TEXT.en,{localComputerUnavailable:"Local computer unavailable"});
 Object.assign(TEXT.ja,{localComputerUnavailable:"ローカル情報を取得できません"});
 const OFFICIAL_PROFILE={id:"official",name:"Official Bridge Cloud",api_base:DEFAULT_API,web_origin:"https://bridge.chaos-realms.cc",source:"official",products:BASE_PRODUCTS.map(clone)};
-const ui={view:"product",selected:"panda-burn",products:BASE_PRODUCTS.map(clone),settings:{launch_at_login:true,appearance:"auto",language:"auto",api_base:DEFAULT_API,cloud_profiles:[clone(OFFICIAL_PROFILE)],selected_cloud_profile_id:"official"},pending:null,status:null,booting:true,statusError:null,health:{},serverSheet:null,serverListExpanded:false};
+const ui={view:"product",selected:"panda-burn",products:BASE_PRODUCTS.map(clone),settings:{launch_at_login:true,appearance:"auto",language:"auto",api_base:DEFAULT_API,cloud_profiles:[clone(OFFICIAL_PROFILE)],selected_cloud_profile_id:"official"},pending:null,status:null,booting:true,statusError:null,health:{},serverBusy:{},serverProbeBackoff:{},serverProbeBackoffTimers:{},serverProbeTimers:{},serverProbeTokens:{},serverSheet:null,serverListExpanded:false};
+const SERVER_PROBE_SUCCESS_COOLDOWN_MS=2500,SERVER_PROBE_FAILURE_BACKOFF_MS=30000,SERVER_PROBE_UI_TIMEOUT_MS=8000;
 const mq=window.matchMedia("(prefers-color-scheme: dark)");
 const ipcState={seq:0,calls:new Map()};
 window.PandaBridge={
@@ -77,6 +80,7 @@ window.PandaBridge={
     }
     if(message.type==="event"&&message.event==="deep_link")handleDeepLink(message.url).catch((error)=>showDeepLinkError(message.url,error));
     if(message.type==="event"&&message.event==="refresh")refresh().catch(()=>{});
+    if(message.type==="event"&&message.event==="focus")onWindowFocus();
   }
 };
 function clone(x){return JSON.parse(JSON.stringify(x))}
@@ -94,18 +98,9 @@ function t(k,vars){let s=(TEXT[lang()]||TEXT["zh-CN"])[k]||k;const merged={devic
 function esc(x){return String(x??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
 function applyTheme(){const mode=ui.settings.appearance||"auto";document.documentElement.dataset.theme=(mode==="dark"||(mode==="auto"&&mq.matches))?"dark":"light";document.documentElement.dataset.os=platformKind()==="windows"?"windows":"mac"}
 if(mq.addEventListener)mq.addEventListener("change",applyTheme);
-
-/* ===== 官方品牌 LOGO（桥梁） ===== */
 const LOGO_BRIDGE=`<svg viewBox="0 0 1254 1254" role="img" aria-labelledby="title desc" class="full bridgeOnlyMark" preserveAspectRatio="xMidYMid meet" aria-hidden="true" focusable="false"><path fill="currentColor" d="M 474 363 L 518 363 L 518 437.5 L 525 463.5 L 536 487.5 Q 548.93 511.07 568.5 528 Q 580.63 538.38 596.5 545 L 614.5 550 L 630.5 551 L 631.5 550 L 639.5 550 L 652.5 547 L 668.5 540 Q 687.34 528.84 701 512.5 Q 723.19 486.69 734 449.5 L 734 445.5 L 736 439.5 L 736 363 L 780 363 L 780 433.5 L 800 476.5 L 814 499.5 Q 833.6 527.9 858.5 551 Q 879.51 570.49 904.5 586 L 946.5 609 L 971.5 620 L 990.5 626 L 993.5 628 L 996.5 628 L 1006.5 632 L 1033.5 639 L 1038 639 L 1027.5 656 L 1023.5 656 L 1003.5 651 L 978.5 643 L 948.5 631 L 921.5 618 L 877.5 591 Q 854.02 574.48 834 554.5 Q 802.88 523.12 780.5 483 L 780 581.5 L 794.5 592 L 827.5 611 L 875.5 633 L 880.5 634 L 904.5 644 L 947.5 658 L 993.5 670 L 997.5 670 L 1002.5 672 L 1020 675 L 998 732.5 L 979.5 775 Q 970.99 738.51 948.5 716 Q 937.18 704.32 921.5 697 L 904.5 692 L 888.5 691 L 887.5 692 L 879.5 692 L 865.5 696 Q 846.8 703.8 834 717.5 L 823 730.5 L 810 753.5 L 803 772.5 L 797.5 799 L 797 624.5 L 794.5 622 L 780 614 L 780 895.5 L 779.5 896 L 737.5 896 L 736 896.5 L 736 690.5 Q 733.5 689 735 683.5 L 729 660.5 L 722 645.5 Q 711.03 626.47 694.5 613 Q 678.81 599.69 656.5 593 L 643.5 590 L 636.5 590 L 635.5 589 L 619.5 589 L 618.5 590 L 611.5 590 L 610.5 591 L 601.5 592 L 584.5 598 Q 563.67 607.67 549 623.5 Q 536.23 637.23 528 655.5 L 522 672.5 L 520 686.5 L 519 687.5 L 519 695.5 L 518 696.5 L 518 896 L 497.5 896 Q 496.5 898 492.5 897 L 491.5 896 L 474 896 L 473.5 614 L 457 624.5 L 456.5 798 Q 448.4 743.1 415.5 713 Q 403.97 702.53 388.5 696 L 373.5 692 L 356.5 691 L 355.5 692 L 349.5 692 L 348.5 693 L 340.5 694 L 326.5 700 Q 312.85 707.35 303 718.5 Q 282.75 740.75 274.5 775 L 251 719.5 L 250 714.5 L 237 683.5 L 235 675 L 247.5 673 L 252.5 671 L 256.5 671 L 261.5 669 L 265.5 669 L 289.5 663 L 293.5 661 L 304.5 659 L 370.5 637 L 403.5 623 L 427.5 611 L 474 583 L 473.5 483 Q 448.25 532.75 408.5 568 Q 390.31 584.31 369.5 598 L 323.5 624 L 288.5 639 L 265.5 647 L 244.5 652 L 240.5 654 L 227 656 L 218 639.5 L 245.5 633 L 279.5 622 L 322.5 603 L 347.5 589 L 368.5 575 Q 391.64 558.64 411 538.5 Q 430.8 517.8 446 492.5 L 464 458.5 L 474 434.5 L 474 363 Z"/></svg>`;
 const AVATAR_COLORS=["linear-gradient(155deg,#8d80f5,#5b4dd6)","linear-gradient(155deg,#39b2ae,#117a84)","linear-gradient(155deg,#f0b35e,#d98a1f)","linear-gradient(155deg,#5a9cff,#2a6de8)","linear-gradient(155deg,#e46b8a,#b13d6a)","linear-gradient(155deg,#54c08a,#1f8a5a)"];
-function avatarFor(email){
-  const s=String(email||"PB");
-  const local=s.replace(/@.*/,"");
-  const toks=local.split(/[.\-_+\s]+/).filter(Boolean);
-  const letters=((toks.length>=2?toks.slice(0,2).map(x=>x[0]).join(""):local.slice(0,2))||"PB").toUpperCase();
-  let hash=0;for(const ch of s)hash=(hash*31+ch.charCodeAt(0))>>>0;
-  return {txt:letters,bg:AVATAR_COLORS[hash%AVATAR_COLORS.length]};
-}
+function avatarFor(email){const s=String(email||"PB"),local=s.replace(/@.*/,""),toks=local.split(/[.\-_+\s]+/).filter(Boolean),letters=((toks.length>=2?toks.slice(0,2).map(x=>x[0]).join(""):local.slice(0,2))||"PB").toUpperCase();let hash=0;for(const ch of s)hash=(hash*31+ch.charCodeAt(0))>>>0;return {txt:letters,bg:AVATAR_COLORS[hash%AVATAR_COLORS.length]}}
 const GEAR=`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M19.2 12a7.2 7.2 0 0 0-.1-1.2l2-1.5-2-3.4-2.3 1a7.2 7.2 0 0 0-2.1-1.2L14.3 3h-4l-.4 2.7a7.2 7.2 0 0 0-2.1 1.2l-2.3-1-2 3.4 2 1.5a7.3 7.3 0 0 0 0 2.4l-2 1.5 2 3.4 2.3-1a7.2 7.2 0 0 0 2.1 1.2l.4 2.7h4l.4-2.7a7.2 7.2 0 0 0 2.1-1.2l2.3 1 2-3.4-2-1.5c.07-.4.1-.8.1-1.2z"/></svg>`;
 const I={
   arrow:`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 17 17 7"/><path d="M9 7h8v8"/></svg>`,
@@ -127,7 +122,18 @@ const ICN={
   warn:`<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg>`
 };
 
+function captureScroll(){
+  const el=document.querySelector(".setscroll")||document.querySelector(".acctscroll");
+  if(!el)return null;
+  return {sel:el.classList.contains("setscroll")?".setscroll":".acctscroll",top:el.scrollTop};
+}
+function restoreScroll(s){
+  if(!s||!s.top)return;
+  const el=document.querySelector(s.sel);
+  if(el)el.scrollTop=s.top;
+}
 function render(){
+  const _scroll=captureScroll();
   document.documentElement.lang=lang();
   document.querySelectorAll(".brandMark").forEach((el)=>el.innerHTML=LOGO_BRIDGE);
   document.getElementById("setIco").innerHTML=GEAR;
@@ -135,11 +141,15 @@ function render(){
   document.getElementById("settingsLabel").textContent=t("settings");
   document.getElementById("railTabs").innerHTML=ui.products.map(p=>tabHtml(p)).join("");
   document.getElementById("settingsTab").setAttribute("aria-current",ui.view==="settings"?"true":"false");
+  const aboutTab=document.getElementById("aboutTab");
+  if(aboutTab){document.getElementById("aboutIco").innerHTML=window.PandaBridgeAbout.icon;document.getElementById("aboutLabel").textContent=t("aboutAuthor");aboutTab.setAttribute("aria-current",ui.view==="about"?"true":"false")}
   document.getElementById("engine").innerHTML=engineHtml();
   const pane=document.getElementById("pane");
-  pane.innerHTML=ui.view==="settings"?settingsHtml():productHtml(productById(ui.selected)||ui.products[0]);
+  pane.innerHTML=ui.view==="about"?window.PandaBridgeAbout.html():ui.view==="settings"?settingsHtml():productHtml(productById(ui.selected)||ui.products[0]);
   document.getElementById("modalRoot").innerHTML=modalHtml();
   applyTheme();
+  if(ui.view==="about")window.PandaBridgeAbout.init(lang());
+  restoreScroll(_scroll);
 }
 function selectedLive(){
   return ui.status&&ui.status.selected_profile?ui.status.selected_profile:null;
@@ -300,27 +310,22 @@ function toggleServerList(){ui.serverListExpanded=!ui.serverListExpanded;closePo
 function serverHealth(p){
   const active=p.id===(ui.settings.selected_cloud_profile_id);
   const live=active?selectedLiveForProfile(p):null;
-  const probed=ui.health[p.id];
+  const probed=serverHealthState(p.id);
   const persistedError=profileProbeError(p);
-  if(probed&&probed.state==="checking"&&!live)return{state:"checking",latency:probed.latency};
+  if(probed&&probed.state==="checking"&&(serverBusy(p.id)||!live))return{state:"checking",latency:probed.latency};
   if(probed&&probed.state==="offline")return{state:"offline",latency:probed.latency};
   if(active){
     if(ui.statusError)return{state:"offline"};
     if(live){
-      const nativeLatency=live.server?.probe_latency_ms||null;
-      if(live.server?.error||live.server?.reachable===false)return{state:"offline"};
-      if(live.server?.compatible===false)return{state:"degraded"};
-      if(live.server?.reachable===true&&live.server?.compatible!==false){
-        if(live.device?.paired&&live.account?.authorized&&live.local_engine?.running&&live.local_engine?.adapter_health!=="missing"&&live.transport?.realtime_state==="connected"){
-          return{state:"online",latency:nativeLatency};
-        }
-        return{state:"degraded",latency:nativeLatency};
-      }
-      if(live.server?.compatible===true)return{state:"unknown"};
-    }
-    if(ui.status&&ui.status.worker_running){
-      if(ui.status.realtime_connected){return{state:"degraded"}}
-      return{state:"degraded"};
+      const s=live.server||{};
+      const nativeLatency=s.probe_latency_ms||null;
+      // A stale stored probe ("needs re-check") must read as Loading, not offline —
+      // otherwise selecting an online server flips it to 离线 until the next probe lands.
+      if(s.source==="profile_probe_stale")return{state:"checking"};
+      if(s.reachable===false||s.error)return{state:"offline"};
+      if(s.compatible===false)return{state:"degraded"};
+      if(s.reachable===true&&s.compatible===true)return{state:"online",latency:nativeLatency};
+      if(s.reachable===true)return{state:"unknown",latency:nativeLatency};
     }
   }
   if(!live&&persistedError)return{state:"offline"};
@@ -329,26 +334,31 @@ function serverHealth(p){
 }
 function serverDetail(p,h){
   const live=selectedLiveForProfile(p);
+  const probeState=serverHealthState(p.id);
+  if(h.state==="offline"&&probeState?.error)return String(probeState.error).slice(0,120);
   if(!live){
     const persistedError=profileProbeError(p);
     if(persistedError)return persistedError;
-    if(h.state==="offline"&&ui.health[p.id]?.error)return String(ui.health[p.id].error).slice(0,120);
     return p.api_base||"";
   }
-  if(p.id===ui.settings.selected_cloud_profile_id&&live.server?.error){
-    return String(live.server.error).slice(0,120);
+  if(p.id===ui.settings.selected_cloud_profile_id&&live.server?.error&&h.state==="offline"){
+    return [String(live.server.error).slice(0,120),serverProbeDetail(live.server)].filter(Boolean).join(" · ");
   }
   const device=live.device?.paired?(live.device.present===true?t("devicePresent"):t("devicePaired")):t("deviceUnpaired");
   const auth=live.account?.authorized?t("authActive"):t("authNone");
   const local=live.local_engine?.running===false?t("engineStopped"):(live.local_engine?.adapter_health==="missing"?t("adapterMissing"):t("engineReady"));
   const tr=live.transport?.realtime_state==="connected"?t("transportRealtime"):(live.transport?.polling_state==="active"?t("transportPolling"):t("transportIdle"));
-  return [device,auth,local,tr].join(" · ");
+  return [device,auth,local,tr,serverProbeDetail(live.server)].filter(Boolean).join(" · ");
 }
+function serverProbeDetail(s){if(!s)return"";const p=[],ph=probePhaseLabel(s.failure_phase);if(s.failure_phase)p.push(`${t("probeFailedAt")} ${ph}`);if(s.health_latency_ms)p.push(`${t("probeHealth")} ${Math.round(s.health_latency_ms)}ms`);if(s.diagnostics_latency_ms)p.push(`${t("probeDiagnostics")} ${Math.round(s.diagnostics_latency_ms)}ms`);return p.join(" · ")}
+function probePhaseLabel(phase){const p=String(phase||"").toLowerCase();return p==="health"?t("probeHealth"):p==="diagnostics"?t("probeDiagnostics"):(p||"probe")}
 function serverCardHtml(p,selectedId){
   const active=p.id===selectedId;
   const official=p.id==="official";
   const host=hostOnly(p.api_base);
   const h=serverHealth(p);
+  const busy=serverBusy(p.id);
+  const cooling=serverProbeCooldownMs(p.id)>0;
   const lat=h.state==="online"&&h.latency?` <span class="srv-lat">· ${h.latency}ms</span>`:"";
   const label=h.state==="degraded"&&selectedLiveForProfile(p)?.server?.compatible===false?t("healthIncompatible"):t("health"+h.state.charAt(0).toUpperCase()+h.state.slice(1));
   const detail=serverDetail(p,h);
@@ -356,10 +366,10 @@ function serverCardHtml(p,selectedId){
     ?`<span class="srv-ico n-cyan">${I.cloud}</span>`
     :`<span class="srv-ico n-gray">${I.server}</span>`;
   const actions=`<div class="srv-actions">
-      <button class="srv-act${h.state==="checking"?" spin":""}" title="${esc(t("recheck"))}" aria-label="${esc(t("recheck"))}" onclick="probeServer(event,'${esc(p.id)}')">${I.refresh}</button>
+      <button class="srv-act${h.state==="checking"?" spin":""}" title="${esc(t("recheck"))}" aria-label="${esc(t("recheck"))}" onclick="probeServer(event,'${esc(p.id)}')" ${busy||cooling?`disabled${busy?" aria-busy=\"true\"":""}`:""}>${I.refresh}</button>
       ${official?"":`<button class="srv-act danger" title="${esc(t("delete"))}" aria-label="${esc(t("delete"))}" onclick="confirmRemoveServer(event,'${esc(p.id)}')">${I.trash}</button>`}
     </div>`;
-  return `<div class="srv ${active?"active":""}" role="button" tabindex="0" aria-current="${active}" onclick="selectServer(event,'${esc(p.id)}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();selectServer(event,'${esc(p.id)}')}">
+  return `<div class="srv ${active?"active":""}" data-pid="${esc(p.id)}" role="button" tabindex="0" aria-current="${active}" aria-busy="${busy?"true":"false"}" onclick="selectServer(event,'${esc(p.id)}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();selectServer(event,'${esc(p.id)}')}">
       ${ico}
       <div class="srv-meta">
         <div class="srv-name"><span class="nm">${esc(p.name||host)}</span>${active?`<span class="srv-cur">${t("currentTag")}</span>`:`<span class="srv-cur" style="background:var(--surface-2);color:var(--ink-3)">${official?t("officialTag"):t("selfhostTag")}</span>`}</div>
@@ -369,6 +379,38 @@ function serverCardHtml(p,selectedId){
       <span class="srv-health ${h.state}"><i class="d"></i>${label}${lat}</span>
       ${actions}
     </div>`;
+}
+function patchServerCard(id){
+  const card=[...document.querySelectorAll(".srv")].find(el=>el.dataset.pid===id);
+  if(!card)return false;
+  const profiles=(ui.settings&&ui.settings.cloud_profiles)||[];
+  const p=profiles.find(x=>x.id===id);
+  if(!p)return false;
+  const h=serverHealth(p);
+  const busy=serverBusy(id);
+  const cooling=serverProbeCooldownMs(id)>0;
+  const lat=h.state==="online"&&h.latency?` <span class="srv-lat">· ${h.latency}ms</span>`:"";
+  const label=h.state==="degraded"&&selectedLiveForProfile(p)?.server?.compatible===false?t("healthIncompatible"):t("health"+h.state.charAt(0).toUpperCase()+h.state.slice(1));
+  const detail=serverDetail(p,h);
+  const badge=card.querySelector(".srv-health");
+  if(badge){
+    const sig=h.state+"|"+label+"|"+(h.state==="online"&&h.latency?h.latency:"");
+    if(badge.dataset.sig!==sig){
+      const animate=badge.dataset.sig!==undefined&&badge.dataset.sig!=="";
+      badge.className="srv-health "+h.state;badge.innerHTML=`<i class="d"></i>${label}${lat}`;badge.dataset.sig=sig;
+      if(animate){badge.classList.add("bumped");clearTimeout(badge.__bumpT);badge.__bumpT=setTimeout(()=>badge.classList.remove("bumped"),520)}
+    }
+  }
+  const detailEl=card.querySelector(".srv-detail");
+  if(detailEl&&detailEl.textContent!==detail)detailEl.textContent=detail;
+  card.setAttribute("aria-busy",busy?"true":"false");
+  const refreshBtn=card.querySelector(".srv-act:not(.danger)");
+  if(refreshBtn){
+    refreshBtn.classList.toggle("spin",h.state==="checking");
+    if(busy||cooling){refreshBtn.disabled=true;if(busy)refreshBtn.setAttribute("aria-busy","true");else refreshBtn.removeAttribute("aria-busy")}
+    else{refreshBtn.disabled=false;refreshBtn.removeAttribute("aria-busy")}
+  }
+  return true;
 }
 function serverSheetHtml(){
   const f=ui.serverSheet||{};
@@ -435,8 +477,9 @@ function authSummaryHtml(p){
 function productById(id){return ui.products.find(p=>p.id===id)}
 function displayHost(p){return p.origin||p.domain||hostOnly(p.web_url)}
 function hostOnly(value){try{return new URL(value).host}catch{return String(value||"").replace(/^https?:\/\//,"").replace(/\/.*$/,"")}}
-function pick(id){ui.view="product";ui.selected=id;closePop();render()}
-function pickSettings(){ui.view="settings";closePop();render();probeAllServers()}
+function pick(id){ui.view="product";ui.selected=id;closePop();stopServerAutoRefresh();render()}
+function pickSettings(){ui.view="settings";closePop();render();probeAllServers();startServerAutoRefresh()}
+function pickAbout(){ui.view="about";closePop();stopServerAutoRefresh();render()}
 async function toggleAuth(productId,index){
   const p=productById(productId),a=p?.accounts?.[index];if(!a)return;
   try{await window.PandaBridge.call("toggle_authorization",{product_id:productId,account:a.id||a.email});toast(a.authorized==="paused"?t("resumed"):t("paused"));await refresh()}catch(e){showError(e)}
@@ -476,56 +519,83 @@ async function submitPairServer(){
 async function selectServer(ev,id){
   if(ev&&ev.target&&ev.target.closest&&ev.target.closest(".srv-act"))return;
   if(id===(ui.settings&&ui.settings.selected_cloud_profile_id))return;
-  ui.health[id]={state:"checking",at:Date.now()};render();
-  try{ui.settings=await window.PandaBridge.call("select_cloud_profile",{profile_id:id});toast(t("serverSelected"));await refresh()}catch(e){showError(e);await refresh().catch(()=>{})}
+  if(serverBusy(id))return;
+  const token=beginServerProbe(id,"select");let switched=false;render();
+  try{const settings=await window.PandaBridge.call("select_cloud_profile",{profile_id:id});if(!serverProbeCurrent(id,token))return;ui.settings=settings;ui.health[id]={state:"checking",at:Date.now()};toast(t("serverSelected"));switched=true}catch(e){if(serverProbeCurrent(id,token)){ui.health[id]={state:"offline",error:String(e?.message||e),at:Date.now()};showError(e)}}
+  // Stay in Loading after the switch and kick a fresh probe — the just-switched
+  // profile's stored probe is usually stale, so resolve it to a real online/offline
+  // instead of letting the stale marker render as 离线.
+  finally{const current=serverProbeCurrent(id,token);finishServerProbe(id,token);render();if(current&&switched){await refresh().catch(()=>{});setServerProbeBackoff(id,0);probeServer(null,id)}else if(current)refresh().catch(()=>{})}
 }
-async function probeServer(ev,id){
+async function probeServer(ev,id,opts){
+  const silent=!!(opts&&opts.silent);
   if(ev&&ev.stopPropagation)ev.stopPropagation();
-  ui.health[id]={state:"checking"};render();
+  if(serverBusy(id)||serverProbeCooldownMs(id)>0)return;
+  const token=beginServerProbe(id,"probe",silent);let shouldRefresh=false;
+  if(!silent){if(!patchServerCard(id))render()}
   try{
-    ui.settings=await window.PandaBridge.call("refresh_cloud_profile",{profile_id:id});
+    const settings=await window.PandaBridge.call("refresh_cloud_profile",{profile_id:id});if(!serverProbeCurrent(id,token))return;ui.settings=settings;
     const profile=((ui.settings&&ui.settings.cloud_profiles)||[]).find(p=>p.id===id);
     const persistedError=profileProbeError(profile);
-    if(persistedError){
-      ui.health[id]={state:"offline",error:persistedError,at:Date.now()};
-      await refresh();
-      return;
-    }
+    if(persistedError){ui.health[id]={state:"offline",error:persistedError,at:Date.now()};setServerProbeBackoff(id,SERVER_PROBE_FAILURE_BACKOFF_MS);shouldRefresh=true;return}
     const latency=profileProbeLatency(profile);
-    ui.health[id]={state:"online",latency,at:Date.now()};
-    await refresh();
-    return;
-  }catch(e){
-    ui.health[id]={state:"offline",error:String(e?.message||e)};
-    await refresh().catch(()=>{});
-  }
-  render();
+    ui.health[id]={state:"online",latency,at:Date.now()};setServerProbeBackoff(id,SERVER_PROBE_SUCCESS_COOLDOWN_MS);shouldRefresh=true;return;
+  }catch(e){if(serverProbeCurrent(id,token)){ui.health[id]={state:"offline",error:String(e?.message||e),at:Date.now()};setServerProbeBackoff(id,SERVER_PROBE_FAILURE_BACKOFF_MS);shouldRefresh=true}}
+  finally{const current=serverProbeCurrent(id,token);finishServerProbe(id,token);if(!patchServerCard(id))render();if(current&&shouldRefresh&&id===(ui.settings&&ui.settings.selected_cloud_profile_id))refresh().catch(()=>{})}
 }
+function serverBusy(id){return !!(ui.serverBusy&&ui.serverBusy[id])}
+function setServerBusy(id,value){ui.serverBusy=ui.serverBusy||{};if(value)ui.serverBusy[id]=value;else delete ui.serverBusy[id]}
+function serverProbeTimeoutMs(){const n=Number(window.__PANDA_BRIDGE_TEST_PROBE_TIMEOUT_MS||SERVER_PROBE_UI_TIMEOUT_MS);return Number.isFinite(n)&&n>0?n:SERVER_PROBE_UI_TIMEOUT_MS}
+function serverHealthState(id){const h=ui.health&&ui.health[id];return h&&h.state==="checking"&&Date.now()-Number(h.at||0)>serverProbeTimeoutMs()?{state:"offline",error:t("serverProbeTimedOut"),at:h.at,timedOut:true}:h}
+function beginServerProbe(id,kind,silent){const token=`${Date.now()}-${Math.random()}`;ui.serverProbeTokens[id]=token;setServerBusy(id,kind||"probe");if(!silent||!ui.health[id])ui.health[id]={state:"checking",at:Date.now()};if(ui.serverProbeTimers[id])clearTimeout(ui.serverProbeTimers[id]);ui.serverProbeTimers[id]=setTimeout(()=>expireServerProbe(id,token),serverProbeTimeoutMs());return token}
+function serverProbeCurrent(id,token){return !!token&&ui.serverProbeTokens&&ui.serverProbeTokens[id]===token}
+function finishServerProbe(id,token){if(token&&!serverProbeCurrent(id,token))return;if(ui.serverProbeTimers&&ui.serverProbeTimers[id]){clearTimeout(ui.serverProbeTimers[id]);delete ui.serverProbeTimers[id]}if(ui.serverProbeTokens)delete ui.serverProbeTokens[id];setServerBusy(id,null)}
+function expireServerProbe(id,token){if(token&&!serverProbeCurrent(id,token))return;ui.health[id]={state:"offline",error:t("serverProbeTimedOut"),at:Date.now(),timedOut:true};finishServerProbe(id,token);if(!patchServerCard(id))render()}
+function setServerProbeBackoff(id,ms){ui.serverProbeBackoff=ui.serverProbeBackoff||{};ui.serverProbeBackoffTimers=ui.serverProbeBackoffTimers||{};if(ui.serverProbeBackoffTimers[id]){clearTimeout(ui.serverProbeBackoffTimers[id]);delete ui.serverProbeBackoffTimers[id]}if(ms>0){ui.serverProbeBackoff[id]=Date.now()+ms;ui.serverProbeBackoffTimers[id]=setTimeout(()=>{delete ui.serverProbeBackoffTimers[id];if(serverProbeCooldownMs(id)<=0)render()},ms+20)}else delete ui.serverProbeBackoff[id]}
+function serverProbeCooldownMs(id){const until=Number(ui.serverProbeBackoff&&ui.serverProbeBackoff[id]||0),left=until-Date.now();if(left<=0){if(until)setServerProbeBackoff(id,0);return 0}return left}
 function profileProbeLatency(profile){
   const updated=String(profile?.updated_at||"");
   if(!updated.startsWith("probe:"))return null;
-  const part=updated.split("|").slice(1).find(item=>item.trim().startsWith("latency_ms:"));
-  const value=part?Number(part.split(":").slice(1).join(":").trim()):0;
+  const value=profileProbeMarkerNumber(updated,"latency_ms")||profileProbeMarkerNumber(updated,"total_ms")||0;
   return Number.isFinite(value)&&value>0?Math.round(value):null;
 }
+function profileProbeMarkerNumber(updated,key){const part=String(updated||"").split("|").slice(1).find(item=>item.trim().startsWith(`${key}:`)),value=part?Number(part.split(":").slice(1).join(":").trim()):0;return Number.isFinite(value)&&value>0?value:null}
 function profileProbeError(profile){
   const updated=String(profile?.updated_at||"");
   if(!updated.startsWith("probe_error:"))return null;
   const at=updated.indexOf("|");
   if(at<0)return null;
-  const detail=updated.slice(at+1).replace(/[\r\n|]+/g," ").replace(/\s+/g," ").trim();
+  const detail=updated.slice(at+1).split("|").map(part=>part.trim()).filter(part=>part&&!/^(phase|latency_ms|total_ms|health_ms|diagnostics_ms):/i.test(part)).join(" ").replace(/[\r\n|]+/g," ").replace(/\s+/g," ").trim();
   return detail?detail.slice(0,120):null;
 }
-function probeAllServers(){
+const SERVER_HEALTH_TTL_MS=15000;
+function probeAllServers(opts){
   if(ui.serverSheet||ui.view!=="settings")return;
+  const silent=!!(opts&&opts.silent);
+  const force=!!(opts&&opts.force);
   const profiles=(ui.settings&&ui.settings.cloud_profiles)||[];
   const selected=(ui.settings&&ui.settings.selected_cloud_profile_id)||"";
   visibleServers(profiles,selected).forEach((p,i)=>{
+    if(serverBusy(p.id))return;// a probe is genuinely in flight
+    if(serverProbeCooldownMs(p.id)>0)return;// just probed — don't hammer
     const cur=ui.health[p.id];
-    if(cur&&(cur.state==="online"||cur.state==="offline"||cur.state==="checking"))return;
-    setTimeout(()=>{if(!ui.serverSheet&&ui.view==="settings")probeServer(null,p.id)},130*i);
+    const fresh=!force&&cur&&(cur.state==="online"||cur.state==="offline")&&(Date.now()-Number(cur.at||0))<SERVER_HEALTH_TTL_MS;
+    if(fresh)return;
+    setTimeout(()=>{if(!ui.serverSheet&&ui.view==="settings"&&!serverBusy(p.id)&&serverProbeCooldownMs(p.id)<=0)probeServer(null,p.id,{silent})},130*i);
   });
 }
+let serverAutoRefreshTimer=null;
+function startServerAutoRefresh(){
+  stopServerAutoRefresh();
+  serverAutoRefreshTimer=setInterval(()=>{
+    if(ui.view!=="settings"||ui.serverSheet){stopServerAutoRefresh();return}
+    if(typeof document!=="undefined"&&document.hidden)return;
+    probeAllServers({silent:true});
+  },SERVER_HEALTH_TTL_MS);
+}
+function stopServerAutoRefresh(){if(serverAutoRefreshTimer){clearInterval(serverAutoRefreshTimer);serverAutoRefreshTimer=null}}
+let focusRefreshTimer=null;
+function onWindowFocus(){if(ui.view!=="settings"||ui.serverSheet)return;clearTimeout(focusRefreshTimer);focusRefreshTimer=setTimeout(()=>{if(ui.view==="settings"&&!ui.serverSheet)probeAllServers({silent:true,force:true})},220)}
 function confirmRemoveServer(ev,id){
   ev.stopPropagation();
   const p=((ui.settings&&ui.settings.cloud_profiles)||[]).find(x=>x.id===id);if(!p)return;
@@ -635,6 +705,8 @@ function confirmDelete(ev,productId,index){
 }
 document.addEventListener("pointerdown",e=>{if(popEl&&!popEl.contains(e.target))closePop()},true);
 document.addEventListener("keydown",e=>{if(e.key==="Escape"){closePop();closeServerSheet();denyIntent()}});
+window.addEventListener("focus",onWindowFocus);
+document.addEventListener("visibilitychange",()=>{if(!document.hidden)onWindowFocus()});
 let toastTimer;
 function toast(msg){document.getElementById("toastTxt").textContent=msg;const el=document.getElementById("toast");el.classList.add("on");clearTimeout(toastTimer);toastTimer=setTimeout(()=>el.classList.remove("on"),1900)}
 function showError(e){toast(`${t("failed")} · ${String(e?.message||e).slice(0,120)}`)}
@@ -657,7 +729,7 @@ function installFallback(){
     const serverCompatible=profile.id==="official"?null:true;
     const serverError=profile.id==="official"&&officialError?"Official server probe failed":null;
     const server={reachable:serverReachable,compatible:serverCompatible,last_probe_at:serverReachable?new Date().toISOString():null,error:serverError,source:serverReachable?"demo_profile_probe":"demo_not_probed"};
-    if(serverReachable)server.probe_latency_ms=12;
+    if(serverReachable){server.probe_latency_ms=12;server.health_latency_ms=4;server.diagnostics_latency_ms=8}
     const running=authorized;
     return {
       ...clone(mock),

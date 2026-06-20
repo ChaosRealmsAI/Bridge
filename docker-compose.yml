@@ -5,12 +5,18 @@ services:
       dockerfile: Dockerfile
     ports:
       - "${BRIDGE_SERVER_PORT:-8787}:8787"
+    volumes:
+      - bridge-data:/data
     environment:
       PORT: "8787"
       BRIDGE_SERVER_HOST: "0.0.0.0"
       BRIDGE_SERVER_URL: "${BRIDGE_SERVER_URL:-http://127.0.0.1:8787}"
       BRIDGE_SELFHOST_ADMIN_TOKEN: "${BRIDGE_SELFHOST_ADMIN_TOKEN:?set BRIDGE_SELFHOST_ADMIN_TOKEN before starting}"
       BRIDGE_SERVER_STARTUP_PAIR: "${BRIDGE_SERVER_STARTUP_PAIR:-1}"
-      BRIDGE_LOCAL_MEMORY: "${BRIDGE_LOCAL_MEMORY:-1}"
-      BRIDGE_ENV: "${BRIDGE_ENV:-local}"
+      BRIDGE_FILE_STORE_PATH: "${BRIDGE_FILE_STORE_PATH:-/data/bridge-store.json}"
+      BRIDGE_LOCAL_MEMORY: "${BRIDGE_LOCAL_MEMORY:-}"
+      BRIDGE_ENV: "${BRIDGE_ENV:-selfhost}"
       BRIDGE_PRODUCT_REGISTRY_MODE: "${BRIDGE_PRODUCT_REGISTRY_MODE:-builtin}"
+
+volumes:
+  bridge-data:

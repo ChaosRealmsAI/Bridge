@@ -12,7 +12,16 @@ pub(crate) fn get_json_with_install<T: for<'de> Deserialize<'de>>(
     bearer: Option<&str>,
     install_id: Option<&str>,
 ) -> Result<T, String> {
-    let mut request = http_client().get(url);
+    get_json_with_client(http_client(), url, bearer, install_id)
+}
+
+pub(crate) fn get_json_with_client<T: for<'de> Deserialize<'de>>(
+    client: &Client,
+    url: &str,
+    bearer: Option<&str>,
+    install_id: Option<&str>,
+) -> Result<T, String> {
+    let mut request = client.get(url);
     if let Some(token) = bearer {
         request = request.bearer_auth(token);
     }
@@ -64,6 +73,19 @@ pub(crate) fn http_client() -> &'static Client {
             .timeout(Duration::from_secs(90))
             .pool_max_idle_per_host(8)
             .pool_idle_timeout(Duration::from_secs(120))
+            .build()
+            .unwrap_or_else(|_| Client::new())
+    })
+}
+
+pub(crate) fn profile_probe_http_client() -> &'static Client {
+    static CLIENT: OnceLock<Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        Client::builder()
+            .connect_timeout(Duration::from_secs(2))
+            .timeout(Duration::from_secs(5))
+            .pool_max_idle_per_host(4)
+            .pool_idle_timeout(Duration::from_secs(60))
             .build()
             .unwrap_or_else(|_| Client::new())
     })

@@ -169,7 +169,8 @@ pub(crate) fn refresh_cloud_profile(params: &Value) -> Result<DesktopSettings, S
         .find(|profile| profile.id == target)
         .cloned()
         .ok_or_else(|| format!("unknown cloud profile: {target}"))?;
-    let mut profile = match fetch_cloud_profile(&existing.api_base, Some(&existing.name)) {
+    let mut profile = match fetch_cloud_profile_with_probe(&existing.api_base, Some(&existing.name))
+    {
         Ok(profile) => profile,
         Err(error) => {
             if let Some(profile) = settings
@@ -177,16 +178,16 @@ pub(crate) fn refresh_cloud_profile(params: &Value) -> Result<DesktopSettings, S
                 .iter_mut()
                 .find(|profile| profile.id == target)
             {
-                profile.updated_at = profile_probe_error_marker(&error);
+                profile.updated_at = error.marker();
             }
             save_settings(&settings).map_err(|save_error| {
                 format!(
                     "{}; failed to persist profile probe failure: {}",
-                    redact_error_text(&error),
+                    redact_error_text(&error.message()),
                     redact_error_text(&save_error)
                 )
             })?;
-            return Err(error);
+            return Err(error.message());
         }
     };
     profile.id = existing.id;
@@ -200,6 +201,10 @@ pub(crate) fn refresh_cloud_profile(params: &Value) -> Result<DesktopSettings, S
 pub(crate) struct ProfileProbeFailure {
     pub(crate) at: String,
     pub(crate) error: String,
+    pub(crate) phase: Option<String>,
+    pub(crate) latency_ms: Option<u64>,
+    pub(crate) health_latency_ms: Option<u64>,
+    pub(crate) diagnostics_latency_ms: Option<u64>,
 }
 
 pub(crate) const PROFILE_PROBE_SUCCESS_TTL_SECONDS: u64 = 120;
@@ -208,6 +213,22 @@ pub(crate) struct ProfileProbeSuccess {
     pub(crate) at: String,
     pub(crate) fresh: bool,
     pub(crate) latency_ms: Option<u64>,
+    pub(crate) health_latency_ms: Option<u64>,
+    pub(crate) diagnostics_latency_ms: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct ProfileProbeTimings {
+    pub(crate) total_ms: Option<u64>,
+    pub(crate) health_ms: Option<u64>,
+    pub(crate) diagnostics_ms: Option<u64>,
+}
+
+#[derive(Debug)]
+pub(crate) struct ProfileProbeError {
+    phase: &'static str,
+    message: String,
+    timings: ProfileProbeTimings,
 }
 
 pub(crate) fn profile_probe_at(updated_at: &str) -> Option<String> {
@@ -228,23 +249,39 @@ pub(crate) fn profile_probe_success(updated_at: &str) -> Option<ProfileProbeSucc
     Some(ProfileProbeSuccess {
         at,
         fresh,
-        latency_ms: profile_probe_latency_ms(updated_at),
+        latency_ms: profile_probe_marker_u64(updated_at, "latency_ms")
+            .or_else(|| profile_probe_marker_u64(updated_at, "total_ms")),
+        health_latency_ms: profile_probe_marker_u64(updated_at, "health_ms"),
+        diagnostics_latency_ms: profile_probe_marker_u64(updated_at, "diagnostics_ms"),
     })
 }
 
-fn profile_probe_latency_ms(updated_at: &str) -> Option<u64> {
+fn profile_probe_marker_u64(updated_at: &str, key: &str) -> Option<u64> {
+    let prefix = format!("{key}:");
     updated_at
         .trim()
         .strip_prefix("probe:")?
         .split('|')
         .skip(1)
-        .find_map(|part| part.trim().strip_prefix("latency_ms:"))
+        .find_map(|part| part.trim().strip_prefix(&prefix))
         .and_then(|value| value.trim().parse::<u64>().ok())
         .filter(|value| *value > 0)
 }
 
-fn profile_probe_success_marker(latency_ms: u64) -> String {
-    format!("probe:{}|latency_ms:{}", now_string(), latency_ms.max(1))
+fn profile_probe_success_marker(timings: ProfileProbeTimings) -> String {
+    let total = timings.total_ms.unwrap_or(1).max(1);
+    let mut parts = vec![
+        format!("probe:{}", now_string()),
+        format!("latency_ms:{total}"),
+        format!("total_ms:{total}"),
+    ];
+    if let Some(value) = timings.health_ms.filter(|value| *value > 0) {
+        parts.push(format!("health_ms:{value}"));
+    }
+    if let Some(value) = timings.diagnostics_ms.filter(|value| *value > 0) {
+        parts.push(format!("diagnostics_ms:{value}"));
+    }
+    parts.join("|")
 }
 
 fn unix_marker_age_seconds(marker: &str) -> Option<u64> {
@@ -254,37 +291,198 @@ fn unix_marker_age_seconds(marker: &str) -> Option<u64> {
 
 pub(crate) fn profile_probe_error(updated_at: &str) -> Option<ProfileProbeFailure> {
     let value = updated_at.trim().strip_prefix("probe_error:")?;
-    let (at, error) = value.split_once('|')?;
+    let (at, rest) = value.split_once('|')?;
     let at = at.trim();
     if at.is_empty() {
         return None;
     }
+    let mut phase = None;
+    let mut latency_ms = None;
+    let mut health_latency_ms = None;
+    let mut diagnostics_latency_ms = None;
+    let mut message_parts = Vec::new();
+    for part in rest.split('|') {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        if let Some(value) = part.strip_prefix("phase:") {
+            phase = Some(sanitize_profile_probe_error(value));
+        } else if let Some(value) = part.strip_prefix("latency_ms:") {
+            latency_ms = value.trim().parse::<u64>().ok().filter(|value| *value > 0);
+        } else if let Some(value) = part.strip_prefix("total_ms:") {
+            latency_ms =
+                latency_ms.or_else(|| value.trim().parse::<u64>().ok().filter(|value| *value > 0));
+        } else if let Some(value) = part.strip_prefix("health_ms:") {
+            health_latency_ms = value.trim().parse::<u64>().ok().filter(|value| *value > 0);
+        } else if let Some(value) = part.strip_prefix("diagnostics_ms:") {
+            diagnostics_latency_ms = value.trim().parse::<u64>().ok().filter(|value| *value > 0);
+        } else {
+            message_parts.push(part);
+        }
+    }
+    let error = if message_parts.is_empty() {
+        "probe failed".to_string()
+    } else {
+        sanitize_profile_probe_error(&message_parts.join(" "))
+    };
     Some(ProfileProbeFailure {
         at: at.to_string(),
-        error: sanitize_profile_probe_error(error),
+        error,
+        phase,
+        latency_ms,
+        health_latency_ms,
+        diagnostics_latency_ms,
     })
 }
 
-pub(crate) fn profile_probe_error_marker(error: &str) -> String {
-    format!(
-        "probe_error:{}|{}",
-        now_string(),
-        sanitize_profile_probe_error(error)
-    )
+pub(crate) fn profile_probe_error_marker_for_phase(
+    phase: &'static str,
+    timings: ProfileProbeTimings,
+    error: &str,
+) -> String {
+    let mut parts = vec![
+        format!("probe_error:{}", now_string()),
+        format!("phase:{phase}"),
+    ];
+    if let Some(value) = timings.total_ms.filter(|value| *value > 0) {
+        parts.push(format!("latency_ms:{value}"));
+        parts.push(format!("total_ms:{value}"));
+    }
+    if let Some(value) = timings.health_ms.filter(|value| *value > 0) {
+        parts.push(format!("health_ms:{value}"));
+    }
+    if let Some(value) = timings.diagnostics_ms.filter(|value| *value > 0) {
+        parts.push(format!("diagnostics_ms:{value}"));
+    }
+    parts.push(sanitize_profile_probe_error(error));
+    parts.join("|")
 }
 
 fn sanitize_profile_probe_error(error: &str) -> String {
-    let redacted = redact_error_text(error);
-    let sanitized = redacted
-        .replace(['\n', '\r', '|'], " ")
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
+    let tokenized =
+        redact_error_text(error).replace(['\n', '\r', '|', '{', '}', '"', '\'', ','], " ");
+    let redacted = redact_profile_probe_sensitive_text(&tokenized);
+    let sanitized = redacted.split_whitespace().collect::<Vec<_>>().join(" ");
     if sanitized.is_empty() {
         "probe failed".to_string()
     } else {
         sanitized
     }
+}
+
+fn redact_profile_probe_sensitive_text(error: &str) -> String {
+    let mut text = error.to_string();
+    for prefix in [
+        "pbi_", "pbd_", "install_", "install-", "install:", "install=",
+    ] {
+        text = redact_token_from_prefix(&text, prefix, "[redacted]");
+    }
+    for prefix in ["/Users/", "C:\\Users\\", "C:/Users/"] {
+        text = redact_token_from_prefix(&text, prefix, "[redacted-path]");
+    }
+    text.split_whitespace()
+        .map(redact_profile_probe_word)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn redact_token_from_prefix(input: &str, prefix: &str, replacement: &str) -> String {
+    let lower = input.to_ascii_lowercase();
+    let needle = prefix.to_ascii_lowercase();
+    let mut out = String::with_capacity(input.len());
+    let mut index = 0;
+    while let Some(offset) = lower[index..].find(&needle) {
+        let start = index + offset;
+        out.push_str(&input[index..start]);
+        out.push_str(replacement);
+        index = sensitive_token_end(input, start);
+    }
+    out.push_str(&input[index..]);
+    out
+}
+
+fn sensitive_token_end(input: &str, start: usize) -> usize {
+    for (offset, ch) in input[start..].char_indices().skip(1) {
+        if !(ch.is_ascii_alphanumeric()
+            || matches!(ch, '_' | '-' | '.' | '~' | '/' | '+' | '=' | ':' | '\\'))
+        {
+            return start + offset;
+        }
+    }
+    input.len()
+}
+
+fn redact_profile_probe_word(word: &str) -> String {
+    let trimmed = word.trim_matches(|ch: char| {
+        !(ch.is_ascii_alphanumeric()
+            || matches!(ch, '.' | ':' | '-' | '_' | '@' | '?' | '/' | '\\'))
+    });
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.contains('@') {
+        return word.replace(trimmed, "[redacted-email]");
+    }
+    if lower.contains("install-id")
+        || lower.starts_with("install_")
+        || lower.starts_with("install-")
+    {
+        return word.replace(trimmed, "[redacted]");
+    }
+    if lower.starts_with("http://") || lower.starts_with("https://") {
+        if let Some((base, _query)) = trimmed.split_once('?') {
+            return word.replace(trimmed, &format!("{base}?[redacted]"));
+        }
+    }
+    if is_ipv4_literal(trimmed) {
+        return word.replace(trimmed, "[redacted-ip]");
+    }
+    if is_mac_literal(trimmed) {
+        return word.replace(trimmed, "[redacted-mac]");
+    }
+    word.to_string()
+}
+
+fn is_ipv4_literal(value: &str) -> bool {
+    let parts = value.split('.').collect::<Vec<_>>();
+    parts.len() == 4
+        && parts.iter().all(|part| {
+            !part.is_empty()
+                && part.len() <= 3
+                && part.chars().all(|ch| ch.is_ascii_digit())
+                && part.parse::<u8>().is_ok()
+        })
+}
+
+fn is_mac_literal(value: &str) -> bool {
+    let parts = value.split(':').collect::<Vec<_>>();
+    parts.len() == 6
+        && parts
+            .iter()
+            .all(|part| part.len() == 2 && part.chars().all(|ch| ch.is_ascii_hexdigit()))
+}
+
+impl ProfileProbeError {
+    fn new(phase: &'static str, message: String, timings: ProfileProbeTimings) -> Self {
+        Self {
+            phase,
+            message: sanitize_profile_probe_error(&message),
+            timings,
+        }
+    }
+
+    fn marker(&self) -> String {
+        profile_probe_error_marker_for_phase(self.phase, self.timings, &self.message)
+    }
+
+    fn message(&self) -> String {
+        format!("{} probe failed: {}", self.phase, self.message)
+    }
+}
+
+fn elapsed_ms(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_millis())
+        .unwrap_or(u64::MAX)
+        .max(1)
 }
 
 pub(crate) fn normalize_settings(settings: &mut DesktopSettings, active_api: &str) {
@@ -405,15 +603,60 @@ pub(crate) fn fetch_cloud_profile(
     api_base: &str,
     name: Option<&str>,
 ) -> Result<CloudProfile, String> {
-    let api_base = clean_api(api_base)?;
+    fetch_cloud_profile_with_probe(api_base, name).map_err(|error| error.message())
+}
+
+pub(crate) fn fetch_cloud_profile_with_probe(
+    api_base: &str,
+    name: Option<&str>,
+) -> Result<CloudProfile, ProfileProbeError> {
+    let api_base = clean_api(api_base)
+        .map_err(|error| ProfileProbeError::new("url", error, ProfileProbeTimings::default()))?;
     let probe_started = Instant::now();
+    let client = profile_probe_http_client();
     let health_url = format!("{api_base}/v1/health");
-    let health: HealthResponse = get_json(&health_url, None)?;
-    validate_bridge_health(&health)?;
     let diagnostics_url = format!("{api_base}/v1/diagnostics");
-    let diagnostics: DiagnosticsResponse = get_json(&diagnostics_url, None)?;
-    validate_bridge_diagnostics(&api_base, &diagnostics)?;
-    let latency_ms = u64::try_from(probe_started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let (health_result, diagnostics_result) = thread::scope(|scope| {
+        let health = scope.spawn(|| {
+            let started = Instant::now();
+            (get_json_with_client(client, &health_url, None, None), elapsed_ms(started))
+        });
+        let diagnostics = scope.spawn(|| {
+            let started = Instant::now();
+            (
+                get_json_with_client(client, &diagnostics_url, None, None),
+                elapsed_ms(started),
+            )
+        });
+        (
+            health
+                .join()
+                .unwrap_or_else(|_| (Err("health probe panicked".to_string()), 1)),
+            diagnostics
+                .join()
+                .unwrap_or_else(|_| (Err("diagnostics probe panicked".to_string()), 1)),
+        )
+    });
+    let (health, health_ms) = health_result;
+    let (diagnostics, diagnostics_ms) = diagnostics_result;
+    let timings = ProfileProbeTimings {
+        total_ms: Some(elapsed_ms(probe_started)),
+        health_ms: Some(health_ms),
+        diagnostics_ms: Some(diagnostics_ms),
+    };
+    let health: HealthResponse =
+        health.map_err(|error| ProfileProbeError::new("health", error, timings))?;
+    validate_bridge_health(&health)
+        .map_err(|error| ProfileProbeError::new("health", error, timings))?;
+    let diagnostics: DiagnosticsResponse =
+        diagnostics.map_err(|error| ProfileProbeError::new("diagnostics", error, timings))?;
+    validate_bridge_diagnostics(&api_base, &diagnostics)
+        .map_err(|error| ProfileProbeError::new("diagnostics", error, timings))?;
+    let timings = ProfileProbeTimings {
+        total_ms: Some(elapsed_ms(probe_started)),
+        health_ms: Some(health_ms),
+        diagnostics_ms: Some(diagnostics_ms),
+    };
     Ok(CloudProfile {
         id: profile_id_for_api(&api_base),
         name: name
@@ -425,7 +668,7 @@ pub(crate) fn fetch_cloud_profile(
         web_origin: diagnostics.web_origin,
         products: fixed_product_catalog_entries(),
         source: "user".to_string(),
-        updated_at: profile_probe_success_marker(latency_ms),
+        updated_at: profile_probe_success_marker(timings),
     })
 }
 

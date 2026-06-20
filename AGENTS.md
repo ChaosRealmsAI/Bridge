@@ -2,6 +2,13 @@
 
 后续开发默认只在 `main` 分支进行。
 
+## Desktop 启动与安装
+
+- 给用户查看 Panda Bridge Desktop 时，必须启动当前仓库源码构建出来的最新版桌面端；不得让旧的已安装 `Panda Bridge.app`、后台 dev binary 或历史打包产物冒充当前版本。
+- macOS 本机查看默认流程：先停止现有 `Panda Bridge` / `panda-bridge-desktop` 进程，再运行 `npm run desktop:install:mac` 重建并覆盖 `~/Applications/Panda Bridge.app`，最后从这个 app bundle 启动。
+- 如果发现多个已安装 Panda Bridge app bundle，只保留当前仓库重建后的目标 app bundle；删除或隔离冗余安装前必须确认路径确实是 Panda Bridge app bundle，不得清理用户数据、设置、凭证或非 Panda Bridge 应用。
+- Desktop 启动证据必须说明启动的是安装版还是 dev 版；除非用户明确要求调试 dev binary，给用户看的窗口一律以最新安装版为准。
+
 ## 核心边界
 
 - Bridge 是通用 Cloud-to-Local Secure Relay / Jump Host，只做账号设备接入、presence、密文 envelope 中继、ACK/cursor/TTL、撤销、诊断和 Adapter 路由。

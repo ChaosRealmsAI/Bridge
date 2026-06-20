@@ -20,10 +20,11 @@ COPY scripts/selfhost scripts/selfhost
 ENV NODE_ENV=production
 ENV PORT=8787
 ENV BRIDGE_SERVER_HOST=0.0.0.0
-ENV BRIDGE_LOCAL_MEMORY=1
+ENV BRIDGE_FILE_STORE_PATH=/data/bridge-store.json
 ENV BRIDGE_PRODUCT_REGISTRY_MODE=builtin
 
 EXPOSE 8787
+VOLUME ["/data"]
 
 ENTRYPOINT ["node", "scripts/selfhost/bridge-server.mjs"]
 CMD ["serve"]

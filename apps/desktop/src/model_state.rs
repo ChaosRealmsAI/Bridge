@@ -184,6 +184,12 @@ struct SelectedServerLiveStatus {
     last_probe_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     probe_latency_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    health_latency_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    diagnostics_latency_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    failure_phase: Option<String>,
     error: Option<String>,
     source: String,
 }

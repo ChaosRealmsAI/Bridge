@@ -1,11 +1,14 @@
 #!/usr/bin/env node
 import { createServer } from "node:http";
+import { dirname, resolve as resolvePath } from "node:path";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 
-import worker from "../../apps/cloud-worker/src/index.js";
+import worker, { BridgeTestStore } from "../../apps/cloud-worker/src/index.js";
 
 const DEFAULT_PORT = 8787;
 const DEFAULT_HOST = "0.0.0.0";
 const DEFAULT_SESSION_COOKIE = "pb_session";
+let fileDurableNamespaceCache = null;
 
 main().catch((error) => {
   console.error(error.message || String(error));
@@ -157,7 +160,8 @@ function pairingRequestBody({ deviceName, ownerEmail, ownerName }) {
 }
 
 function workerEnv(localOrigin, publicOrigin = null) {
-  const persistentConfigured = Boolean(env("SUPABASE_URL") && env("SUPABASE_SERVICE_ROLE_KEY"));
+  const fileStore = fileDurableNamespace();
+  const persistentConfigured = Boolean(fileStore || (env("SUPABASE_URL") && env("SUPABASE_SERVICE_ROLE_KEY")));
   const publicBase = normalizeBaseUrl(
     publicOrigin
       ?? env("BRIDGE_PUBLIC_API_BASE")
@@ -165,7 +169,7 @@ function workerEnv(localOrigin, publicOrigin = null) {
       ?? localOrigin,
   );
   const webOrigin = normalizeBaseUrl(env("BRIDGE_WEB_ORIGIN") ?? publicBase);
-  return {
+  const next = {
     ...process.env,
     BRIDGE_ENV: env("BRIDGE_ENV") ?? (persistentConfigured ? "selfhost" : "local"),
     BRIDGE_LOCAL_MEMORY: env("BRIDGE_LOCAL_MEMORY") ?? (persistentConfigured ? "" : "1"),
@@ -174,6 +178,12 @@ function workerEnv(localOrigin, publicOrigin = null) {
     BRIDGE_PRODUCT_REGISTRY_MODE: env("BRIDGE_PRODUCT_REGISTRY_MODE") ?? (env("BRIDGE_PRODUCT_REGISTRY_JSON") ? "replace" : "builtin"),
     SESSION_COOKIE_NAME: env("SESSION_COOKIE_NAME") ?? DEFAULT_SESSION_COOKIE,
   };
+  if (fileStore) {
+    next.BRIDGE_STORAGE_BACKEND = "durable";
+    next.BRIDGE_TEST_STORE = fileStore;
+    next.BRIDGE_LOCAL_MEMORY = "";
+  }
+  return next;
 }
 
 function workerContext() {
@@ -286,6 +296,73 @@ function redactToken(payload) {
   return { ...payload, token: payload.token ? "[redacted-pairing-token]" : payload.token };
 }
 
+function fileDurableNamespace() {
+  const filePath = env("BRIDGE_FILE_STORE_PATH") ?? env("BRIDGE_SELFHOST_STORE_PATH");
+  if (!filePath) return null;
+  const resolved = resolvePath(filePath);
+  if (fileDurableNamespaceCache?.path === resolved) return fileDurableNamespaceCache.namespace;
+  let fileQueue = Promise.resolve();
+  const enqueue = (operation) => {
+    const next = fileQueue.then(operation, operation);
+    fileQueue = next.catch(() => {});
+    return next;
+  };
+  const namespace = {
+    idFromName(name) {
+      return `file:${String(name || "bridge-store").replace(/[^a-zA-Z0-9_:-]/g, "_")}`;
+    },
+    get(id) {
+      const store = new BridgeTestStore(fileDurableState(resolved, id), {});
+      return {
+        fetch(input, init) {
+          const request = input instanceof Request ? input : new Request(input, init);
+          return enqueue(() => store.fetch(request));
+        },
+      };
+    },
+    snapshot() {
+      return readFileStore(resolved);
+    },
+  };
+  fileDurableNamespaceCache = { path: resolved, namespace };
+  return namespace;
+}
+
+function fileDurableState(filePath, id) {
+  return {
+    storage: {
+      async get(key) {
+        return structuredClone(readFileStore(filePath)[id]?.[key]);
+      },
+      async put(key, value) {
+        const data = readFileStore(filePath);
+        data[id] = data[id] || {};
+        data[id][key] = structuredClone(value);
+        writeFileStore(filePath, data);
+      },
+    },
+  };
+}
+
+function readFileStore(filePath) {
+  if (!existsSync(filePath)) return {};
+  const text = readFileSync(filePath, "utf8").trim();
+  if (!text) return {};
+  try {
+    const parsed = JSON.parse(text);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch (error) {
+    throw new Error(`Bridge file store is not valid JSON: ${error.message}`);
+  }
+}
+
+function writeFileStore(filePath, data) {
+  mkdirSync(dirname(filePath), { recursive: true });
+  const tmp = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  writeFileSync(tmp, `${JSON.stringify(data, null, 2)}\n`, { mode: 0o600 });
+  renameSync(tmp, filePath);
+}
+
 function printHelp() {
   console.log(`Usage:
   bridge-server serve [--host 0.0.0.0] [--port 8787] [--url http://127.0.0.1:8787]
@@ -295,6 +372,7 @@ Environment:
   BRIDGE_SELFHOST_ADMIN_TOKEN   Required for pair token generation.
   BRIDGE_SERVER_URL             Public URL printed for Desktop pairing.
   BRIDGE_SERVER_STARTUP_PAIR    Set to 0 to skip startup token generation.
-  BRIDGE_LOCAL_MEMORY           Defaults to 1 unless Supabase credentials are configured.
+  BRIDGE_FILE_STORE_PATH        File-backed self-host store path for Docker/NAS/VPS.
+  BRIDGE_LOCAL_MEMORY           Defaults to 1 only when no file store or Supabase credentials are configured.
 `);
 }

@@ -22,6 +22,9 @@ const DIAGNOSTICS_TEST_PRODUCT_ID = "acme-demo";
 const SELFHOST_ADMIN_TOKEN = "selfhost-admin-test";
 const repoRoot = resolve(".");
 const CONNECT_TOKEN_PATTERN = /\bpbi_[A-Za-z0-9._~-]+/g;
+const RAW_EMAIL_LIKE_GLOBAL_PATTERN = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi;
+const RAW_EMAIL_LIKE_PATTERN = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/i;
+const CONTACT_PROFILE_URL_PATTERN = /https:\/\/(?:claudewang\.com|github\.com\/ChaosRealmsAI|x\.com\/WYuxuan60660)[^"'<\s)]*/gi;
 const evidenceRoot = resolve("spec/L3/evidence");
 const finalEvidenceDir = resolve(evidenceRoot, "personal-selfhost-docker-pairing");
 mkdirSync(evidenceRoot, { recursive: true });
@@ -100,6 +103,8 @@ try {
     assert.equal(addStatus.selected_profile.server.reachable, true);
     assert.equal(addStatus.selected_profile.server.compatible, true);
     assert.ok(addStatus.selected_profile.server.probe_latency_ms > 0);
+    assert.ok(addStatus.selected_profile.server.health_latency_ms > 0);
+    assert.ok(addStatus.selected_profile.server.diagnostics_latency_ms > 0);
     assert.equal(addStatus.selected_profile.device.paired, false);
     assert.equal(addStatus.selected_profile.account.authorized, false);
     step("bb-v04-add-profile", {
@@ -211,6 +216,8 @@ try {
   assert.equal(afterPairStatus.selected_profile.server.reachable, true);
   assert.equal(afterPairStatus.selected_profile.server.compatible, true);
   assert.ok(afterPairStatus.selected_profile.server.probe_latency_ms > 0);
+  assert.ok(afterPairStatus.selected_profile.server.health_latency_ms > 0);
+  assert.ok(afterPairStatus.selected_profile.server.diagnostics_latency_ms > 0);
   assert.equal(afterPairStatus.selected_profile.device.paired, true);
   assert.equal(afterPairStatus.selected_profile.account.authorized, false);
   assert.equal(afterPairStatus.local_device.fingerprint, initialStatus.local_device.fingerprint, "local fingerprint should remain stable across self-host pairing");
@@ -329,6 +336,8 @@ try {
   assert.equal(status.selected_profile.server.reachable, true);
   assert.equal(status.selected_profile.server.compatible, true);
   assert.ok(status.selected_profile.server.probe_latency_ms > 0);
+  assert.ok(status.selected_profile.server.health_latency_ms > 0);
+  assert.ok(status.selected_profile.server.diagnostics_latency_ms > 0);
   assert.equal(status.selected_profile.device.paired, true);
   assert.equal(status.selected_profile.account.authorized, true);
   assert.ok(["connected", "degraded"].includes(status.selected_profile.transport.realtime_state));
@@ -403,6 +412,9 @@ try {
       selected_api_base: status.settings.api_base,
       products: status.products.map((item) => item.id),
       account_count: selfhostProduct.accounts.length,
+      probe_latency_ms: status.selected_profile.server.probe_latency_ms,
+      health_latency_ms: status.selected_profile.server.health_latency_ms,
+      diagnostics_latency_ms: status.selected_profile.server.diagnostics_latency_ms,
     },
     local_device_info: {
       fingerprint: status.local_device.fingerprint,
@@ -654,12 +666,18 @@ async function captureDesktopUi(browser, fileName, statusPayload, beforeShot) {
 function writeCompiledDesktopUiHtml() {
   const indexSource = readFileSync(resolve("apps/desktop/ui/index.html"), "utf8");
   const cssSource = readFileSync(resolve("apps/desktop/ui/styles.css"), "utf8");
+  const aboutSource = readFileSync(resolve("apps/desktop/ui/about.js"), "utf8");
   const jsSource = readFileSync(resolve("apps/desktop/ui/app.js"), "utf8");
   const html = indexSource
     .replace("__PANDA_BRIDGE_DESKTOP_CSS__", cssSource)
-    .replace("__PANDA_BRIDGE_DESKTOP_JS__", jsSource);
+    .replace("__PANDA_BRIDGE_DESKTOP_ABOUT_JS__", aboutSource)
+    .replace("__PANDA_BRIDGE_DESKTOP_JS__", jsSource)
+    .replace(RAW_EMAIL_LIKE_GLOBAL_PATTERN, "[redacted-email]")
+    .replace(CONTACT_PROFILE_URL_PATTERN, "[redacted-contact-url]");
   assert.equal(html.includes("__PANDA_BRIDGE_DESKTOP_CSS__"), false, "compiled selfhost UI HTML must embed CSS");
+  assert.equal(html.includes("__PANDA_BRIDGE_DESKTOP_ABOUT_JS__"), false, "compiled selfhost UI HTML must embed About JS");
   assert.equal(html.includes("__PANDA_BRIDGE_DESKTOP_JS__"), false, "compiled selfhost UI HTML must embed JS");
+  assert.equal(RAW_EMAIL_LIKE_PATTERN.test(html), false, "compiled selfhost UI evidence must not contain raw email-like values");
   const target = resolve(evidenceDir, "desktop-ui-compiled.html");
   writeFileSync(target, html);
   return target;

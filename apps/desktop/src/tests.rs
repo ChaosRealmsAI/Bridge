@@ -1121,12 +1121,14 @@ mod tests {
             .iter_mut()
             .find(|profile| profile.api_base == api)
             .unwrap()
-            .updated_at = format!("probe:{probe_at}|latency_ms:37");
+            .updated_at = format!("probe:{probe_at}|latency_ms:37|health_ms:11|diagnostics_ms:26");
         let probed = selected_profile_live_status(None, &state, &settings);
         assert_eq!(probed.server.reachable, Some(true));
         assert_eq!(probed.server.compatible, Some(true));
         assert_eq!(probed.server.last_probe_at, Some(probe_at.clone()));
         assert_eq!(probed.server.probe_latency_ms, Some(37));
+        assert_eq!(probed.server.health_latency_ms, Some(11));
+        assert_eq!(probed.server.diagnostics_latency_ms, Some(26));
         assert_eq!(probed.server.source, "profile_probe");
 
         let stale_probe_at = format!(
@@ -1210,12 +1212,16 @@ mod tests {
         let profile = selected_cloud_profile(&settings).unwrap();
         assert!(profile.updated_at.starts_with("probe:"));
         assert!(profile.updated_at.contains("|latency_ms:"));
+        assert!(profile.updated_at.contains("|health_ms:"));
+        assert!(profile.updated_at.contains("|diagnostics_ms:"));
 
         let state = new_app_state();
         let live = selected_profile_live_status(None, &state, &settings);
         assert_eq!(live.server.reachable, Some(true));
         assert_eq!(live.server.compatible, Some(true));
         assert!(live.server.probe_latency_ms.unwrap_or(0) > 0);
+        assert!(live.server.health_latency_ms.unwrap_or(0) > 0);
+        assert!(live.server.diagnostics_latency_ms.unwrap_or(0) > 0);
 
         restore_env_var("HOME", old_home);
         restore_env_var("USERPROFILE", old_userprofile);
@@ -1301,7 +1307,7 @@ mod tests {
             .find(|profile| profile.api_base == api)
             .unwrap()
             .updated_at =
-            "probe_error:2026-06-20T00:02:00Z|Bridge Cloud health did not return ok=true"
+            "probe_error:2026-06-20T00:02:00Z|phase:diagnostics|latency_ms:53|health_ms:12|diagnostics_ms:41|Bridge Cloud diagnostics did not return ok=true"
                 .to_string();
         let failed = selected_profile_live_status(Some(&credentials), &state, &settings);
 
@@ -1313,9 +1319,102 @@ mod tests {
         );
         assert_eq!(
             failed.server.error,
-            Some("Bridge Cloud health did not return ok=true".to_string())
+            Some("Bridge Cloud diagnostics did not return ok=true".to_string())
         );
+        assert_eq!(failed.server.failure_phase, Some("diagnostics".to_string()));
+        assert_eq!(failed.server.probe_latency_ms, Some(53));
+        assert_eq!(failed.server.health_latency_ms, Some(12));
+        assert_eq!(failed.server.diagnostics_latency_ms, Some(41));
         assert_eq!(failed.server.source, "profile_probe_error");
+    }
+
+    #[test]
+    fn profile_probe_error_marker_redacts_hostile_failure_body() {
+        let marker = profile_probe_error_marker_for_phase(
+            "diagnostics",
+            ProfileProbeTimings {
+                total_ms: Some(77),
+                health_ms: Some(12),
+                diagnostics_ms: Some(65),
+            },
+            "HTTP 500: body={\"device\":\"pbd_secret_token\",\"intent\":\"pbi_secret_intent\",\"install\":\"install-id-secret\",\"path\":\"/Users/alice/.panda/config\",\"ip\":\"192.168.1.44\",\"mac\":\"00:11:22:33:44:55\",\"url\":\"https://bridge.test/v1/health?token=secret\",\"email\":\"alice@example.test\"}",
+        );
+        for forbidden in [
+            "pbd_secret_token",
+            "pbi_secret_intent",
+            "install-id-secret",
+            "/Users/alice",
+            "192.168.1.44",
+            "00:11:22:33:44:55",
+            "token=secret",
+            "alice@example.test",
+        ] {
+            assert!(
+                !marker.contains(forbidden),
+                "probe marker leaked {forbidden}: {marker}"
+            );
+        }
+        let parsed = profile_probe_error(&marker).unwrap();
+        for forbidden in [
+            "pbd_secret_token",
+            "pbi_secret_intent",
+            "install-id-secret",
+            "/Users/alice",
+            "192.168.1.44",
+            "00:11:22:33:44:55",
+            "token=secret",
+            "alice@example.test",
+        ] {
+            assert!(
+                !parsed.error.contains(forbidden),
+                "probe UI error leaked {forbidden}: {}",
+                parsed.error
+            );
+        }
+        assert_eq!(parsed.phase, Some("diagnostics".to_string()));
+        assert_eq!(parsed.latency_ms, Some(77));
+        assert_eq!(parsed.health_latency_ms, Some(12));
+        assert_eq!(parsed.diagnostics_latency_ms, Some(65));
+    }
+
+    #[test]
+    fn profile_probe_error_marker_redacts_compact_body_classes_independently() {
+        for (label, value) in [
+            ("device token", "pbd_secret_token"),
+            ("intent token", "pbi_secret_intent"),
+            ("install id", "install-id-secret"),
+            ("home path", "/Users/alice/.panda/config"),
+            ("private ip", "192.168.1.44"),
+            ("mac", "00:11:22:33:44:55"),
+            ("url query", "https://bridge.test/v1/health?token=secret"),
+            ("email", "alice@example.test"),
+        ] {
+            let body = format!("HTTP 500: body={{\"value\":\"{value}\"}}");
+            let marker = profile_probe_error_marker_for_phase(
+                "health",
+                ProfileProbeTimings {
+                    total_ms: Some(13),
+                    health_ms: Some(13),
+                    diagnostics_ms: None,
+                },
+                &body,
+            );
+            assert!(
+                !marker.contains(value),
+                "probe marker leaked {label}: {marker}"
+            );
+            let parsed = profile_probe_error(&marker).unwrap();
+            assert!(
+                !parsed.error.contains(value),
+                "probe UI error leaked {label}: {}",
+                parsed.error
+            );
+            if label == "url query" {
+                assert!(
+                    !marker.contains("token=secret") && !parsed.error.contains("token=secret")
+                );
+            }
+        }
     }
 
     #[test]
@@ -1630,8 +1729,10 @@ setInterval(() => {}, 1000);
     fn desktop_ui_html_embeds_split_assets() {
         let html = desktop_ui_html();
         assert!(!html.contains("__PANDA_BRIDGE_DESKTOP_CSS__"));
+        assert!(!html.contains("__PANDA_BRIDGE_DESKTOP_ABOUT_JS__"));
         assert!(!html.contains("__PANDA_BRIDGE_DESKTOP_JS__"));
         assert!(html.contains(".win{"));
+        assert!(html.contains("window.PandaBridgeAbout"));
         assert!(html.contains("window.PandaBridge"));
         assert!(html.contains("const BASE_PRODUCTS="));
     }

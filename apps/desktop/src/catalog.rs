@@ -295,7 +295,10 @@ fn selected_server_status(
             reachable: Some(false),
             compatible: Some(false),
             last_probe_at: Some(failure.at),
-            probe_latency_ms: None,
+            probe_latency_ms: failure.latency_ms,
+            health_latency_ms: failure.health_latency_ms,
+            diagnostics_latency_ms: failure.diagnostics_latency_ms,
+            failure_phase: failure.phase,
             error: Some(failure.error),
             source: "profile_probe_error".to_string(),
         };
@@ -307,11 +310,18 @@ fn selected_server_status(
             compatible: None,
             last_probe_at: Some(probe.at.clone()),
             probe_latency_ms: None,
+            health_latency_ms: probe.health_latency_ms,
+            diagnostics_latency_ms: probe.diagnostics_latency_ms,
+            failure_phase: None,
             error: Some("profile probe stale".to_string()),
             source: "profile_probe_stale".to_string(),
         };
     }
     let probe_latency_ms = probe.as_ref().and_then(|probe| probe.latency_ms);
+    let health_latency_ms = probe.as_ref().and_then(|probe| probe.health_latency_ms);
+    let diagnostics_latency_ms = probe
+        .as_ref()
+        .and_then(|probe| probe.diagnostics_latency_ms);
     let last_probe_at = probe.map(|probe| probe.at);
     let reachable = if last_probe_at.is_some() {
         Some(true)
@@ -333,6 +343,9 @@ fn selected_server_status(
         compatible,
         last_probe_at,
         probe_latency_ms,
+        health_latency_ms,
+        diagnostics_latency_ms,
+        failure_phase: None,
         error: None,
         source: source.to_string(),
     }

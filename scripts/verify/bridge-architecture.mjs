@@ -291,8 +291,13 @@ function fileBudgets() {
     },
     {
       file: "apps/desktop/ui/app.js",
-      maxLines: 700,
-      reason: "Desktop UI behavior stays in a dedicated bounded asset",
+      maxLines: 780,
+      reason: "Desktop UI behavior stays in a dedicated bounded asset (raised for embedded About-author business card; extract to its own asset when it grows further)",
+    },
+    {
+      file: "apps/desktop/ui/about.js",
+      maxLines: 120,
+      reason: "Desktop About card stays isolated from core UI behavior",
     },
     {
       file: "adapters/panda-burn/src/usage-ledger.mjs",
@@ -374,8 +379,10 @@ function assertDesktopUiAssetSplit() {
   const index = read("apps/desktop/ui/index.html");
   const windowSource = read("apps/desktop/src/window.rs");
   assert.ok(index.includes("__PANDA_BRIDGE_DESKTOP_CSS__"), "Desktop UI index must keep a CSS compile-time placeholder");
+  assert.ok(index.includes("__PANDA_BRIDGE_DESKTOP_ABOUT_JS__"), "Desktop UI index must keep an About JS compile-time placeholder");
   assert.ok(index.includes("__PANDA_BRIDGE_DESKTOP_JS__"), "Desktop UI index must keep a JS compile-time placeholder");
   assert.ok(windowSource.includes('include_str!("../ui/styles.css")'), "Desktop window must compile-time embed split CSS");
+  assert.ok(windowSource.includes('include_str!("../ui/about.js")'), "Desktop window must compile-time embed split About JS");
   assert.ok(windowSource.includes('include_str!("../ui/app.js")'), "Desktop window must compile-time embed split JS");
 }
 

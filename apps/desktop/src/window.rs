@@ -6,6 +6,10 @@ pub(crate) fn desktop_ui_html() -> String {
             "__PANDA_BRIDGE_DESKTOP_CSS__",
             include_str!("../ui/styles.css"),
         )
+        .replace(
+            "__PANDA_BRIDGE_DESKTOP_ABOUT_JS__",
+            include_str!("../ui/about.js"),
+        )
         .replace("__PANDA_BRIDGE_DESKTOP_JS__", include_str!("../ui/app.js"))
 }
 
@@ -157,6 +161,17 @@ pub(crate) fn run_window() -> Result<(), String> {
                     foreground_window_for_deep_link(&window);
                 }
                 let _ = webview.evaluate_script(&format!("window.PandaBridge.receive({});", message));
+            }
+            Event::WindowEvent {
+                event: WindowEvent::Focused(true),
+                ..
+            } => {
+                // Tell the UI the window regained focus so it can quietly re-check
+                // cloud server health (the JS side decides whether a refresh applies).
+                let _ = proxy.send_event(UserEvent::UiEvent(json!({
+                    "type": "event",
+                    "event": "focus"
+                })));
             }
             Event::WindowEvent {
                 event: WindowEvent::CloseRequested,

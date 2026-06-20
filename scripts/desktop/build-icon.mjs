@@ -31,7 +31,10 @@ rmSync(iconset, { recursive: true, force: true });
 console.log(JSON.stringify({ ok: true, icon: output }, null, 2));
 
 function renderPng(size, outputPath) {
-  if (commandAvailable("magick")) {
+  // ImageMagick can only rasterize SVG through its rsvg-convert delegate. Without it,
+  // magick falls back to a broken internal MSVG renderer (drops gradients, mangles the
+  // mark into a washed-out gray blob), so prefer macOS QuickLook in that case.
+  if (commandAvailable("magick") && commandAvailable("rsvg-convert")) {
     run("magick", [
       "-background",
       "none",

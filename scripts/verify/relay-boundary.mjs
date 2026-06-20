@@ -274,12 +274,12 @@ for (const marker of ["waitForResponse", "{ envelope, ack }", "relay_device_queu
   assert.equal(sdkReadme.includes(marker), true, `SDK README missing V0.3 relay marker: ${marker}`);
 }
 
-const productDocs = readFileSync(new URL("../../docs/product-integration.md", import.meta.url), "utf8");
+const productDocs = readFileSync(new URL("../../spec/L4/reference-materials/docs/product-integration.md", import.meta.url), "utf8");
 for (const marker of ["waitForResponse", "relay_channel_queue_full", "queue.retry_after_ms", "Bridge 不执行 Claude、Codex、Burn、shell、fs、data"]) {
   assert.equal(productDocs.includes(marker), true, `product integration docs missing V0.3 relay marker: ${marker}`);
 }
 
-const selfHostingDocs = readFileSync(new URL("../../docs/self-hosting.md", import.meta.url), "utf8");
+const selfHostingDocs = readFileSync(new URL("../../spec/L4/reference-materials/docs/self-hosting.md", import.meta.url), "utf8");
 for (const marker of ["BRIDGE_PRODUCT_REGISTRY_JSON", "PANDA_BRIDGE_ADAPTER_ACME_DEMO_URL", "npm run verify:selfhost-profile"]) {
   assert.equal(selfHostingDocs.includes(marker), true, `self-hosting docs missing marker: ${marker}`);
 }
@@ -302,7 +302,7 @@ function readDesktopProductionSource() {
 
 function readDesktopUiSource() {
   const base = new URL("../../apps/desktop/ui/", import.meta.url);
-  return ["index.html", "styles.css", "app.js"]
+  return ["index.html", "styles.css", "about.js", "app.js"]
     .map((name) => readFileSync(new URL(name, base), "utf8"))
     .join("\n");
 }
