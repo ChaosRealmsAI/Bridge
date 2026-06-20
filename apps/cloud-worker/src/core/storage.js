@@ -103,13 +103,13 @@ export function storageKind(env) {
 }
 
 export function storageKindRaw(env) {
-  if (env.BRIDGE_STORAGE_BACKEND === "durable" && env.BRIDGE_TEST_STORE) return "durable";
+  if (env.BRIDGE_STORAGE_BACKEND === "durable" && durableStoreBinding(env)) return "durable";
   if (hasSupabase(env) && !env.BRIDGE_LOCAL_MEMORY) return "supabase";
   return "memory";
 }
 
 export function storage(env) {
-  if (env.BRIDGE_STORAGE_BACKEND === "durable" && env.BRIDGE_TEST_STORE) return durableObjectStore(env);
+  if (env.BRIDGE_STORAGE_BACKEND === "durable" && durableStoreBinding(env)) return durableObjectStore(env);
   if (hasSupabase(env) && !env.BRIDGE_LOCAL_MEMORY) return supabaseStore(env);
   return memory;
 }
@@ -155,8 +155,9 @@ export function durableObjectStore(env) {
 }
 
 export async function durableStoreOperation(env, payload) {
-  const id = env.BRIDGE_TEST_STORE.idFromName("bridge-test-store");
-  const stub = env.BRIDGE_TEST_STORE.get(id);
+  const binding = durableStoreBinding(env);
+  const id = binding.idFromName(durableStoreName(env));
+  const stub = binding.get(id);
   const response = await stub.fetch("https://bridge-test-store.local/storage", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -170,6 +171,17 @@ export async function durableStoreOperation(env, payload) {
     throw error;
   }
   return body;
+}
+
+function durableStoreBinding(env) {
+  return env.BRIDGE_STORE || env.BRIDGE_TEST_STORE || null;
+}
+
+function durableStoreName(env) {
+  const configured = clean(env.BRIDGE_STORE_NAME, 128);
+  if (configured) return configured;
+  const envName = clean(env.BRIDGE_ENV, 64).toLowerCase();
+  return envName === "test" ? "bridge-test-store" : "bridge-production-store";
 }
 
 export function supabaseStore(env) {

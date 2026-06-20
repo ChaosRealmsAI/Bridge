@@ -13,8 +13,9 @@
   },
   "scripts": {
     "build:web": "node scripts/build-web.mjs",
-    "check": "npm run check:open-source && npm run check:protocol && npm run check:sdk && npm run check:sdk-docs && npm run check:sdk-types && npm run check:sdk-release && npm run check:adapter-sdk && npm run check:managed-adapters && npm run check:panda-burn && npm run check:native-sdk && npm run check:worker && npm run check:connector && npm run check:relay-boundary && npm run check:bridge-architecture && npm run check:relay-backpressure && npm run check:selfhost-file-store && npm run check:evidence-redaction && npm run check:desktop-ui && npm run check:e2ee && npm run check:desktop",
+    "check": "npm run check:open-source && npm run check:env-contract && npm run check:protocol && npm run check:sdk && npm run check:sdk-docs && npm run check:sdk-types && npm run check:sdk-release && npm run check:adapter-sdk && npm run check:managed-adapters && npm run check:panda-burn && npm run check:native-sdk && npm run check:worker && npm run check:connector && npm run check:relay-boundary && npm run check:bridge-architecture && npm run check:relay-backpressure && npm run check:selfhost-file-store && npm run check:evidence-redaction && npm run check:desktop-ui && npm run check:e2ee && npm run check:desktop",
     "check:open-source": "node scripts/verify/open-source-hygiene.mjs",
+    "check:env-contract": "node scripts/verify/env-contract.mjs",
     "check:protocol": "node packages/protocol/test/protocol.test.mjs",
     "check:sdk": "node --test packages/sdk/test/",
     "check:sdk-docs": "node scripts/verify/sdk-docs.mjs",

@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "npx wrangler dev",
     "deploy": "npx wrangler deploy",
-    "test": "node test/worker.test.mjs && node test/captoken.test.mjs"
+    "test": "node test/index.js"
   },
   "dependencies": {
     "@panda-bridge/protocol": "0.1.0"
