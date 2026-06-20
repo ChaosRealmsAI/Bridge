@@ -27,6 +27,13 @@ const flutterCriticalCommands = [
   "burn.agent.usage.dimensions",
   "burn.agent.usage.dimension",
   "burn.agent.usage.compact",
+  "burn.project.list",
+  "burn.project.create",
+  "burn.project.preference.set",
+  "burn.session.preference.set",
+  "burn.monitor.sessions",
+  "burn.business.sync.list",
+  "burn.business.sync.ack",
 ];
 
 test("Flutter-critical session and usage commands have detailed contracts", () => {

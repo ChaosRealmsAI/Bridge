@@ -8,5 +8,7 @@ export {
 } from "./burn-business/projects.mjs";
 export {
   ackBurnSyncEvents,
+  burnSyncEnvelope,
   collectBurnSyncEvents,
+  listBurnSyncEvents,
 } from "./burn-business/sync.mjs";
