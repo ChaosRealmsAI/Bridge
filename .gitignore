@@ -9,13 +9,7 @@ apps/desktop/target/
 adapters/panda-burn/local-tools/backend/bin/
 .tmp/
 .burn/
-/spec/*
-!/spec/L4/
-/spec/L4/*
-!/spec/L4/reference-materials/
-/spec/L4/reference-materials/*
-!/spec/L4/reference-materials/docs/
-!/spec/L4/reference-materials/docs/*.md
+/spec/
 /poc/
 /POC/
 apps/web-chat/public/sdk/
