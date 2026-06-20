@@ -108,10 +108,34 @@ export function passwordLockedResponse(env, retryAfterMs) {
 }
 
 export async function assetResponse(request, env) {
-  if (env.ASSETS) return withSecurityHeaders(await env.ASSETS.fetch(request), env);
+  const path = new URL(request.url).pathname;
+  if (env.ASSETS) {
+    const response = await env.ASSETS.fetch(request);
+    if (isDownloadAssetPath(path) && looksLikeHtmlFallback(response)) {
+      return withSecurityHeaders(new Response("download asset not found", {
+        status: 404,
+        headers: { "content-type": "text/plain; charset=utf-8" },
+      }), env);
+    }
+    return withSecurityHeaders(response, env);
+  }
+  if (isDownloadAssetPath(path)) {
+    return withSecurityHeaders(new Response("download asset not configured", {
+      status: 404,
+      headers: { "content-type": "text/plain; charset=utf-8" },
+    }), env);
+  }
   return withSecurityHeaders(new Response("Panda Bridge Cloud", {
     headers: { "content-type": "text/plain; charset=utf-8" },
   }), env);
+}
+
+function isDownloadAssetPath(pathname) {
+  return /^\/downloads\/.+\.(?:dmg|exe|msi|pkg|zip)$/i.test(String(pathname || ""));
+}
+
+function looksLikeHtmlFallback(response) {
+  return response.ok && /text\/html/i.test(response.headers.get("content-type") || "");
 }
 
 export function notFound(env) {

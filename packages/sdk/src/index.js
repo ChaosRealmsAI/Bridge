@@ -130,13 +130,31 @@ export const bridgeDesktopInstallDefaults = Object.freeze({
     platform: "macos",
     appName: "Panda Bridge",
     fileName: "panda-bridge-macos.dmg",
+    versionedFileName: "panda-bridge-desktop-v0.1.0-macos.dmg",
+    version: "0.1.0",
     openUrl: "panda-bridge://open",
     downloadPath: "/downloads/panda-bridge-macos.dmg",
+    versionedDownloadPath: "/downloads/releases/v0.1.0/panda-bridge-desktop-v0.1.0-macos.dmg",
     downloadUrls: Object.freeze({
       production: "https://assets.bridge.chaos-realms.cc/downloads/panda-bridge-macos.dmg",
-      test: "https://assets.bridge.test.example/downloads/panda-bridge-macos.dmg",
+      test: "https://assets-bridge-test.chaos-realms.cc/downloads/panda-bridge-macos.dmg",
     }),
-    sha256: "e65e04f08373ffe2363616dc1426516b74f12123f52c71d7225af4bac7225962",
+    sha256: "7d908a82f4fa854c9b655b634b019c6d5897f8f6409d4eeffba27c990a014274",
+  }),
+  windows: Object.freeze({
+    platform: "windows",
+    appName: "Panda Bridge",
+    fileName: "panda-bridge-windows-x64.zip",
+    versionedFileName: "panda-bridge-desktop-v0.1.0-windows-x64.zip",
+    version: "0.1.0",
+    openUrl: "panda-bridge://open",
+    downloadPath: "/downloads/panda-bridge-windows-x64.zip",
+    versionedDownloadPath: "/downloads/releases/v0.1.0/panda-bridge-desktop-v0.1.0-windows-x64.zip",
+    downloadUrls: Object.freeze({
+      production: "https://assets.bridge.chaos-realms.cc/downloads/panda-bridge-windows-x64.zip",
+      test: "https://assets-bridge-test.chaos-realms.cc/downloads/panda-bridge-windows-x64.zip",
+    }),
+    sha256: "92aa1ab30ffe6e3a3e15259306731de3880adbff088b06500b9406b1f698834a",
   }),
 });
 
@@ -156,10 +174,12 @@ export function bridgeDesktopInstallTarget(options = {}) {
     platform: target.platform,
     appName: target.appName,
     fileName: target.fileName,
-    version: BRIDGE_SDK_VERSION,
+    versionedFileName: target.versionedFileName,
+    version: target.version || BRIDGE_SDK_VERSION,
     openUrl: overrideOpenUrl || target.openUrl,
     downloadUrl,
     downloadPath: target.downloadPath,
+    versionedDownloadPath: target.versionedDownloadPath,
     sha256: target.sha256,
   };
 }
@@ -635,12 +655,17 @@ function normalizeAccount(input = {}) {
 function normalizeStateInstall(input = {}) {
   const value = objectValue(input);
   const fallback = bridgeDesktopInstallTarget();
+  const targets = objectValue(value.targets);
   return {
     download_url: stringValue(value.download_url || value.downloadUrl, 500) || fallback.downloadUrl,
     version: stringValue(value.version, 80) || fallback.version || BRIDGE_SDK_VERSION,
     sha256: stringValue(value.sha256, 100) || fallback.sha256,
     platform: stringValue(value.platform, 40) || fallback.platform,
     open_url: stringValue(value.open_url || value.openUrl, 200) || fallback.openUrl,
+    ...(hasObjectKeys(targets) ? { targets } : {}),
+    ...(stringValue(value.release_manifest_url || value.releaseManifestUrl, 500)
+      ? { release_manifest_url: stringValue(value.release_manifest_url || value.releaseManifestUrl, 500) }
+      : {}),
   };
 }
 

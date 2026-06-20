@@ -257,6 +257,12 @@ assert.equal(diagnostics.server_capabilities.desktop_catalog, false);
 assert.deepEqual(diagnostics.server_capabilities.items, diagnostics.products);
 assert.equal(diagnostics.desktop_product_catalog.authority, "bridge_desktop_core_managed_adapters");
 assert.equal(diagnostics.desktop_product_catalog.server_defined, false);
+assert.equal(diagnostics.install.version, "0.1.0");
+assert.equal(diagnostics.install.download_path, "/downloads/panda-bridge-macos.dmg");
+assert.equal(diagnostics.install.versioned_download_path, "/downloads/releases/v0.1.0/panda-bridge-desktop-v0.1.0-macos.dmg");
+assert.equal(diagnostics.install.targets.macos.file_name, "panda-bridge-macos.dmg");
+assert.equal(diagnostics.install.targets.windows_x64.file_name, "panda-bridge-windows-x64.zip");
+assert.equal(diagnostics.install.release_manifest_url, "https://assets.bridge.chaos-realms.cc/downloads/panda-bridge-desktop/latest.json");
 for (const product of diagnostics.products) {
   assert.deepEqual(product.capabilities, RELAY_CAPABILITIES);
   assert.doesNotMatch(JSON.stringify({ ...product, capabilities: [] }), /codex\.|claude\.|shell\.run|fs\.|data\./);
@@ -291,6 +297,17 @@ assert.deepEqual(webMessages[0], { type: "relay.envelope.created", envelope: { i
 const assetHead = await worker.fetch(new Request("http://local.test/downloads/panda-bridge-macos.dmg", { method: "HEAD" }), env);
 assert.equal(assetHead.status, 200);
 assert.deepEqual(assetRequests.at(-1), { method: "HEAD", pathname: "/downloads/panda-bridge-macos.dmg" });
+const htmlDownloadFallback = await worker.fetch(new Request("http://local.test/downloads/panda-bridge-windows-x64.zip"), {
+  ...env,
+  ASSETS: {
+    fetch: async () => new Response("<!doctype html><title>fallback</title>", {
+      status: 200,
+      headers: { "content-type": "text/html; charset=utf-8" },
+    }),
+  },
+});
+assert.equal(htmlDownloadFallback.status, 404);
+assert.equal(htmlDownloadFallback.headers.get("content-type"), "text/plain; charset=utf-8");
 
 env.BRIDGE_SELFHOST_ADMIN_TOKEN = "selfhost-admin-test";
 const selfhostPairingDenied = await apiMissingOrigin("POST", "/v1/selfhost/pairing-token", {

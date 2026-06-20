@@ -9,6 +9,14 @@
 - 如果发现多个已安装 Panda Bridge app bundle，只保留当前仓库重建后的目标 app bundle；删除或隔离冗余安装前必须确认路径确实是 Panda Bridge app bundle，不得清理用户数据、设置、凭证或非 Panda Bridge 应用。
 - Desktop 启动证据必须说明启动的是安装版还是 dev 版；除非用户明确要求调试 dev binary，给用户看的窗口一律以最新安装版为准。
 
+## Desktop Release 与发包硬门
+
+- Desktop public release 必须以 `release/desktop.json` 为唯一版本/下载合约；root `package.json`、`apps/desktop/package.json`、`apps/desktop/Cargo.toml`、SDK install defaults、Cloud Worker install payload、Mac/Windows 打包脚本都必须与该合约一致。
+- 每个 Desktop release 必须同时声明 stable 下载链接和 versioned 下载链接：macOS DMG、Windows x64 zip、latest manifest、versioned manifest 都必须有固定路径。不得只给临时 dist 路径、旧安装包或手写 URL。
+- `npm run check` 必须包含 `npm run check:release-contract`；提交前全局 hook 会调用 `scripts/check-commit.sh`，该脚本必须继续运行 release contract gate。改版本、打包脚本、SDK/Worker install payload 或下载链接时，不能绕过这个 gate。
+- 真正 public release 前必须运行 `npm run release:desktop:prepare` 生成本地 Mac/Windows 产物和 manifest；Mac release 必须是 Developer ID hardened runtime 且 notarized/stapled，不得把 ad-hoc DMG 当正式 release。随后运行 `npm run release:desktop:verify` 校验本地产物大小、sha256 和 package summary。上传到公开资产后必须运行 `npm run release:desktop:audit-public`，确认公开链接不是 HTML fallback、大小达标、sha256 匹配。
+- 上传/替换 `assets.bridge.chaos-realms.cc` 或其他公开下载资产属于 production/public release mutation，必须走 release-data-ops 发布硬门：release packet、影响面、dry-run/本地校验、上传命令、验证、回滚/前滚和证据齐全后才能执行。
+
 ## 核心边界
 
 - Bridge 是通用 Cloud-to-Local Secure Relay / Jump Host，只做账号设备接入、presence、密文 envelope 中继、ACK/cursor/TTL、撤销、诊断和 Adapter 路由。

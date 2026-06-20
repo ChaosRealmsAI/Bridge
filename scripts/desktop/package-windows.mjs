@@ -17,8 +17,17 @@ import {
   managedAdapterSources,
   prepareManagedAdapterSources,
 } from "./managed-adapters.mjs";
+import {
+  copyVersionedArtifact,
+  desktopReleaseContract,
+  desktopReleaseDownloadUrl,
+  desktopReleaseTarget,
+  desktopReleaseVersion,
+} from "./release-contract.mjs";
 
-const appName = "Panda Bridge";
+const releaseContract = desktopReleaseContract();
+const releaseTarget = desktopReleaseTarget("windows-x64");
+const appName = releaseContract.appName;
 const exeName = "PandaBridge.exe";
 const binaryName = "panda-bridge-desktop.exe";
 const args = new Set(process.argv.slice(2));
@@ -29,7 +38,7 @@ const skipBuild = args.has("--skip-build");
 const releaseBinary = xwinMode ? xwinReleaseBinary : nativeReleaseBinary;
 const outDir = resolve("dist/desktop/windows");
 const appDir = resolve(outDir, appName);
-const zipPath = resolve(outDir, "panda-bridge-windows-x64.zip");
+const zipPath = resolve(outDir, releaseTarget.fileName);
 const checkOnly = args.has("--check");
 
 if (checkOnly) {
@@ -38,7 +47,10 @@ if (checkOnly) {
     ok: true,
     mode: "check",
     package: "windows-portable-zip",
+    version: desktopReleaseVersion(),
     app_name: appName,
+    artifact: releaseTarget.fileName,
+    versioned_artifact: releaseTarget.versionedFileName,
     exe_name: exeName,
     registry: {
       url_scheme: "HKCU:\\Software\\Classes\\panda-bridge",
@@ -90,11 +102,16 @@ if (process.platform === "win32" && !xwinMode) {
 
 const bytes = statSync(zipPath).size;
 const sha256 = createHash("sha256").update(readFileSync(zipPath)).digest("hex");
-console.log(JSON.stringify({
+const versionedZipPath = copyVersionedArtifact(releaseTarget);
+const summary = {
   ok: true,
   mode: xwinMode ? "xwin-cross" : "windows-native",
+  version: desktopReleaseVersion(),
   app_dir: appDir,
   zip_path: zipPath,
+  versioned_zip_path: versionedZipPath,
+  download_url: desktopReleaseDownloadUrl(releaseTarget),
+  versioned_download_url: desktopReleaseDownloadUrl(releaseTarget, { versioned: true }),
   binary_source: releaseBinary,
   bytes,
   sha256,
@@ -103,14 +120,23 @@ console.log(JSON.stringify({
   managed_adapters: managedAdapters,
   managed_adapter_node_modules: managedAdapterNodeModules.map((item) => item.target),
   node_runtime: nodeRuntime,
-}, null, 2));
+  distributable: true,
+  signing: {
+    required: false,
+    status: "unsigned-portable-zip",
+  },
+};
+
+writeFileSync(resolve(outDir, "package-summary.json"), `${JSON.stringify(summary, null, 2)}\n`);
+console.log(JSON.stringify(summary, null, 2));
 
 function manifest(copiedAdapters = [], copiedNodeRuntime = null) {
   const payload = {
     app_name: appName,
+    version: desktopReleaseVersion(),
     binary: exeName,
-    bundle_identifier: "cc.otherline.panda-bridge",
-    protocol: "panda-bridge",
+    bundle_identifier: releaseContract.bundleIdentifier,
+    protocol: releaseContract.protocol,
     startup_registry_value: appName,
     install_dir: "%LOCALAPPDATA%\\Panda Bridge",
     webview: "Microsoft Edge WebView2 Evergreen Runtime",

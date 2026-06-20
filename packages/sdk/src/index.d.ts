@@ -71,10 +71,12 @@ export type BridgeDesktopInstallTarget = {
   platform: "macos" | string;
   appName: string;
   fileName: string;
+  versionedFileName: string;
   version: string;
   openUrl: string;
   downloadUrl: string;
   downloadPath: string;
+  versionedDownloadPath: string;
   sha256: string;
 };
 
@@ -94,8 +96,23 @@ export const bridgeDesktopInstallDefaults: Readonly<{
     platform: "macos";
     appName: "Panda Bridge";
     fileName: "panda-bridge-macos.dmg";
+    versionedFileName: "panda-bridge-desktop-v0.1.0-macos.dmg";
+    version: "0.1.0";
     openUrl: "panda-bridge://open";
     downloadPath: "/downloads/panda-bridge-macos.dmg";
+    versionedDownloadPath: "/downloads/releases/v0.1.0/panda-bridge-desktop-v0.1.0-macos.dmg";
+    downloadUrls: Readonly<Record<string, string>>;
+    sha256: string;
+  }>;
+  windows: Readonly<{
+    platform: "windows";
+    appName: "Panda Bridge";
+    fileName: "panda-bridge-windows-x64.zip";
+    versionedFileName: "panda-bridge-desktop-v0.1.0-windows-x64.zip";
+    version: "0.1.0";
+    openUrl: "panda-bridge://open";
+    downloadPath: "/downloads/panda-bridge-windows-x64.zip";
+    versionedDownloadPath: "/downloads/releases/v0.1.0/panda-bridge-desktop-v0.1.0-windows-x64.zip";
     downloadUrls: Readonly<Record<string, string>>;
     sha256: string;
   }>;
@@ -111,6 +128,8 @@ export type BridgeStateInstall = {
   sha256: string;
   platform: "macos" | string;
   open_url: string;
+  targets?: Record<string, JsonObject>;
+  release_manifest_url?: string;
 };
 
 export type BridgeStateDevice = {

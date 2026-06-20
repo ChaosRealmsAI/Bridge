@@ -144,11 +144,14 @@ function runCheck(name, command, args, options = {}) {
 
 function windowsPackageArtifactCheck() {
   const zip = resolve("dist/desktop/windows/panda-bridge-windows-x64.zip");
+  const versionedZip = resolve("dist/desktop/windows/panda-bridge-desktop-v0.1.0-windows-x64.zip");
   const manifest = resolve("dist/desktop/windows/Panda Bridge/manifest.json");
   const exe = resolve("dist/desktop/windows/Panda Bridge/PandaBridge.exe");
   const install = resolve("dist/desktop/windows/Panda Bridge/Install.ps1");
-  const ok = [zip, manifest, exe, install].every((file) => existsSync(file))
+  const summary = resolve("dist/desktop/windows/package-summary.json");
+  const ok = [zip, versionedZip, manifest, exe, install, summary].every((file) => existsSync(file))
     && statSync(zip).size > 0
+    && statSync(versionedZip).size === statSync(zip).size
     && statSync(exe).size > 0;
   return {
     name: "Windows portable package artifact",
@@ -156,9 +159,11 @@ function windowsPackageArtifactCheck() {
     ok,
     artifacts: {
       zip,
+      versioned_zip: versionedZip,
       manifest,
       exe,
       install,
+      package_summary: summary,
       zip_bytes: existsSync(zip) ? statSync(zip).size : 0,
       exe_bytes: existsSync(exe) ? statSync(exe).size : 0,
     },
@@ -166,19 +171,25 @@ function windowsPackageArtifactCheck() {
 }
 
 function staticSourceCheck() {
-  const main = readFileSync("apps/desktop/src/main.rs", "utf8");
+  const startup = readFileSync("apps/desktop/src/settings/startup.rs", "utf8");
+  const windowSource = readFileSync("apps/desktop/src/window.rs", "utf8");
   const packageScript = readFileSync("scripts/desktop/package-windows.mjs", "utf8");
   const required = [
-    { file: "apps/desktop/src/main.rs", marker: "Software\\Classes\\panda-bridge" },
-    { file: "apps/desktop/src/main.rs", marker: "Software\\Microsoft\\Windows\\CurrentVersion\\Run" },
-    { file: "apps/desktop/src/main.rs", marker: "apply_windows_launch_at_login" },
+    { file: "apps/desktop/src/window.rs", marker: "Software\\Classes\\panda-bridge" },
+    { file: "apps/desktop/src/window.rs", marker: "URL Protocol" },
+    { file: "apps/desktop/src/settings/startup.rs", marker: "Software\\Microsoft\\Windows\\CurrentVersion\\Run" },
+    { file: "apps/desktop/src/settings/startup.rs", marker: "apply_windows_launch_at_login" },
     { file: "scripts/desktop/package-windows.mjs", marker: "PandaBridge.exe" },
     { file: "scripts/desktop/package-windows.mjs", marker: "Install.ps1" },
     { file: "scripts/desktop/package-windows.mjs", marker: "WebView2 Evergreen Runtime" },
     { file: "scripts/desktop/package-windows.mjs", marker: "F3017226-FE2A-4295-8BDF-00C3A9A7E4C5" },
   ];
   const missing = required.filter((item) => {
-    const text = item.file.endsWith("main.rs") ? main : packageScript;
+    const text = item.file.endsWith("startup.rs")
+      ? startup
+      : item.file.endsWith("window.rs")
+        ? windowSource
+        : packageScript;
     return !text.includes(item.marker);
   });
   return {

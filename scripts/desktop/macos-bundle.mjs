@@ -6,9 +6,12 @@ import {
   managedAdapterSources,
   prepareManagedAdapterSources,
 } from "./managed-adapters.mjs";
+import { desktopReleaseContract, desktopReleaseVersion } from "./release-contract.mjs";
 
-export const appName = "Panda Bridge";
-export const bundleIdentifier = "cc.otherline.panda-bridge";
+const releaseContract = desktopReleaseContract();
+
+export const appName = releaseContract.appName;
+export const bundleIdentifier = releaseContract.bundleIdentifier;
 export const binaryName = "panda-bridge-desktop";
 export const iconFileName = "PandaBridge.icns";
 export const releaseBinary = resolve("apps/desktop/target/release", binaryName);
@@ -194,6 +197,7 @@ function copyNodeRuntime(resources) {
 }
 
 function plist() {
+  const version = desktopReleaseVersion();
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -215,9 +219,9 @@ function plist() {
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.1.0</string>
+  <string>${version}</string>
   <key>CFBundleVersion</key>
-  <string>0.1.0</string>
+  <string>${version}</string>
   <key>CFBundleURLTypes</key>
   <array>
     <dict>

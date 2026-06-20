@@ -21,13 +21,49 @@ export const RELAY_CHANNEL_MAX_UNACKED = 50;
 export const RELAY_QUEUE_RETRY_AFTER_MS = 3000;
 export const RELAY_CAPABILITY_REGISTRY = BRIDGE_RUNTIME_CAPABILITY_REGISTRY;
 export const RELAY_CAPABILITY_KINDS = Object.freeze(Object.keys(RELAY_CAPABILITY_REGISTRY));
+export const BRIDGE_DESKTOP_RELEASE = Object.freeze({
+  version: "0.1.0",
+  asset_base_urls: Object.freeze({
+    production: "https://assets.bridge.chaos-realms.cc",
+    test: "https://assets-bridge-test.chaos-realms.cc",
+  }),
+  manifest: Object.freeze({
+    latest_path: "/downloads/panda-bridge-desktop/latest.json",
+    versioned_path: "/downloads/releases/v0.1.0/panda-bridge-desktop-v0.1.0.json",
+  }),
+  targets: Object.freeze({
+    macos: Object.freeze({
+      platform: "macos",
+      package: "dmg",
+      version: "0.1.0",
+      file_name: "panda-bridge-macos.dmg",
+      versioned_file_name: "panda-bridge-desktop-v0.1.0-macos.dmg",
+      download_url: "https://assets.bridge.chaos-realms.cc/downloads/panda-bridge-macos.dmg",
+      download_path: "/downloads/panda-bridge-macos.dmg",
+      versioned_download_path: "/downloads/releases/v0.1.0/panda-bridge-desktop-v0.1.0-macos.dmg",
+      sha256: "7d908a82f4fa854c9b655b634b019c6d5897f8f6409d4eeffba27c990a014274",
+      open_url: "panda-bridge://open",
+    }),
+    windows_x64: Object.freeze({
+      platform: "windows",
+      arch: "x64",
+      package: "portable-zip",
+      version: "0.1.0",
+      file_name: "panda-bridge-windows-x64.zip",
+      versioned_file_name: "panda-bridge-desktop-v0.1.0-windows-x64.zip",
+      download_url: "https://assets.bridge.chaos-realms.cc/downloads/panda-bridge-windows-x64.zip",
+      download_path: "/downloads/panda-bridge-windows-x64.zip",
+      versioned_download_path: "/downloads/releases/v0.1.0/panda-bridge-desktop-v0.1.0-windows-x64.zip",
+      sha256: "92aa1ab30ffe6e3a3e15259306731de3880adbff088b06500b9406b1f698834a",
+      open_url: "panda-bridge://open",
+    }),
+  }),
+});
 export const BRIDGE_DESKTOP_INSTALL = Object.freeze({
-  platform: "macos",
-  version: "panda-bridge-desktop-lite-v0.1",
-  download_url: "https://assets.bridge.chaos-realms.cc/downloads/panda-bridge-macos.dmg",
-  download_path: "/downloads/panda-bridge-macos.dmg",
-  sha256: "e65e04f08373ffe2363616dc1426516b74f12123f52c71d7225af4bac7225962",
-  open_url: "panda-bridge://open",
+  ...BRIDGE_DESKTOP_RELEASE.targets.macos,
+  version: BRIDGE_DESKTOP_RELEASE.version,
+  targets: BRIDGE_DESKTOP_RELEASE.targets,
+  release_manifest_path: BRIDGE_DESKTOP_RELEASE.manifest.latest_path,
 });
 export const DEFAULT_JSON_BODY_LIMIT_BYTES = 1024 * 512;
 export const MAX_JSON_BODY_LIMIT_BYTES = 1024 * 1024 * 2;

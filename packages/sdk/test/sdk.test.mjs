@@ -94,9 +94,10 @@ assert.equal(
 );
 
 assert.equal(bridgeDesktopInstallDefaults.macos.fileName, "panda-bridge-macos.dmg");
+assert.equal(bridgeDesktopInstallDefaults.macos.versionedFileName, "panda-bridge-desktop-v0.1.0-macos.dmg");
 assert.equal(
   bridgeDesktopInstallTarget({ channel: "test" }).downloadUrl,
-  "https://assets.bridge.test.example/downloads/panda-bridge-macos.dmg",
+  "https://assets-bridge-test.chaos-realms.cc/downloads/panda-bridge-macos.dmg",
 );
 assert.equal(
   bridgeDesktopInstallTarget({ assetBaseUrl: "https://cdn.example.test/" }).downloadUrl,
@@ -108,7 +109,11 @@ assert.equal(
 );
 assert.equal(bridgeDesktopInstallTarget().openUrl, "panda-bridge://open");
 assert.equal(bridgeDesktopInstallTarget().sha256.length, 64);
-assert.throws(() => bridgeDesktopInstallTarget({ platform: "windows" }), /unsupported_bridge_desktop_platform/);
+assert.equal(bridgeDesktopInstallTarget({ platform: "windows" }).fileName, "panda-bridge-windows-x64.zip");
+assert.equal(
+  bridgeDesktopInstallTarget({ platform: "windows" }).versionedDownloadPath,
+  "/downloads/releases/v0.1.0/panda-bridge-desktop-v0.1.0-windows-x64.zip",
+);
 
 const installTarget = bridgeDesktopInstallTarget({ channel: "test" });
 const readyState = bridgeStateFixture("active", true);
@@ -714,7 +719,7 @@ function stateInstall() {
   return {
     download_url: "https://assets.bridge.chaos-realms.cc/downloads/panda-bridge-macos.dmg",
     version: "0.1.0",
-    sha256: "e65e04f08373ffe2363616dc1426516b74f12123f52c71d7225af4bac7225962",
+    sha256: "7d908a82f4fa854c9b655b634b019c6d5897f8f6409d4eeffba27c990a014274",
     platform: "macos",
     open_url: "panda-bridge://open",
   };

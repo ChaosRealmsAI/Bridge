@@ -1,6 +1,6 @@
 import { BRIDGE_PROTOCOL_VERSION } from "@panda-bridge/protocol";
 import { allServerCapabilities } from "../products.js";
-import { BRIDGE_DESKTOP_INSTALL, DEVICE_HEARTBEAT_INTERVAL_MS, DEVICE_ONLINE_GRACE_MS, DEVICE_TOKEN_PREFIX, DEVICE_TOKEN_TTL_MS, RELAY_CAPABILITY_KINDS, RELAY_QUEUE_RETRY_AFTER_MS } from "./constants.js";
+import { BRIDGE_DESKTOP_INSTALL, BRIDGE_DESKTOP_RELEASE, DEVICE_HEARTBEAT_INTERVAL_MS, DEVICE_ONLINE_GRACE_MS, DEVICE_TOKEN_PREFIX, DEVICE_TOKEN_TTL_MS, RELAY_CAPABILITY_KINDS, RELAY_QUEUE_RETRY_AFTER_MS } from "./constants.js";
 import {
   authorizationRowsForProduct,
   compareAuthorizationRows,
@@ -162,9 +162,20 @@ export async function bridgeStatePayload(env, user, product, options = {}) {
 
 export function bridgeInstallPayload(env) {
   const base = clean(env.R2_PUBLIC_BASE_URL, 300).replace(/\/$/, "");
+  const targetEntries = Object.entries(BRIDGE_DESKTOP_RELEASE.targets).map(([id, target]) => [id, {
+    ...target,
+    download_url: base ? `${base}${target.download_path}` : target.download_url,
+    versioned_download_url: base ? `${base}${target.versioned_download_path}` : `${BRIDGE_DESKTOP_RELEASE.asset_base_urls.production}${target.versioned_download_path}`,
+  }]);
+  const targets = Object.freeze(Object.fromEntries(targetEntries));
+  const macos = targets.macos;
   return {
     ...BRIDGE_DESKTOP_INSTALL,
-    download_url: base ? `${base}${BRIDGE_DESKTOP_INSTALL.download_path}` : BRIDGE_DESKTOP_INSTALL.download_url,
+    download_url: macos.download_url,
+    versioned_download_url: macos.versioned_download_url,
+    release_manifest_url: base ? `${base}${BRIDGE_DESKTOP_RELEASE.manifest.latest_path}` : `${BRIDGE_DESKTOP_RELEASE.asset_base_urls.production}${BRIDGE_DESKTOP_RELEASE.manifest.latest_path}`,
+    versioned_release_manifest_url: base ? `${base}${BRIDGE_DESKTOP_RELEASE.manifest.versioned_path}` : `${BRIDGE_DESKTOP_RELEASE.asset_base_urls.production}${BRIDGE_DESKTOP_RELEASE.manifest.versioned_path}`,
+    targets,
   };
 }
 
