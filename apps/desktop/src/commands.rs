@@ -134,6 +134,8 @@ pub(crate) fn run_command(
             open_url(&url)?;
             Ok(json!({ "ok": true, "message": "opened web" }))
         }
+        "check_update" => check_desktop_update(params),
+        "open_update" => open_desktop_update(params),
         _ => Err(format!("unknown command: {command}")),
     }
 }

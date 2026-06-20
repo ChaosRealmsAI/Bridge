@@ -64,6 +64,30 @@ npm run desktop:package:windows:xwin
 
 仓库接入 GitHub Actions 后，`.github/workflows/windows-desktop.yml` 会在 `windows-latest` 上运行同一验证、构建 portable zip，执行 `Install.ps1 -NoLaunch` 检查 HKCU deep link/自启注册和卸载清理，并上传 Windows 桌面 artifact。
 
+## 桌面端 Release
+
+Desktop release 以 `release/desktop.json` 为唯一下载合约。公开下载主通道是
+GitHub Latest，稳定资产名必须保持不变：
+
+```text
+https://github.com/ChaosRealmsAI/Bridge/releases/latest/download/bridge-macos.dmg
+https://github.com/ChaosRealmsAI/Bridge/releases/latest/download/bridge-windows-x64.zip
+```
+
+发布当前本地产物：
+
+```bash
+npm run release:desktop:publish-current
+```
+
+该命令会上传 stable/versioned assets 到 `ChaosRealmsAI/Bridge` GitHub
+Release，并拉回 latest/versioned URL 校验大小和 sha256。正式 macOS release
+仍要求 Developer ID signing、hardened runtime、notarization 和 stapling；
+当前桌面端只支持检查 GitHub Latest 并打开下载，不支持静默自替换自动更新。
+
+`.github/workflows/bridge-desktop-release.yml` 是 CI 发版入口，使用前需要配置
+GitHub secrets 中的 macOS Developer ID certificate / notary credentials。
+
 ## 服务器选择
 
 默认给用户使用我们提供的 Bridge Cloud，用户不需要自建服务器。

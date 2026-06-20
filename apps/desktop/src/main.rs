@@ -51,6 +51,8 @@ mod relay;
 pub(crate) use relay::*;
 mod settings;
 pub(crate) use settings::*;
+mod updates;
+pub(crate) use updates::*;
 mod verify;
 pub(crate) use verify::*;
 mod window;

@@ -11,6 +11,14 @@
     "production": "https://assets.bridge.chaos-realms.cc",
     "test": "https://assets-bridge-test.chaos-realms.cc"
   },
+  "github": {
+    "owner": "ChaosRealmsAI",
+    "repo": "Bridge",
+    "tag": "v0.1.1",
+    "releaseUrl": "https://github.com/ChaosRealmsAI/Bridge/releases/latest",
+    "latestDownloadBaseUrl": "https://github.com/ChaosRealmsAI/Bridge/releases/latest/download",
+    "versionedDownloadBaseUrl": "https://github.com/ChaosRealmsAI/Bridge/releases/download/v0.1.1"
+  },
   "manifest": {
     "latestPath": "/downloads/bridge-desktop/latest.json",
     "versionedPath": "/downloads/releases/v0.1.1/bridge-desktop-v0.1.1.json"
@@ -46,6 +54,8 @@
     "prepareCommand": "npm run release:desktop:prepare",
     "verifyCommand": "npm run release:desktop:verify",
     "publicAuditCommand": "npm run release:desktop:audit-public",
+    "githubPublishCommand": "npm run release:desktop:publish-github",
+    "githubAuditCommand": "npm run release:desktop:audit-github-latest",
     "stagePublicCommand": "npm run release:desktop:stage-public",
     "deployPublicCommand": "npm run release:desktop:deploy-public",
     "productionUploadRequires": [
@@ -55,6 +65,12 @@
       "release:desktop:verify passes against local artifacts and sha256",
       "public upload target confirmed without printing credentials",
       "release:desktop:audit-public passes after upload before announcing links"
+    ],
+    "githubLatestRequires": [
+      "GitHub repo ChaosRealmsAI/Bridge is public and gh auth has repo/workflow permission",
+      "release assets use stable file names from targets.*.fileName so /releases/latest/download remains constant",
+      "release:desktop:audit-github-latest passes after upload before wiring product landing pages",
+      "macOS ad-hoc packages may be published only with release notes warning; silent auto-update still requires Developer ID notarization"
     ]
   }
 }

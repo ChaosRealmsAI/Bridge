@@ -15,6 +15,9 @@
 - 每个 Desktop release 必须同时声明 stable 下载链接和 versioned 下载链接：macOS DMG、Windows x64 zip、latest manifest、versioned manifest 都必须有固定路径。不得只给临时 dist 路径、旧安装包或手写 URL。
 - `npm run check` 必须包含 `npm run check:release-contract`；提交前全局 hook 会调用 `scripts/check-commit.sh`，该脚本必须继续运行 release contract gate。改版本、打包脚本、SDK/Worker install payload 或下载链接时，不能绕过这个 gate。
 - 真正 public release 前必须运行 `npm run release:desktop:prepare` 生成本地 Mac/Windows 产物和 manifest；Mac release 必须是 Developer ID hardened runtime 且 notarized/stapled，不得把 ad-hoc DMG 当正式 release。随后运行 `npm run release:desktop:verify` 校验本地产物大小、sha256 和 package summary。上传到公开资产后必须运行 `npm run release:desktop:audit-public`，确认公开链接不是 HTML fallback、大小达标、sha256 匹配。
+- GitHub Latest 是公开下载主通道：`release/desktop.json` 的 `github` 段必须保持 `ChaosRealmsAI/Bridge`、`v<version>`、`releases/latest/download` 一致；发包或替换当前资产后运行 `npm run release:desktop:publish-current`，它会上传 stable/versioned asset 并执行 `npm run release:desktop:audit-github-latest`。Token Burn 落地页只允许指向这两个 Latest URL。
+- `.github/workflows/bridge-desktop-release.yml` 是 Bridge Desktop GitHub Release 自动化入口；正式 macOS release 需要 GitHub secrets 提供 Developer ID certificate 和 notarization credentials。缺少这些 secrets 时，不得把 workflow 失败规避成 ad-hoc 正式包。
+- Bridge Desktop 当前支持应用内检查 GitHub Latest 并打开对应平台下载；静默/自替换自动更新不算已支持，除非同时具备 Developer ID notarized macOS 包、签名 Windows 安装器/更新通道、回滚/前滚和黑盒证据。
 - 上传/替换 `assets.bridge.chaos-realms.cc` 或其他公开下载资产属于 production/public release mutation，必须走 release-data-ops 发布硬门：release packet、影响面、dry-run/本地校验、上传命令、验证、回滚/前滚和证据齐全后才能执行。
 
 ## 环境隔离与发布门

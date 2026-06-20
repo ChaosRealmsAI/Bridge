@@ -36,6 +36,10 @@ Object.assign(TEXT["zh-CN"],{expandServers:"显示全部 {n} 台",collapseServer
 Object.assign(TEXT["zh-TW"],{expandServers:"顯示全部 {n} 台",collapseServers:"收起",selfhostHelp:"如何自建伺服器"});
 Object.assign(TEXT.en,{expandServers:"Show all {n}",collapseServers:"Show less",selfhostHelp:"How to self-host"});
 Object.assign(TEXT.ja,{expandServers:"すべて表示（{n}）",collapseServers:"折りたたむ",selfhostHelp:"サーバーを自前で立てるには"});
+Object.assign(TEXT["zh-CN"],{updates:"版本更新",updateIdle:"对比 GitHub Latest",checkUpdate:"检查",downloadUpdate:"下载",updateLatest:"已是最新",updateAvailable:"发现 {version}",updateChecking:"检查中…",updateCheckFailed:"检查失败"});
+Object.assign(TEXT["zh-TW"],{updates:"版本更新",updateIdle:"比對 GitHub Latest",checkUpdate:"檢查",downloadUpdate:"下載",updateLatest:"已是最新",updateAvailable:"發現 {version}",updateChecking:"檢查中…",updateCheckFailed:"檢查失敗"});
+Object.assign(TEXT.en,{updates:"Updates",updateIdle:"Checks GitHub Latest",checkUpdate:"Check",downloadUpdate:"Download",updateLatest:"Up to date",updateAvailable:"Version {version} available",updateChecking:"Checking…",updateCheckFailed:"Check failed"});
+Object.assign(TEXT.ja,{updates:"アップデート",updateIdle:"GitHub Latest を確認",checkUpdate:"確認",downloadUpdate:"ダウンロード",updateLatest:"最新です",updateAvailable:"{version} が利用可能",updateChecking:"確認中…",updateCheckFailed:"確認に失敗"});
 Object.assign(TEXT["zh-CN"],{devicePresent:"设备在线",devicePaired:"已配对",deviceUnpaired:"未配对",authActive:"已授权",authNone:"未授权",engineStopped:"本机引擎已停止",adapterMissing:"Adapter 缺失",engineReady:"本机就绪",transportRealtime:"实时通道",transportPolling:"轮询兜底",transportIdle:"传输空闲",healthIncompatible:"不兼容"});
 Object.assign(TEXT["zh-TW"],{devicePresent:"裝置線上",devicePaired:"已配對",deviceUnpaired:"未配對",authActive:"已授權",authNone:"未授權",engineStopped:"本機引擎已停止",adapterMissing:"Adapter 缺失",engineReady:"本機就緒",transportRealtime:"即時通道",transportPolling:"輪詢備援",transportIdle:"傳輸閒置",healthIncompatible:"不相容"});
 Object.assign(TEXT.en,{devicePresent:"Device present",devicePaired:"Paired",deviceUnpaired:"Unpaired",authActive:"Authorized",authNone:"Not authorized",engineStopped:"Engine stopped",adapterMissing:"Adapter missing",engineReady:"Local ready",transportRealtime:"Realtime",transportPolling:"Polling fallback",transportIdle:"Transport idle",healthIncompatible:"Incompatible"});
@@ -50,7 +54,7 @@ Object.assign(TEXT["zh-TW"],{localComputerUnavailable:"本機資訊暫不可用"
 Object.assign(TEXT.en,{localComputerUnavailable:"Local computer unavailable"});
 Object.assign(TEXT.ja,{localComputerUnavailable:"ローカル情報を取得できません"});
 const OFFICIAL_PROFILE={id:"official",name:"Official Bridge Cloud",api_base:DEFAULT_API,web_origin:"https://bridge.chaos-realms.cc",source:"official",products:BASE_PRODUCTS.map(clone)};
-const ui={view:"product",selected:"panda-burn",products:BASE_PRODUCTS.map(clone),settings:{launch_at_login:true,appearance:"auto",language:"auto",api_base:DEFAULT_API,cloud_profiles:[clone(OFFICIAL_PROFILE)],selected_cloud_profile_id:"official"},pending:null,status:null,booting:true,statusError:null,health:{},serverBusy:{},serverProbeBackoff:{},serverProbeBackoffTimers:{},serverProbeTimers:{},serverProbeTokens:{},serverSheet:null,serverListExpanded:false};
+const ui={view:"product",selected:"panda-burn",products:BASE_PRODUCTS.map(clone),settings:{launch_at_login:true,appearance:"auto",language:"auto",api_base:DEFAULT_API,cloud_profiles:[clone(OFFICIAL_PROFILE)],selected_cloud_profile_id:"official"},pending:null,status:null,booting:true,statusError:null,health:{},serverBusy:{},serverProbeBackoff:{},serverProbeBackoffTimers:{},serverProbeTimers:{},serverProbeTokens:{},serverSheet:null,serverListExpanded:false,update:null};
 const SERVER_PROBE_SUCCESS_COOLDOWN_MS=2500,SERVER_PROBE_FAILURE_BACKOFF_MS=30000,SERVER_PROBE_UI_TIMEOUT_MS=8000;
 const mq=window.matchMedia("(prefers-color-scheme: dark)");
 const ipcState={seq:0,calls:new Map()};
@@ -241,12 +245,22 @@ function settingsHtml(){
       <div><span class="rico n-blue">${I.power}</span><div class="rtext"><div class="t">${t("launch")}</div></div><div class="end"><button class="switch" role="switch" aria-checked="${!!s.launch_at_login}" onclick="setLaunch(${!s.launch_at_login})"></button></div></div>
       <div><span class="rico n-indigo">${I.theme}</span><div class="rtext"><div class="t">${t("appearance")}</div></div><div class="end"><div class="seg">${["auto","light","dark"].map(v=>`<button aria-current="${s.appearance===v}" onclick="setAppearance('${v}')">${t(v==="auto"?"system":v)}</button>`).join("")}</div></div></div>
       <div><span class="rico n-orange">${I.lang}</span><div class="rtext"><div class="t">${t("language")}</div></div><div class="end"><select class="select" onchange="setLanguage(this.value)">${LANG_OPTIONS.map(([code,label])=>`<option value="${code}" ${s.language===code?"selected":""}>${esc(label)}</option>`).join("")}</select></div></div>
+      ${updateRowHtml()}
     </div>
     <div class="glab glab-cloud"><span>${t("cloudGroup")}</span><div class="cloud-actions"><button class="cbtn cbtn-add" onclick="openServerSheet()" title="${esc(t("addServerTitle"))}">${I.plus}<span>${t("addServer")}</span></button><button class="cbtn cbtn-help" onclick="openSelfhostHelp()" title="${esc(t("selfhostHelp"))}"><span class="help-dot">?</span><span>${t("selfhostHelp")}</span></button></div></div>
     <div class="srvlist">
       ${serverListHtml(profiles,selected)}
     </div>
   </div>`;
+}
+function updateRowHtml(){
+  const u=ui.update||{};
+  const checking=u.state==="checking";
+  const failed=u.state==="failed";
+  const available=!!u.update_available;
+  const detail=checking?t("updateChecking"):failed?t("updateCheckFailed"):available?t("updateAvailable",{version:u.latest_version||""}):u.latest_version?t("updateLatest"):t("updateIdle");
+  const action=available?`<button class="btn mini energy" onclick="openUpdate()">${t("downloadUpdate")}</button>`:`<button class="btn mini" onclick="checkUpdate()" ${checking?"disabled":""}>${checking?t("updateChecking"):t("checkUpdate")}</button>`;
+  return `<div><span class="rico n-cyan">${I.refresh}</span><div class="rtext"><div class="t">${t("updates")}</div><div class="d">${esc(detail)}</div></div><div class="end">${action}</div></div>`;
 }
 function localDeviceInfo(){
   const info=ui.status?.local_device||{};
@@ -489,6 +503,8 @@ async function setLaunch(value){ui.settings.launch_at_login=value;render();await
 async function setAppearance(value){ui.settings.appearance=value;render();await saveSettings({appearance:value})}
 async function setLanguage(value){ui.settings.language=value;render();await saveSettings({language:value})}
 async function saveSettings(patch){try{ui.settings=await window.Bridge.call("update_settings",patch);render()}catch(e){showError(e)}}
+async function checkUpdate(){ui.update={state:"checking"};render();try{ui.update=await window.Bridge.call("check_update",{platform:platformKind()==="windows"?"windows-x64":"macos"});render()}catch(e){ui.update={state:"failed",error:String(e?.message||e)};render();showError(e)}}
+async function openUpdate(){try{ui.update=await window.Bridge.call("open_update",{platform:platformKind()==="windows"?"windows-x64":"macos"});toast(t("opened"))}catch(e){showError(e)}}
 async function selectCloudProfile(id){
   try{ui.settings=await window.Bridge.call("select_cloud_profile",{profile_id:id});toast(t("serverSelected"));await refresh()}catch(e){showError(e);await refresh().catch(()=>{})}
 }

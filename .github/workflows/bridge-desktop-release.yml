@@ -1,0 +1,74 @@
+name: Bridge Desktop Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag, must match release/desktop.json"
+        required: true
+        default: "v0.1.1"
+      publish:
+        description: "Publish/update GitHub Release assets"
+        required: true
+        type: boolean
+        default: true
+  push:
+    tags:
+      - "v*"
+
+concurrency:
+  group: bridge-desktop-release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Package and publish desktop release
+    runs-on: macos-latest
+    timeout-minutes: 60
+    env:
+      BRIDGE_RELEASE: "1"
+      BRIDGE_NOTARY_PROFILE: ${{ secrets.BRIDGE_NOTARY_PROFILE }}
+      BRIDGE_NOTARY_APPLE_ID: ${{ secrets.BRIDGE_NOTARY_APPLE_ID }}
+      BRIDGE_NOTARY_TEAM_ID: ${{ secrets.BRIDGE_NOTARY_TEAM_ID }}
+      BRIDGE_NOTARY_PASSWORD: ${{ secrets.BRIDGE_NOTARY_PASSWORD }}
+      BRIDGE_MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.BRIDGE_MACOS_CERTIFICATE_P12_BASE64 }}
+      BRIDGE_MACOS_CERTIFICATE_PASSWORD: ${{ secrets.BRIDGE_MACOS_CERTIFICATE_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          cargo install cargo-xwin --locked
+
+      - name: Import macOS signing certificate
+        if: env.BRIDGE_MACOS_CERTIFICATE_P12_BASE64 != ''
+        run: |
+          security create-keychain -p "$RUNNER_TEMP" bridge-release.keychain
+          security default-keychain -s bridge-release.keychain
+          security unlock-keychain -p "$RUNNER_TEMP" bridge-release.keychain
+          echo "$BRIDGE_MACOS_CERTIFICATE_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/bridge-release.p12"
+          security import "$RUNNER_TEMP/bridge-release.p12" -k bridge-release.keychain -P "$BRIDGE_MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$RUNNER_TEMP" bridge-release.keychain
+
+      - name: Verify release contract
+        run: npm run check:release-contract
+
+      - name: Prepare desktop packages
+        run: npm run release:desktop:prepare
+
+      - name: Publish GitHub Latest assets
+        if: github.event_name == 'push' || inputs.publish == true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: npm run release:desktop:publish-current

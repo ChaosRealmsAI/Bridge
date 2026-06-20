@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   copyFileSync,
@@ -39,6 +40,16 @@ export function desktopReleaseDownloadUrl(target, options = {}) {
   const channel = options.channel || "production";
   const base = String(contract.assetBaseUrls[channel] || contract.assetBaseUrls.production || "").replace(/\/$/, "");
   return `${base}${options.versioned ? target.versionedDownloadPath : target.downloadPath}`;
+}
+
+export function desktopReleaseGithubLatestUrl(target) {
+  const contract = desktopReleaseContract();
+  return `${String(contract.github.latestDownloadBaseUrl).replace(/\/$/, "")}/${target.fileName}`;
+}
+
+export function desktopReleaseGithubVersionedUrl(target) {
+  const contract = desktopReleaseContract();
+  return `${String(contract.github.versionedDownloadBaseUrl).replace(/\/$/, "")}/${target.versionedFileName}`;
 }
 
 export function desktopReleaseArtifactPath(target, options = {}) {
@@ -101,6 +112,16 @@ async function main() {
     console.log(JSON.stringify({ ok: true, check: "desktop-release-public-audit", audit }, null, 2));
     return;
   }
+  if (command === "publish-github") {
+    const release = await publishGithubLatestRelease();
+    console.log(JSON.stringify({ ok: true, check: "desktop-release-github-publish", release }, null, 2));
+    return;
+  }
+  if (command === "audit-github-latest") {
+    const audit = await auditGithubLatestRelease();
+    console.log(JSON.stringify({ ok: true, check: "desktop-release-github-latest-audit", audit }, null, 2));
+    return;
+  }
   if (command === "stage-public") {
     const staged = await stagePublicRelease();
     console.log(JSON.stringify({ ok: true, check: "desktop-release-stage-public", staged }, null, 2));
@@ -119,6 +140,12 @@ function assertDesktopReleaseShape(contract) {
   assert.equal(contract.releaseId, `bridge-desktop-v${contract.version}`);
   assert.ok(contract.assetBaseUrls?.production?.startsWith("https://"), "production asset base URL is required");
   assert.ok(contract.assetBaseUrls?.test?.startsWith("https://"), "test asset base URL is required");
+  assert.equal(contract.github?.owner, "ChaosRealmsAI");
+  assert.equal(contract.github?.repo, "Bridge");
+  assert.equal(contract.github?.tag, `v${contract.version}`);
+  assert.equal(contract.github?.releaseUrl, "https://github.com/ChaosRealmsAI/Bridge/releases/latest");
+  assert.equal(contract.github?.latestDownloadBaseUrl, "https://github.com/ChaosRealmsAI/Bridge/releases/latest/download");
+  assert.equal(contract.github?.versionedDownloadBaseUrl, `https://github.com/ChaosRealmsAI/Bridge/releases/download/v${contract.version}`);
   assert.equal(contract.manifest.latestPath, "/downloads/bridge-desktop/latest.json");
   assert.equal(contract.manifest.versionedPath, `/downloads/releases/v${contract.version}/bridge-desktop-v${contract.version}.json`);
   assertTarget(contract, "macos", { platform: "macos", packageType: "dmg", suffix: ".dmg" });
@@ -126,6 +153,8 @@ function assertDesktopReleaseShape(contract) {
   assert.equal(contract.releaseGate.prepareCommand, "npm run release:desktop:prepare");
   assert.equal(contract.releaseGate.verifyCommand, "npm run release:desktop:verify");
   assert.equal(contract.releaseGate.publicAuditCommand, "npm run release:desktop:audit-public");
+  assert.equal(contract.releaseGate.githubPublishCommand, "npm run release:desktop:publish-github");
+  assert.equal(contract.releaseGate.githubAuditCommand, "npm run release:desktop:audit-github-latest");
 }
 
 function assertTarget(contract, id, expected) {
@@ -208,6 +237,9 @@ function assertPackageScripts() {
   assert.equal(pkg.scripts["release:desktop:stage-public"], "node scripts/desktop/release-contract.mjs stage-public");
   assert.equal(pkg.scripts["release:desktop:deploy-public"], "npm run release:desktop:stage-public && npm run cloud:deploy && npm run release:desktop:audit-public");
   assert.equal(pkg.scripts["release:desktop:audit-public"], "node scripts/desktop/release-contract.mjs audit-public");
+  assert.equal(pkg.scripts["release:desktop:publish-github"], "node scripts/desktop/release-contract.mjs publish-github");
+  assert.equal(pkg.scripts["release:desktop:audit-github-latest"], "node scripts/desktop/release-contract.mjs audit-github-latest");
+  assert.equal(pkg.scripts["release:desktop:publish-current"], "npm run release:desktop:publish-github && npm run release:desktop:audit-github-latest");
 }
 
 function assertCommitGate() {
@@ -219,6 +251,7 @@ function assertCommitGate() {
 
 function assertReleaseArtifacts(contract, options = {}) {
   const checkHash = options.checkHash !== false;
+  const requireMacDistributable = options.requireMacDistributable !== false;
   for (const [id, target] of Object.entries(contract.targets)) {
     const stablePath = desktopReleaseArtifactPath(target);
     const versionedPath = desktopReleaseArtifactPath(target, { versioned: true });
@@ -228,7 +261,7 @@ function assertReleaseArtifacts(contract, options = {}) {
     assert.ok(existsSync(summaryPath), `${id} package summary missing: ${summaryPath}`);
     const summary = readJson(summaryPath);
     assert.equal(summary.version, contract.version, `${id} package summary version`);
-    if (id === "macos") {
+    if (id === "macos" && requireMacDistributable) {
       assert.equal(summary.distributable, true, "macOS public release requires Developer ID signing and notarization");
     }
     for (const file of [stablePath, versionedPath]) {
@@ -255,6 +288,8 @@ async function prepareReleaseManifest() {
       versionedFileName: target.versionedFileName,
       downloadUrl: desktopReleaseDownloadUrl(target),
       versionedDownloadUrl: desktopReleaseDownloadUrl(target, { versioned: true }),
+      githubLatestDownloadUrl: desktopReleaseGithubLatestUrl(target),
+      githubVersionedDownloadUrl: desktopReleaseGithubVersionedUrl(target),
       sha256: digest.sha256,
       bytes: digest.bytes,
       localArtifacts: {
@@ -328,6 +363,89 @@ async function auditPublicRelease() {
     }
   }
   return results;
+}
+
+async function publishGithubLatestRelease() {
+  const contract = await assertDesktopReleaseContract();
+  assertReleaseArtifacts(contract, { requireMacDistributable: false });
+  const ownerRepo = `${contract.github.owner}/${contract.github.repo}`;
+  const tag = contract.github.tag;
+  const releaseTitle = `${contract.appName} Desktop ${tag}`;
+  const notesPath = githubReleaseNotesPath(contract);
+  writeFileSync(notesPath, githubReleaseNotes(contract));
+
+  const assets = Object.values(contract.targets).flatMap((target) => [
+    desktopReleaseArtifactPath(target),
+    desktopReleaseArtifactPath(target, { versioned: true }),
+  ]);
+  const existing = spawnSync("gh", ["release", "view", tag, "--repo", ownerRepo], { encoding: "utf8" });
+  if (existing.status === 0) {
+    runGh(["release", "upload", tag, ...assets, "--repo", ownerRepo, "--clobber"]);
+  } else {
+    runGh(["release", "create", tag, ...assets, "--repo", ownerRepo, "--target", "main", "--title", releaseTitle, "--notes-file", notesPath, "--latest"]);
+  }
+
+  return {
+    repo: ownerRepo,
+    tag,
+    releaseUrl: contract.github.releaseUrl,
+    assets: Object.fromEntries(Object.entries(contract.targets).map(([id, target]) => [id, {
+      fileName: target.fileName,
+      githubLatestDownloadUrl: desktopReleaseGithubLatestUrl(target),
+      sha256: target.sha256,
+    }])),
+  };
+}
+
+async function auditGithubLatestRelease() {
+  const contract = await assertDesktopReleaseContract();
+  const results = [];
+  for (const [id, target] of Object.entries(contract.targets)) {
+    for (const [kind, url] of [
+      ["latest", desktopReleaseGithubLatestUrl(target)],
+      ["versioned", desktopReleaseGithubVersionedUrl(target)],
+    ]) {
+      const result = await fetchAndDigest(url);
+      assert.equal(result.status, 200, `${id} ${kind} GitHub URL returned ${result.status}: ${url}`);
+      assert.ok(!/text\/html/i.test(result.contentType), `${id} GitHub URL returned HTML instead of ${target.package}: ${url}`);
+      assert.ok(result.bytes >= target.minimumBytes, `${id} GitHub artifact too small at ${url}: ${result.bytes}`);
+      assert.equal(result.sha256, target.sha256, `${id} GitHub sha256 mismatch at ${url}`);
+      results.push({ id, kind, url, bytes: result.bytes, sha256: result.sha256, contentType: result.contentType });
+    }
+  }
+  return results;
+}
+
+function githubReleaseNotesPath(contract) {
+  const path = resolve(root, "dist/desktop/release", `github-release-notes-${contract.github.tag}.md`);
+  mkdirSync(dirname(path), { recursive: true });
+  return path;
+}
+
+function githubReleaseNotes(contract) {
+  const mac = contract.targets.macos;
+  const win = contract.targets["windows-x64"];
+  return `Bridge Desktop ${contract.github.tag}
+
+Download:
+- macOS: ${desktopReleaseGithubLatestUrl(mac)}
+- Windows x64: ${desktopReleaseGithubLatestUrl(win)}
+
+Checks:
+- macOS sha256: ${mac.sha256}
+- Windows x64 sha256: ${win.sha256}
+
+Note:
+- The current macOS artifact is an open-source preview package. Formal silent auto-update and a warning-free macOS install still require Developer ID signing, hardened runtime, notarization, and stapling.
+`;
+}
+
+function runGh(args) {
+  const result = spawnSync("gh", args, { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  if (result.status !== 0) {
+    throw new Error(`gh ${args.join(" ")} failed\n${result.stderr || result.stdout}`);
+  }
+  return result.stdout;
 }
 
 async function fetchAndDigest(url) {

@@ -1634,6 +1634,56 @@ mod tests {
     }
 
     #[test]
+    fn desktop_update_check_uses_github_latest_release_assets() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            loop {
+                line.clear();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                    break;
+                }
+            }
+            write_http_json(
+                &mut stream,
+                200,
+                json!({
+                    "tag_name": "v0.1.2",
+                    "html_url": "http://127.0.0.1/release/latest",
+                    "assets": [
+                        {
+                            "name": "bridge-windows-x64.zip",
+                            "browser_download_url": "http://127.0.0.1/download/bridge-windows-x64.zip"
+                        },
+                        {
+                            "name": "bridge-macos.dmg",
+                            "browser_download_url": "http://127.0.0.1/download/bridge-macos.dmg"
+                        }
+                    ]
+                }),
+            )
+            .unwrap();
+        });
+
+        let update = check_desktop_update(&json!({
+            "manifest_url": format!("http://{addr}/latest"),
+            "platform": "windows-x64"
+        }))
+        .unwrap();
+        assert_eq!(update["current_version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(update["latest_version"], "0.1.2");
+        assert_eq!(update["update_available"], true);
+        assert_eq!(
+            update["download_url"],
+            "http://127.0.0.1/download/bridge-windows-x64.zip"
+        );
+        assert_eq!(update["auto_update"]["supported"], false);
+    }
+
+    #[test]
     fn managed_adapter_manifest_starts_node_runtime_and_returns_endpoint() {
         let _guard = ENV_LOCK.lock().unwrap();
         if Command::new(node_runtime_command())
