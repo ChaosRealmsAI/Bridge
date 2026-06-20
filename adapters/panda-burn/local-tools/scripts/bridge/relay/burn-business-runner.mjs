@@ -1,7 +1,9 @@
 import {
   ackBurnSyncEvents,
+  burnSyncEnvelope,
   collectBurnSyncEvents,
   createBurnProject,
+  listBurnSyncEvents,
   listBurnProjects,
   monitorBurnSessions,
   setBurnProjectPreference,
@@ -16,6 +18,7 @@ const BURN_BUSINESS_TYPES = new Set([
   "burn.project.preference.set",
   "burn.session.preference.set",
   "burn.monitor.sessions",
+  "burn.business.sync.list",
   "burn.business.sync.ack",
 ]);
 
@@ -51,6 +54,9 @@ export async function runBurnBusinessCommand(command, context) {
         data = await monitorBurnSessions({ ...input, snapshot }, options);
         break;
       }
+      case "burn.business.sync.list":
+        data = await listBurnSyncEvents(input, options);
+        break;
       case "burn.business.sync.ack":
         data = await ackBurnSyncEvents(input, options);
         break;
@@ -82,29 +88,22 @@ export async function runBurnBusinessCommand(command, context) {
 
 export async function attachBurnSyncEvents(command, response, options = {}) {
   if (!response || response.ok !== true || command.type === "burn.business.sync.ack") return response;
-  const events = await collectBurnSyncEvents({ ...options, limit: 80 }).catch((error) => {
+  const events = command.type === "burn.business.sync.list" && Array.isArray(response.data?.events)
+    ? response.data.events
+    : await collectBurnSyncEvents({ ...options, limit: 80 }).catch((error) => {
     response.sync = {
       schema: "burn.sync.response.v1",
       project: "",
       channel: "burn-business",
+      ack_type: "burn.business.sync.ack",
       events: [],
       error: "burn_sync_outbox_failed",
       message: String(error?.message || error).slice(0, 300),
     };
     return [];
   });
-  if (!events.length) return response;
-  response.sync = {
-    schema: "burn.sync.response.v1",
-    project: events[0]?.project || "burn-app",
-    channel: "burn-business",
-    events,
-    cursor: {
-      stream_id: events.at(-1)?.stream_id || "",
-      seq: events.at(-1)?.seq || 0,
-    },
-    ack_type: "burn.business.sync.ack",
-  };
+  if (!events.length && command.type !== "burn.business.sync.list") return response;
+  response.sync = burnSyncEnvelope(events);
   return response;
 }
 

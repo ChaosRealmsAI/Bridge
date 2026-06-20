@@ -23,6 +23,7 @@
     "burn.project.preference.set",
     "burn.session.preference.set",
     "burn.monitor.sessions",
+    "burn.business.sync.list",
     "burn.business.sync.ack",
     "burn.sessions.show",
     "burn.probe.pwd",
