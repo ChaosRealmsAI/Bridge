@@ -78,9 +78,40 @@ function seed(page) {
     window.__probeTick = 0;
     const original = window.PandaBridge.call.bind(window.PandaBridge);
     window.PandaBridge.call = (command, params = {}) => {
-      if (command === "status") return Promise.resolve({ ...ui.status, settings: ui.settings, products: ui.products });
+      if (command === "status") {
+        // Selection-aware live status: a designated server reports a STALE stored probe
+        // (source=profile_probe_stale, reachable=null) until a real probe resolves it.
+        if (window.__staleServerId) {
+          const selId = ui.settings.selected_cloud_profile_id;
+          const prof = ui.settings.cloud_profiles.find((p) => p.id === selId) || {};
+          const stale = selId === window.__staleServerId && !window.__staleResolved;
+          const server = stale
+            ? { reachable: null, compatible: null, last_probe_at: "x", error: "profile probe stale", source: "profile_probe_stale" }
+            : { reachable: true, compatible: true, last_probe_at: "x", error: null, source: "profile_probe", probe_latency_ms: 42 };
+          const sp = {
+            profile_id: selId, label: prof.name || selId, api_base: prof.api_base, server,
+            device: { paired: true, present: true, last_seen_at: "x", device_id: "d", device_name: "Dev" },
+            account: { authorized: true, authorization_state: "active", account_id: "a", account_display: "X", product_ids: ["panda-burn"] },
+            local_engine: { running: true, adapter_health: "configured", adapter_configured: true, adapter_running: true, adapter_products: [] },
+            transport: { realtime_state: "connected", polling_state: "active", realtime_connected: true, polling_active: true, degraded_reason: null },
+          };
+          return Promise.resolve({ ...ui.status, settings: ui.settings, products: ui.products, selected_profile: sp });
+        }
+        return Promise.resolve({ ...ui.status, settings: ui.settings, products: ui.products });
+      }
+      if (command === "select_cloud_profile") {
+        const id = params.profile_id;
+        const settings = JSON.parse(JSON.stringify(ui.settings));
+        const prof = settings.cloud_profiles.find((p) => p.id === id);
+        if (prof) {
+          settings.selected_cloud_profile_id = id;
+          settings.api_base = prof.api_base;
+        }
+        return Promise.resolve(settings);
+      }
       if (command === "refresh_cloud_profile") {
         const id = params.profile_id;
+        if (id === window.__staleServerId) window.__staleResolved = true; // a real probe clears staleness
         window.__probeTick += 1;
         const tick = window.__probeTick;
         const settings = JSON.parse(JSON.stringify(ui.settings));
@@ -215,9 +246,37 @@ const focusForced = await page.evaluate(async () => {
   return el?.querySelector(".srv-health")?.textContent.trim() || "";
 });
 
+// ---- Core bug: selecting a server whose backend probe is STALE must show Loading
+//      (检测中), never flip to 离线, then resolve to the real online/offline. ----
+const staleSelect = await page.evaluate(async () => {
+  const id = "srv_6";
+  window.__staleServerId = id;
+  window.__staleResolved = false;
+  window.__latencyFor = Object.assign(window.__latencyFor || {}, { [id]: 142 });
+  ui.serverBusy = {};
+  setServerProbeBackoff(id, 0);
+  ui.health[id] = { state: "online", latency: 200, at: Date.now() }; // looked online before the click
+  const read = () => {
+    const el = [...document.querySelectorAll(".srv")].find((x) => x.dataset.pid === id);
+    return el?.querySelector(".srv-health")?.textContent.trim() || "";
+  };
+  const samples = [read()]; // pre-click
+  const poll = setInterval(() => samples.push(read()), 40);
+  const switched = selectServer(null, id); // switch + status(stale) — must stay Loading
+  samples.push(read());                    // synchronous loading frame after click
+  await switched;
+  await new Promise((r) => setTimeout(r, 900)); // triggered probe resolves it
+  clearInterval(poll);
+  samples.push(read());
+  return { samples, final: read() };
+});
+
 await browser.close();
 
 assert.deepEqual(errors, [], `page errors must be empty:\n${errors.join("\n")}`);
+assert.doesNotMatch(staleSelect.samples.join(" | "), /Offline|离线|離線|オフライン/i, `selecting a stale server must never flip to offline (saw: ${staleSelect.samples.join(" | ")})`);
+assert.ok(staleSelect.samples.some((s) => /Checking|检测中|檢測中|確認中/i.test(s)), `selecting a stale server should show Loading/检测中 (saw: ${staleSelect.samples.join(" | ")})`);
+assert.match(staleSelect.final, /Online|在线|在線|オンライン/i, `stale server should resolve to online after the triggered probe (got "${staleSelect.final}")`);
 assert.equal(markerSurvived, true, "clickable server card node must survive a silent probe (no innerHTML rebuild under the cursor)");
 assert.match(srv3Before, /Offline|离线|離線|オフライン/i, `srv_3 should start offline (got "${srv3Before}")`);
 assert.match(srv3After, /Online|在线|在線|オンライン/i, `srv_3 should auto-recover to online after re-probe (got "${srv3After}")`);
@@ -231,4 +290,4 @@ assert.match(focusForced, /\b137ms\b/, `window focus should force a re-check eve
 assert.doesNotMatch(focusForced, /\b111ms\b/, "window focus must replace the stale 'fresh' value, not keep it");
 
 console.log("[desktop-server-list-interaction] pass");
-console.log(JSON.stringify({ beforeTop, afterTop, markerSurvived, srv3Before, srv3After, latBefore, latAfter, churn, focusForced }, null, 2));
+console.log(JSON.stringify({ beforeTop, afterTop, markerSurvived, srv3Before, srv3After, latBefore, latAfter, churn, focusForced, staleSelect }, null, 2));
