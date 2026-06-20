@@ -122,16 +122,8 @@ const ICN={
   warn:`<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg>`
 };
 
-function captureScroll(){
-  const el=document.querySelector(".setscroll")||document.querySelector(".acctscroll");
-  if(!el)return null;
-  return {sel:el.classList.contains("setscroll")?".setscroll":".acctscroll",top:el.scrollTop};
-}
-function restoreScroll(s){
-  if(!s||!s.top)return;
-  const el=document.querySelector(s.sel);
-  if(el)el.scrollTop=s.top;
-}
+function captureScroll(){const el=document.querySelector(".setscroll")||document.querySelector(".acctscroll");return el?{sel:el.classList.contains("setscroll")?".setscroll":".acctscroll",top:el.scrollTop}:null}
+function restoreScroll(s){if(!s||!s.top)return;const el=document.querySelector(s.sel);if(el)el.scrollTop=s.top}
 function render(){
   const _scroll=captureScroll();
   document.documentElement.lang=lang();
@@ -319,8 +311,6 @@ function serverHealth(p){
     if(live){
       const s=live.server||{};
       const nativeLatency=s.probe_latency_ms||null;
-      // A stale stored probe ("needs re-check") must read as Loading, not offline —
-      // otherwise selecting an online server flips it to 离线 until the next probe lands.
       if(s.source==="profile_probe_stale")return{state:"checking"};
       if(s.reachable===false||s.error)return{state:"offline"};
       if(s.compatible===false)return{state:"degraded"};
@@ -522,9 +512,6 @@ async function selectServer(ev,id){
   if(serverBusy(id))return;
   const token=beginServerProbe(id,"select");let switched=false;render();
   try{const settings=await window.PandaBridge.call("select_cloud_profile",{profile_id:id});if(!serverProbeCurrent(id,token))return;ui.settings=settings;ui.health[id]={state:"checking",at:Date.now()};toast(t("serverSelected"));switched=true}catch(e){if(serverProbeCurrent(id,token)){ui.health[id]={state:"offline",error:String(e?.message||e),at:Date.now()};showError(e)}}
-  // Stay in Loading after the switch and kick a fresh probe — the just-switched
-  // profile's stored probe is usually stale, so resolve it to a real online/offline
-  // instead of letting the stale marker render as 离线.
   finally{const current=serverProbeCurrent(id,token);finishServerProbe(id,token);render();if(current&&switched){await refresh().catch(()=>{});setServerProbeBackoff(id,0);probeServer(null,id)}else if(current)refresh().catch(()=>{})}
 }
 async function probeServer(ev,id,opts){
