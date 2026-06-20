@@ -9,7 +9,9 @@ apps/desktop/target/
 adapters/panda-burn/local-tools/backend/bin/
 .tmp/
 .burn/
-spec/
+/spec/
+/poc/
+/POC/
 apps/web-chat/public/sdk/
 *.log
 .pandacode/
