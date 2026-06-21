@@ -4,7 +4,7 @@ import { agentAccountArgs } from "./agent-account-args.mjs";
 import { runUsageLedgerCommand } from "./agent-usage-ledger.mjs";
 import { parseCliError, runCli, runCliJsonStream, terminateProcessTree } from "./cli.mjs";
 import { authorizedProjectRoots, resolveAuthorizedProject } from "./path-policy.mjs";
-import { cleanText, positiveNumber } from "./utils.mjs";
+import { cleanText, positiveNumber, sha256 } from "./utils.mjs";
 
 const AGENT_COMMANDS = new Set([
   "burn.agent.profiles.discover",
@@ -33,8 +33,19 @@ const AGENT_COMMANDS = new Set([
   "burn.agent.quota.list",
   "burn.agent.quota.probe",
   "burn.agent.health.scan",
+  "burn.agent.observer.status",
+  "burn.agent.observer.sources",
+  "burn.agent.observer.deltas.list",
+  "burn.agent.observer.watch.start",
+  "burn.agent.observer.watch.stop",
+  "burn.agent.observer.perf",
+  "burn.agent.abnormal.watch",
+  "burn.agent.abnormal.list",
+  "burn.agent.abnormal.scan",
   "burn.agent.sources.list",
   "burn.agent.source.status",
+  "burn.agent.commands.list",
+  "burn.agent.command.run",
   "burn.agent.sessions.list",
   "burn.agent.session.show",
   "burn.agent.session.watch",
@@ -53,9 +64,7 @@ export async function runBurnAgentCommand(command, context) {
     return runUsageLedgerCommand(command, context);
   }
   const project = projectInput(input);
-  const cwd = project
-    ? await resolveAuthorizedProject(project, context.root, authorizedProjectRoots(context))
-    : context.root;
+  const cwd = await resolveAuthorizedProject(project || context.root, context.root, authorizedProjectRoots(context));
   if (command.type === "burn.agent.session.watch") {
     return runAgentSessionWatch(command, input, cwd, context);
   }
@@ -179,10 +188,52 @@ async function agentArgs(type, input, context) {
   }
   const accountArgs = agentAccountArgs(type, input);
   if (accountArgs) return accountArgs;
+  const observerArgs = agentObserverArgs(type, input);
+  if (observerArgs) return observerArgs;
   if (type === "burn.agent.sources.list") return ["sources", "list", "--json"];
   const source = required(input.source, "source");
   if (type === "burn.agent.source.status") {
     return withProfile(["source", "status", "--source", source, "--project", await resolvedProject(input, context), "--json"], input);
+  }
+  if (type === "burn.agent.commands.list") {
+    return withProfile([
+      "source",
+      "commands",
+      "list",
+      "--source",
+      source,
+      "--project",
+      await resolvedProject(input, context),
+      "--json",
+    ], input);
+  }
+  if (type === "burn.agent.command.run") {
+    const args = [
+      "source",
+      "command",
+      "run",
+      "--source",
+      source,
+      "--project",
+      await resolvedProject(input, context),
+      "--command",
+      required(input.command_id || input.commandId || input.command || input.name, "command"),
+    ];
+    const commandArgs = firstDefined(input.args, input.command_args, input.commandArgs);
+    if (commandArgs !== undefined) {
+      args.push("--args", typeof commandArgs === "string" ? commandArgs : JSON.stringify(commandArgs));
+    }
+    const prompt = cleanText(input.prompt || input.prompt_text || input.promptText);
+    if (prompt) args.push("--prompt", prompt);
+    const sessionId = cleanText(input.session_id || input.sessionId || input.id);
+    if (sessionId) args.push("--session-id", sessionId);
+    const model = cleanText(input.model);
+    if (model) args.push("--model", model);
+    const mode = cleanText(input.mode);
+    if (mode) args.push("--mode", mode);
+    addOptions(args, input);
+    args.push("--json");
+    return withProfile(args, input);
   }
   if (type === "burn.agent.sessions.list") {
     return withProfile([
@@ -276,38 +327,54 @@ async function runAgentSessionWatch(command, input, cwd, context) {
   const source = required(input.source, "source");
   const sessionId = required(input.session_id || input.id, "session_id");
   const project = await resolvedProject(input, context);
+  const projectHandle = evidenceHandle(project, "project");
+  const projectHash = evidenceHash(project);
+  const profileId = cleanText(input.profile_id || input.profileId);
   const leaseMs = Math.max(5000, Math.min(positiveNumber(input.lease_ms || input.leaseMs, 30000), 120000));
   const intervalMs = Math.max(750, Math.min(positiveNumber(input.interval_ms || input.intervalMs, 2000), 10000));
   const startedAt = Date.now();
   const deadline = startedAt + leaseMs;
   let lastCursor = Math.max(0, positiveNumber(input.cursor, 0));
   let lastTotal = Math.max(0, positiveNumber(input.total_messages || input.totalMessages || input.total, 0));
-  let lastFingerprint = "";
+  let lastFingerprint = cleanText(input.fingerprint || input.timeline_fingerprint || input.timelineFingerprint);
+  let latestMeta = {
+    source,
+    project: projectHandle,
+    project_hash: projectHash,
+    session_id: sessionId,
+    profile_id: profileId,
+    cursor: lastCursor,
+    total_messages: lastTotal,
+    latest_page_item_count: 0,
+    order: "latest",
+    latest_message_id: "",
+    latest_message_order_key: "",
+    fingerprint: lastFingerprint,
+    fingerprint_basis: "session.show/latest-page",
+  };
   let emitted = 0;
 
   while (Date.now() < deadline) {
     const page = await readSessionWatchPage(source, input, project, cwd, context);
-    const cursorNow = pageCursor(page);
-    const totalNow = pageTotal(page);
-    const transcriptPath = pageTranscriptPath(page);
-    const fingerprint = `${cursorNow}:${totalNow}:${transcriptPath}:${page.messages?.length || 0}`;
+    const meta = sessionWatchPageMeta(page, {
+      source,
+      projectHandle,
+      projectHash,
+      sessionId,
+      profileId,
+    });
     const changed = lastFingerprint
-      ? fingerprint !== lastFingerprint
-      : cursorNow > lastCursor || (lastTotal > 0 && totalNow > lastTotal);
-    lastFingerprint = fingerprint;
+      ? meta.fingerprint !== lastFingerprint
+      : meta.cursor > lastCursor || (lastTotal > 0 && meta.total_messages > lastTotal);
+    lastFingerprint = meta.fingerprint;
+    latestMeta = meta;
     if (changed) {
-      lastCursor = Math.max(lastCursor, cursorNow);
-      lastTotal = Math.max(lastTotal, totalNow);
+      lastCursor = Math.max(lastCursor, meta.cursor);
+      lastTotal = Math.max(lastTotal, meta.total_messages);
       emitted += 1;
       await emitSessionWatchProgress(command, input, context, {
         schema: "burn.agent.session.watch.event.v1",
-        source,
-        project,
-        session_id: sessionId,
-        profile_id: cleanText(input.profile_id || input.profileId),
-        cursor: cursorNow,
-        total_messages: totalNow,
-        transcript_path: transcriptPath,
+        ...meta,
         reason: "jsonl_changed",
       });
     }
@@ -323,19 +390,138 @@ async function runAgentSessionWatch(command, input, cwd, context) {
     request_id: command.request_id || null,
     data: {
       schema: "burn.agent.session.watch.final.v1",
-      source,
-      project,
-      session_id: sessionId,
-      profile_id: cleanText(input.profile_id || input.profileId),
-      cursor: lastCursor,
-      total_messages: lastTotal,
+      ...latestMeta,
       emitted,
       status: "lease_expired",
     },
   };
 }
 
+function sessionWatchPageMeta(page, identity) {
+  const messages = pageMessages(page);
+  const cursorNow = pageCursor(page);
+  const totalMessages = pageTotal(page);
+  const order = pageOrder(page);
+  const latestMessage = messages[messages.length - 1] || null;
+  const latestMessageId = messageId(latestMessage);
+  const latestMessageOrderIndex = messages.length > 0 ? cursorNow + messages.length - 1 : null;
+  const latestMessageOrderKey = latestMessageOrderIndex === null ? "" : `${order}:${latestMessageOrderIndex}`;
+  const transcriptPath = pageTranscriptPath(page);
+  const transcriptHash = evidenceHash(transcriptPath);
+  const latestPageItemCount = messages.length;
+  const fingerprint = sessionWatchFingerprint({
+    source: identity.source,
+    projectHash: identity.projectHash,
+    sessionId: identity.sessionId,
+    profileId: identity.profileId,
+    transcriptHash,
+    cursor: cursorNow,
+    totalMessages,
+    latestPageItemCount,
+    order,
+    latestMessageId,
+    latestMessageOrderKey,
+    messages,
+  });
+  return {
+    source: identity.source,
+    project: identity.projectHandle,
+    project_hash: identity.projectHash,
+    session_id: identity.sessionId,
+    profile_id: identity.profileId,
+    transcript_path_display: evidenceHandle(transcriptPath, "transcript"),
+    transcript_hash: transcriptHash,
+    cursor: cursorNow,
+    total_messages: totalMessages,
+    latest_page_item_count: latestPageItemCount,
+    order,
+    latest_message_id: latestMessageId,
+    latest_message_order_key: latestMessageOrderKey,
+    fingerprint,
+    fingerprint_basis: "session.show/latest-page",
+  };
+}
+
+function sessionWatchFingerprint(meta) {
+  return sha256(JSON.stringify({
+    source: meta.source,
+    project_hash: meta.projectHash,
+    session_id: meta.sessionId,
+    profile_id: meta.profileId,
+    transcript_hash: meta.transcriptHash,
+    cursor: meta.cursor,
+    total_messages: meta.totalMessages,
+    latest_page_item_count: meta.latestPageItemCount,
+    order: meta.order,
+    latest_message_id: meta.latestMessageId,
+    latest_message_order_key: meta.latestMessageOrderKey,
+    messages: meta.messages.map(messageFingerprintInput),
+  }));
+}
+
+function messageFingerprintInput(message, index) {
+  return {
+    index,
+    id: messageId(message),
+    role: cleanText(message?.role),
+    created_at: cleanText(message?.created_at || message?.ts || message?.timestamp),
+    status: cleanText(message?.status),
+    blocks: message?.blocks || [],
+  };
+}
+
+function pageMessages(page) {
+  if (Array.isArray(page?.messages)) return page.messages;
+  if (Array.isArray(page?.data?.messages)) return page.data.messages;
+  if (Array.isArray(page?.page?.messages)) return page.page.messages;
+  return [];
+}
+
+function pageOrder(page) {
+  return cleanText(page?.order || page?.page?.order) || "latest";
+}
+
+function messageId(message) {
+  return cleanText(message?.id || message?.message_id || message?.messageId);
+}
+
+function evidenceHash(value) {
+  const text = cleanText(value);
+  return text ? sha256(text) : "";
+}
+
+function evidenceHandle(value, label) {
+  const hash = evidenceHash(value);
+  return hash ? `<${label}:${hash.slice(0, 16)}>` : "";
+}
+
 async function readSessionWatchPage(source, input, project, cwd, context) {
+  const transcriptPath = expandHomePath(cleanText(input.transcript_path || input.transcriptPath));
+  if (transcriptPath) {
+    const args = [
+      "sessions",
+      "show",
+      "--id",
+      required(input.session_id || input.id, "session_id"),
+      "--transcript-path",
+      transcriptPath,
+      "--agent",
+      source,
+      "--cursor",
+      "0",
+      "--limit",
+      "1",
+      "--latest",
+      "--json",
+    ];
+    const stdout = await runCli(context, args, {
+      cwd,
+      timeout: 30000,
+      maxBuffer: 16 * 1024 * 1024,
+      env: agentEnv(context),
+    });
+    return JSON.parse(stdout);
+  }
   const args = withProfile(await sessionShowArgs(source, {
     ...input,
     project,
@@ -350,6 +536,13 @@ async function readSessionWatchPage(source, input, project, cwd, context) {
     env: agentEnv(context),
   });
   return JSON.parse(stdout);
+}
+
+function expandHomePath(path) {
+  if (!path) return "";
+  if (path === "~") return env.HOME || path;
+  if (path.startsWith("~/")) return `${env.HOME || ""}/${path.slice(2)}`;
+  return path;
 }
 
 async function emitSessionWatchProgress(command, input, context, data) {
@@ -409,6 +602,48 @@ function withProfile(args, input) {
   return ["agent", ...args, "--profile-id", profileId];
 }
 
+function agentObserverArgs(type, input) {
+  const map = {
+    "burn.agent.observer.status": ["agent", "observer", "status"],
+    "burn.agent.observer.sources": ["agent", "observer", "sources"],
+    "burn.agent.observer.deltas.list": ["agent", "observer", "deltas", "list"],
+    "burn.agent.observer.watch.start": ["agent", "observer", "watch", "start"],
+    "burn.agent.observer.watch.stop": ["agent", "observer", "watch", "stop"],
+    "burn.agent.observer.perf": ["agent", "observer", "perf"],
+    "burn.agent.abnormal.list": ["agent", "abnormal", "list"],
+    "burn.agent.abnormal.scan": ["agent", "abnormal", "scan"],
+  };
+  let args = map[type]?.slice();
+  if (type === "burn.agent.abnormal.watch") {
+    const action = cleanText(input.action || input.mode || input.watch_action || input.watchAction || "status");
+    args = ["agent", "abnormal", "watch", ["start", "stop", "status"].includes(action) ? action : "status"];
+  }
+  if (!args) return null;
+  appendOptional(args, "--source", input.source);
+  appendOptional(args, "--history-limit", firstDefined(input.history_limit, input.historyLimit));
+  appendOptional(args, "--max-files", firstDefined(input.max_files, input.maxFiles));
+  appendOptional(args, "--max-depth", firstDefined(input.max_depth, input.maxDepth));
+  appendOptional(args, "--stability-ms", firstDefined(input.stability_ms, input.stabilityMs));
+  appendOptional(args, "--no-response-ms", firstDefined(input.no_response_ms, input.noResponseMs));
+  appendOptional(args, "--interval-ms", firstDefined(input.interval_ms, input.intervalMs));
+  appendOptional(args, "--lease-ms", firstDefined(input.lease_ms, input.leaseMs));
+  appendOptional(args, "--classify-limit", firstDefined(input.classify_limit, input.classifyLimit));
+  if (input.dry_run === true || input.dryRun === true) args.push("--dry-run");
+  if (input.include_suppressed === true || input.includeSuppressed === true) args.push("--include-suppressed");
+  args.push("--json");
+  return args;
+}
+
+function appendOptional(args, flag, value) {
+  const text = value === null || value === undefined ? "" : String(value).trim();
+  if (!text) return;
+  args.push(flag, text);
+}
+
+function firstDefined(...values) {
+  return values.find((value) => value !== null && value !== undefined);
+}
+
 async function resolvedProject(input, context) {
   return resolveAuthorizedProject(projectInput(input) || context.root, context.root, authorizedProjectRoots(context));
 }
@@ -435,10 +670,12 @@ function required(value, name) {
 }
 
 function agentEnv(context) {
-  return {
+  const out = {
     ...env,
     PATH: pathWithCommonCliDirs(env.PATH),
   };
+  if (context.burnAppHome) out.BURN_APP_HOME = context.burnAppHome;
+  return out;
 }
 
 function pathWithCommonCliDirs(pathValue) {
@@ -672,5 +909,5 @@ function finalSessionId(data) {
 }
 
 function finalText(data) {
-  return cleanText(data?.reply || data?.data?.reply || data?.turn?.chat?.reply || data?.result);
+  return cleanText(data?.reply || data?.data?.reply || data?.turn?.chat?.reply || data?.display_summary || data?.result);
 }

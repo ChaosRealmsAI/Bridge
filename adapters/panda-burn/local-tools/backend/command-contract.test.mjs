@@ -52,6 +52,32 @@ test("relay store status distinguishes public response schema from backend store
   assert.match(JSON.stringify(status), /store_schema/);
 });
 
+test("session watch contract exposes wakeup identity and order reconciliation metadata", () => {
+  const watch = contract.contracts?.["burn.agent.session.watch"];
+  assertDetailedContract("burn.agent.session.watch", watch);
+  for (const field of [
+    "source",
+    "project",
+    "project_hash",
+    "session_id",
+    "cursor",
+    "total_messages",
+    "latest_page_item_count",
+    "order",
+    "latest_message_id",
+    "latest_message_order_key",
+    "fingerprint",
+  ]) {
+    assert.ok(watch.output.requiredFields.includes(field), `${field} missing from watch final fields`);
+    assert.ok(watch.output.progressRequiredFields.includes(field), `${field} missing from watch progress fields`);
+  }
+  const semantics = JSON.stringify(watch.output.semantics);
+  assert.match(semantics, /wakeup/);
+  assert.match(semantics, /session\.show\/messagePage/);
+  assert.match(semantics, /bounded reconcile trigger/);
+  assert.match(semantics, /must not fall back to UI timestamp or watch-arrival sorting/);
+});
+
 function assertDetailedContract(command, detail) {
   assert.ok(detail && typeof detail === "object", `${command} missing contract detail`);
   assert.ok(detail.input && typeof detail.input === "object", `${command} missing input contract`);

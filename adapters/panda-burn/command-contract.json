@@ -32,6 +32,15 @@
     "burn.agent.quota.list",
     "burn.agent.quota.probe",
     "burn.agent.health.scan",
+    "burn.agent.observer.status",
+    "burn.agent.observer.sources",
+    "burn.agent.observer.deltas.list",
+    "burn.agent.observer.watch.start",
+    "burn.agent.observer.watch.stop",
+    "burn.agent.observer.perf",
+    "burn.agent.abnormal.watch",
+    "burn.agent.abnormal.list",
+    "burn.agent.abnormal.scan",
     "burn.agent.sources.list",
     "burn.agent.source.status",
     "burn.agent.sessions.list",
@@ -488,6 +497,387 @@
         }
       }
     },
+    "burn.agent.observer.status": {
+      "input": {
+        "source": {
+          "type": "string",
+          "required": false,
+          "allowed": [
+            "codex",
+            "claude"
+          ]
+        },
+        "max_files": {
+          "type": "number",
+          "required": false,
+          "description": "Optional scan cap for diagnostics."
+        }
+      },
+      "pagination": {
+        "supported": false,
+        "semantics": "Status is a single local snapshot of watcher intent, source coverage, catalog counts, and resource pressure."
+      },
+      "output": {
+        "schema": "burn.agent.observer.status.v1",
+        "requiredFields": [
+          "ok",
+          "schema",
+          "generated_at",
+          "mode",
+          "running",
+          "watcher",
+          "counts",
+          "degraded_resource_pressure",
+          "source_root_account_model",
+          "performance_budget"
+        ],
+        "semantics": {
+          "coverage": "All discovered official Codex/Claude source roots/routes are counted even when the linked account is logged out, expired, quota-blocked, unknown, or not executable.",
+          "watcher": "The local daemon owns the shared JSONL delta scan and abnormal classifier loop while running; status reports requested_running, daemon pid/alive state, heartbeat, and last iteration handles."
+        }
+      },
+      "emptySemantics": "No roots or sessions is successful with zero counts and diagnostics; it is not an error.",
+      "errors": {
+        "burn_agent_failed": "Local observer snapshot failed.",
+        "local_policy_denied": "Relay authorization denied the command."
+      }
+    },
+    "burn.agent.observer.sources": {
+      "input": {
+        "source": {
+          "type": "string",
+          "required": false,
+          "allowed": [
+            "codex",
+            "claude"
+          ]
+        }
+      },
+      "pagination": {
+        "supported": false,
+        "semantics": "Returns the bounded local source-root inventory; it does not page transcript content."
+      },
+      "output": {
+        "schema": "burn.agent.observer.sources.v1",
+        "requiredFields": [
+          "ok",
+          "schema",
+          "generated_at",
+          "mode",
+          "counts",
+          "source_root_account_model",
+          "sources"
+        ],
+        "sourceRequiredFields": [
+          "id",
+          "source",
+          "source_kind",
+          "source_root_display",
+          "source_root_hash",
+          "exists",
+          "readable",
+          "watchable",
+          "profile_id",
+          "account_state",
+          "monitoring_included"
+        ],
+        "semantics": {
+          "source_root_display": "Home-masked local evidence handle; raw absolute paths are not required by App consumers.",
+          "monitoring_included": "true means coverage is source-root-first and not filtered by account launchability."
+        }
+      },
+      "emptySemantics": "No discovered roots returns sources=[] and zero counts.",
+      "errors": {
+        "burn_agent_failed": "Source root discovery failed."
+      }
+    },
+    "burn.agent.observer.deltas.list": {
+      "input": {
+        "source": {
+          "type": "string",
+          "required": false,
+          "allowed": [
+            "codex",
+            "claude"
+          ]
+        },
+        "dry_run": {
+          "type": "boolean",
+          "default": false,
+          "description": "When true, compute deltas without committing observer state."
+        },
+        "max_files": {
+          "type": "number",
+          "required": false
+        }
+      },
+      "pagination": {
+        "supported": false,
+        "semantics": "One poll iteration returns all new/changed transcript events found within the configured scan cap."
+      },
+      "output": {
+        "schema": "burn.agent.observer.deltas.v1",
+        "requiredFields": [
+          "ok",
+          "schema",
+          "generated_at",
+          "mode",
+          "committed",
+          "shared_stream_consumers",
+          "counts",
+          "deltas"
+        ],
+        "deltaRequiredFields": [
+          "kind",
+          "source",
+          "source_kind",
+          "source_root_hash",
+          "profile_id",
+          "account_state",
+          "session_id",
+          "transcript_path_display",
+          "transcript_hash",
+          "mtime_ms",
+          "size_bytes",
+          "consumers"
+        ],
+        "semantics": {
+          "kind": "session_added for newly discovered JSONL files; transcript_delta for mtime/size changes.",
+          "consumers": "The same stream is for normal session push/history refresh, active tracker, and abnormal classifier."
+        }
+      },
+      "emptySemantics": "No file changes returns deltas=[] with committed=true unless dry_run=true.",
+      "errors": {
+        "burn_agent_failed": "Delta scan or state write failed."
+      }
+    },
+    "burn.agent.observer.watch.start": {
+      "input": {
+        "interval_ms": {
+          "type": "number",
+          "default": 1000,
+          "description": "Daemon loop interval for local background polling."
+        },
+        "lease_ms": {
+          "type": "number",
+          "required": false,
+          "description": "Optional bounded lease for tests and local verification; omitted means run until stop."
+        }
+      },
+      "pagination": {
+        "supported": false,
+        "semantics": "Start is idempotent and spawns the local observer daemon; it does not stream transcript payloads."
+      },
+      "output": {
+        "schema": "burn.agent.observer.watch.v1",
+        "requiredFields": [
+          "ok",
+          "schema",
+          "generated_at",
+          "running",
+          "mode",
+          "recommended_cadence_ms",
+          "state_path_display",
+          "daemon_path_display",
+          "daemon_pid"
+        ]
+      },
+      "emptySemantics": "Repeated start is successful and leaves running=true.",
+      "errors": {
+        "burn_agent_failed": "Observer state could not be written."
+      }
+    },
+    "burn.agent.observer.watch.stop": {
+      "input": {},
+      "pagination": {
+        "supported": false,
+        "semantics": "Stop clears local observer intent, asks the daemon process to terminate, and keeps previous state for dedupe."
+      },
+      "output": {
+        "schema": "burn.agent.observer.watch.v1",
+        "requiredFields": [
+          "ok",
+          "schema",
+          "generated_at",
+          "running",
+          "mode",
+          "state_path_display",
+          "daemon_path_display"
+        ]
+      },
+      "emptySemantics": "Repeated stop is successful and leaves running=false.",
+      "errors": {
+        "burn_agent_failed": "Observer state could not be written."
+      }
+    },
+    "burn.agent.observer.perf": {
+      "input": {
+        "max_files": {
+          "type": "number",
+          "required": false
+        }
+      },
+      "pagination": {
+        "supported": false,
+        "semantics": "Single-sample local resource metric plus daemon/event-store handles; no provider or network calls are allowed."
+      },
+      "output": {
+        "schema": "burn.agent.observer.perf.v1",
+        "requiredFields": [
+          "ok",
+          "schema",
+          "generated_at",
+          "budget",
+          "sample",
+          "degraded_resource_pressure"
+        ]
+      },
+      "emptySemantics": "No sessions still returns budget and a zero-count sample.",
+      "errors": {
+        "burn_agent_failed": "Performance sample failed."
+      }
+    },
+    "burn.agent.abnormal.watch": {
+      "input": {
+        "action": {
+          "type": "string",
+          "required": false,
+          "allowed": [
+            "start",
+            "stop",
+            "status"
+          ],
+          "default": "status"
+        }
+      },
+      "pagination": {
+        "supported": false,
+        "semantics": "Delegates to observer watch start/stop/status for the abnormal guardian."
+      },
+      "output": {
+        "schema": "burn.agent.observer.watch.v1|burn.agent.observer.status.v1",
+        "requiredFields": [
+          "ok",
+          "schema",
+          "generated_at"
+        ]
+      },
+      "emptySemantics": "Status succeeds even when no roots are discovered.",
+      "errors": {
+        "burn_agent_failed": "Abnormal guardian watch command failed."
+      }
+    },
+    "burn.agent.abnormal.list": {
+      "input": {
+        "source": {
+          "type": "string",
+          "required": false,
+          "allowed": [
+            "codex",
+            "claude"
+          ]
+        },
+        "stability_ms": {
+          "type": "number",
+          "default": 30000,
+          "description": "High-confidence provider error must remain unrecovered for this window before becoming an incident."
+        },
+        "no_response_ms": {
+          "type": "number",
+          "default": 130000,
+          "description": "Stable nonterminal tail must remain without a later normal assistant reply for this window before becoming a suspected_stall candidate."
+        },
+        "include_suppressed": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "pagination": {
+        "supported": false,
+        "semantics": "Returns bounded current incidents and candidates from local JSONL tail classification."
+      },
+      "output": {
+        "schema": "burn.agent.abnormal.list.v1",
+        "requiredFields": [
+          "ok",
+          "schema",
+          "generated_at",
+          "mode",
+          "source_root_account_model",
+          "confirmation",
+          "counts",
+          "incidents",
+          "candidates",
+          "storage"
+        ],
+        "incidentRequiredFields": [
+          "id",
+          "state",
+          "severity",
+          "source",
+          "source_kind",
+          "profile_id",
+          "account_state",
+          "session_id",
+          "transcript_path_display",
+          "transcript_hash",
+          "stable_for_ms",
+          "stability_window_ms",
+          "marker",
+          "decision_rule"
+        ],
+        "semantics": {
+          "incident": "A high-confidence provider error with no later normal assistant reply after the stability window.",
+          "candidate": "Same provider-error evidence before the stability window expires, or a suspected_stall when a stable nonterminal tail has no later normal assistant reply.",
+          "suppressed": "Recovered tails are omitted unless include_suppressed=true."
+        }
+      },
+      "emptySemantics": "No abnormal evidence returns incidents=[] and candidates=[].",
+      "errors": {
+        "burn_agent_failed": "Abnormal classifier scan failed."
+      }
+    },
+    "burn.agent.abnormal.scan": {
+      "input": {
+        "source": {
+          "type": "string",
+          "required": false,
+          "allowed": [
+            "codex",
+            "claude"
+          ]
+        },
+        "stability_ms": {
+          "type": "number",
+          "default": 30000
+        },
+        "no_response_ms": {
+          "type": "number",
+          "default": 130000
+        }
+      },
+      "pagination": {
+        "supported": false,
+        "semantics": "One-shot local verification that classifies current tails and commits the redacted latest/events store."
+      },
+      "output": {
+        "schema": "burn.agent.abnormal.list.v1",
+        "requiredFields": [
+          "ok",
+          "schema",
+          "generated_at",
+          "counts",
+          "incidents",
+          "candidates",
+          "committed",
+          "storage"
+        ]
+      },
+      "emptySemantics": "No abnormal evidence returns incidents=[] and candidates=[].",
+      "errors": {
+        "burn_agent_failed": "Abnormal classifier scan failed."
+      }
+    },
     "burn.agent.sessions.list": {
       "input": {
         "source": {
@@ -664,10 +1054,20 @@
           "required": false,
           "description": "Owning profile for Resume/history routing."
         },
+        "transcript_path": {
+          "type": "string",
+          "required": false,
+          "description": "Optional direct transcript JSONL path for sessions discovered from monitor/snapshot. When present, watch polls the same durable transcript reader as messagePage instead of provider-native session.show."
+        },
         "cursor": {
           "type": "number",
           "required": false,
           "description": "Phone's current transcript cursor; watch emits when latest page advances."
+        },
+        "fingerprint": {
+          "type": "string",
+          "required": false,
+          "description": "Optional last watch fingerprint held by the caller; when present, a changed latest-page truth fingerprint triggers a wakeup even if cursor/total are unchanged."
         },
         "lease_ms": {
           "type": "number",
@@ -686,9 +1086,15 @@
           "schema",
           "source",
           "project",
+          "project_hash",
           "session_id",
           "cursor",
           "total_messages",
+          "latest_page_item_count",
+          "order",
+          "latest_message_id",
+          "latest_message_order_key",
+          "fingerprint",
           "emitted",
           "status"
         ],
@@ -697,14 +1103,26 @@
           "schema",
           "source",
           "project",
+          "project_hash",
           "session_id",
           "cursor",
           "total_messages",
+          "latest_page_item_count",
+          "order",
+          "latest_message_id",
+          "latest_message_order_key",
+          "fingerprint",
           "reason"
         ],
         "semantics": {
-          "event": "A lightweight wakeup that the selected session transcript changed. It is not the message payload.",
-          "final": "Lease completion marker; caller may immediately re-arm while the chat screen remains open."
+          "event": "A lightweight wakeup that the selected session transcript changed. It is not the message payload, and consumers must pull canonical session truth through burn.agent.session.show/messagePage before rendering new timeline rows.",
+          "final": "Lease completion marker with the latest observed identity/order metadata; caller may immediately re-arm while the chat screen remains open.",
+          "project": "Relay-visible evidence handle such as <project:hash-prefix>, not the raw authorized project path.",
+          "transcript_path_display": "Optional relay-visible evidence handle such as <transcript:hash-prefix>, not the raw transcript path.",
+          "identity": "source, project/project_hash, session_id, optional profile_id, and transcript handle/hash let the active route reject wakeups for another source/profile/project/session.",
+          "order": "cursor, total_messages, latest_page_item_count, order, latest_message_id, latest_message_order_key, and fingerprint are reconcile metadata from the bounded latest burn.agent.session.show page.",
+          "fingerprint": "Hash of the ordered latest-page signature. It changes when ordered timeline truth changes but does not expose message payload text.",
+          "invariant": "Watch data is wakeup/reconcile metadata only. Missing order/fingerprint/latest-message metadata is a bounded reconcile trigger through session.show/messagePage; Flutter must not fall back to UI timestamp or watch-arrival sorting."
         }
       },
       "emptySemantics": "No changes during the lease is a successful final response with emitted=0.",
