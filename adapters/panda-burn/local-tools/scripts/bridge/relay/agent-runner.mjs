@@ -44,6 +44,8 @@ const AGENT_COMMANDS = new Set([
   "burn.agent.abnormal.scan",
   "burn.agent.sources.list",
   "burn.agent.source.status",
+  "burn.agent.commands.list",
+  "burn.agent.command.run",
   "burn.agent.sessions.list",
   "burn.agent.session.show",
   "burn.agent.session.watch",
@@ -62,9 +64,7 @@ export async function runBurnAgentCommand(command, context) {
     return runUsageLedgerCommand(command, context);
   }
   const project = projectInput(input);
-  const cwd = project
-    ? await resolveAuthorizedProject(project, context.root, authorizedProjectRoots(context))
-    : context.root;
+  const cwd = await resolveAuthorizedProject(project || context.root, context.root, authorizedProjectRoots(context));
   if (command.type === "burn.agent.session.watch") {
     return runAgentSessionWatch(command, input, cwd, context);
   }
@@ -194,6 +194,46 @@ async function agentArgs(type, input, context) {
   const source = required(input.source, "source");
   if (type === "burn.agent.source.status") {
     return withProfile(["source", "status", "--source", source, "--project", await resolvedProject(input, context), "--json"], input);
+  }
+  if (type === "burn.agent.commands.list") {
+    return withProfile([
+      "source",
+      "commands",
+      "list",
+      "--source",
+      source,
+      "--project",
+      await resolvedProject(input, context),
+      "--json",
+    ], input);
+  }
+  if (type === "burn.agent.command.run") {
+    const args = [
+      "source",
+      "command",
+      "run",
+      "--source",
+      source,
+      "--project",
+      await resolvedProject(input, context),
+      "--command",
+      required(input.command_id || input.commandId || input.command || input.name, "command"),
+    ];
+    const commandArgs = firstDefined(input.args, input.command_args, input.commandArgs);
+    if (commandArgs !== undefined) {
+      args.push("--args", typeof commandArgs === "string" ? commandArgs : JSON.stringify(commandArgs));
+    }
+    const prompt = cleanText(input.prompt || input.prompt_text || input.promptText);
+    if (prompt) args.push("--prompt", prompt);
+    const sessionId = cleanText(input.session_id || input.sessionId || input.id);
+    if (sessionId) args.push("--session-id", sessionId);
+    const model = cleanText(input.model);
+    if (model) args.push("--model", model);
+    const mode = cleanText(input.mode);
+    if (mode) args.push("--mode", mode);
+    addOptions(args, input);
+    args.push("--json");
+    return withProfile(args, input);
   }
   if (type === "burn.agent.sessions.list") {
     return withProfile([
@@ -456,6 +496,32 @@ function evidenceHandle(value, label) {
 }
 
 async function readSessionWatchPage(source, input, project, cwd, context) {
+  const transcriptPath = expandHomePath(cleanText(input.transcript_path || input.transcriptPath));
+  if (transcriptPath) {
+    const args = [
+      "sessions",
+      "show",
+      "--id",
+      required(input.session_id || input.id, "session_id"),
+      "--transcript-path",
+      transcriptPath,
+      "--agent",
+      source,
+      "--cursor",
+      "0",
+      "--limit",
+      "1",
+      "--latest",
+      "--json",
+    ];
+    const stdout = await runCli(context, args, {
+      cwd,
+      timeout: 30000,
+      maxBuffer: 16 * 1024 * 1024,
+      env: agentEnv(context),
+    });
+    return JSON.parse(stdout);
+  }
   const args = withProfile(await sessionShowArgs(source, {
     ...input,
     project,
@@ -470,6 +536,13 @@ async function readSessionWatchPage(source, input, project, cwd, context) {
     env: agentEnv(context),
   });
   return JSON.parse(stdout);
+}
+
+function expandHomePath(path) {
+  if (!path) return "";
+  if (path === "~") return env.HOME || path;
+  if (path.startsWith("~/")) return `${env.HOME || ""}/${path.slice(2)}`;
+  return path;
 }
 
 async function emitSessionWatchProgress(command, input, context, data) {
@@ -836,5 +909,5 @@ function finalSessionId(data) {
 }
 
 function finalText(data) {
-  return cleanText(data?.reply || data?.data?.reply || data?.turn?.chat?.reply || data?.result);
+  return cleanText(data?.reply || data?.data?.reply || data?.turn?.chat?.reply || data?.display_summary || data?.result);
 }

@@ -1054,6 +1054,11 @@
           "required": false,
           "description": "Owning profile for Resume/history routing."
         },
+        "transcript_path": {
+          "type": "string",
+          "required": false,
+          "description": "Optional direct transcript JSONL path for sessions discovered from monitor/snapshot. When present, watch polls the same durable transcript reader as messagePage instead of provider-native session.show."
+        },
         "cursor": {
           "type": "number",
           "required": false,
