@@ -1,7 +1,8 @@
 use anyhow::{bail, Result};
 use burn_chat::{
-    Agent, AgentSessionListRequest, AgentSessionShowRequest, AgentSessionTurnRequest,
-    AgentSourceTurnRequest, AgentTurnInterruptRequest, ChatMode,
+    Agent, AgentCommandCatalogRequest, AgentCommandRunRequest, AgentSessionListRequest,
+    AgentSessionShowRequest, AgentSessionTurnRequest, AgentSourceTurnRequest,
+    AgentTurnInterruptRequest, ChatMode,
 };
 use clap::{Arg, ArgAction};
 use serde_json::Value;
@@ -62,6 +63,29 @@ pub(crate) fn interrupt_request(args: &clap::ArgMatches) -> Result<AgentTurnInte
     })
 }
 
+pub(crate) fn command_catalog_request(
+    args: &clap::ArgMatches,
+) -> Result<AgentCommandCatalogRequest> {
+    Ok(AgentCommandCatalogRequest {
+        source: Agent::parse(required_ref(args, "source")?)?,
+        project: PathBuf::from(required_ref(args, "project")?),
+    })
+}
+
+pub(crate) fn command_run_request(args: &clap::ArgMatches) -> Result<AgentCommandRunRequest> {
+    Ok(AgentCommandRunRequest {
+        source: Agent::parse(required_ref(args, "source")?)?,
+        project: PathBuf::from(required_ref(args, "project")?),
+        command_id: required(args, "command")?,
+        args: command_args_value(args)?,
+        prompt: optional_value(args, "prompt"),
+        session_id: optional_value(args, "session-id"),
+        model: optional_value(args, "model"),
+        mode: ChatMode::parse(optional_value(args, "mode").as_deref().unwrap_or("chat"))?,
+        options: source_options(args)?,
+    })
+}
+
 pub(crate) fn source_arg() -> Arg {
     Arg::new("source")
         .long("source")
@@ -82,6 +106,31 @@ pub(crate) fn session_id_arg() -> Arg {
         .long("session-id")
         .required(true)
         .value_name("session_id")
+}
+
+pub(crate) fn optional_session_id_arg() -> Arg {
+    Arg::new("session-id")
+        .long("session-id")
+        .required(false)
+        .value_name("session_id")
+}
+
+pub(crate) fn command_id_arg() -> Arg {
+    Arg::new("command")
+        .long("command")
+        .required(true)
+        .value_name("id")
+}
+
+pub(crate) fn command_args_arg() -> Arg {
+    Arg::new("args")
+        .long("args")
+        .value_name("JSON|text")
+        .help("Command args as a JSON object or plain text")
+}
+
+pub(crate) fn optional_prompt_arg() -> Arg {
+    Arg::new("prompt").long("prompt").value_name("text")
 }
 
 pub(crate) fn prompt_arg() -> Arg {
@@ -164,6 +213,17 @@ fn source_options(matches: &clap::ArgMatches) -> Result<Option<Value>> {
     optional_value(matches, "options-json")
         .map(|raw| parse_json_object(&raw, "--options-json"))
         .transpose()
+}
+
+fn command_args_value(matches: &clap::ArgMatches) -> Result<Option<Value>> {
+    let Some(raw) = optional_value(matches, "args") else {
+        return Ok(None);
+    };
+    let trimmed = raw.trim();
+    if trimmed.starts_with('{') {
+        return parse_json_object(trimmed, "--args").map(Some);
+    }
+    Ok(Some(serde_json::json!({ "text": raw })))
 }
 
 fn usize_value(matches: &clap::ArgMatches, name: &str, fallback: usize) -> Result<usize> {

@@ -658,11 +658,14 @@ function forwardedPassThroughArgs(args, options) {
   appendOption(out, "--turn-id", options.turnId || options["turn-id"] || options.turn_id);
   appendOption(out, "--cursor", options.cursor);
   appendOption(out, "--limit", options.limit);
+  appendOption(out, "--command", options.command || options.commandId || options.command_id || options.name);
+  appendOption(out, "--args", options.args || options.commandArgs || options["command-args"] || options.command_args);
   appendOption(out, "--prompt", options.prompt);
   appendOption(out, "--model", options.model);
   appendOption(out, "--mode", options.mode);
   appendOption(out, "--resume", options.resume);
   appendOption(out, "--options-json", options.optionsJson || options["options-json"] || options.options_json);
+  if (options.latest || cleanText(options.order) === "latest") out.push("--latest");
   if (options.jsonStream || options["json-stream"] || options.json_stream) out.push("--json-stream");
   if (options.json) out.push("--json");
   return out;
@@ -822,7 +825,7 @@ function parse(argv) {
     const eq = arg.indexOf("=");
     const key = arg.slice(2, eq >= 0 ? eq : undefined);
     const normalized = key.replace(/-([a-z])/g, (_, ch) => ch.toUpperCase());
-    if (["json", "deep", "json-stream", "quick", "live", "no-live", "force", "refresh-quota", "allow-token-spend", "confirm-token-spend"].includes(key)) {
+    if (["json", "deep", "json-stream", "quick", "live", "no-live", "latest", "force", "refresh-quota", "allow-token-spend", "confirm-token-spend"].includes(key)) {
       options[key] = true;
       options[normalized] = true;
       continue;

@@ -1,6 +1,6 @@
-name: panda_bridge
+name: bridge
 description: >-
-  Generic Dart client SDK for the Panda Bridge relay. Byte-for-byte compatible
+  Generic Dart client SDK for the Bridge relay. Byte-for-byte compatible
   with the Kotlin/Swift/JS SDKs: AES-256-GCM relay envelopes, AAD framing, gzip,
   and ECDH-P256 relay-key bootstrap. Product-neutral — all identifiers are
   supplied by the caller via BridgeRelayContext.

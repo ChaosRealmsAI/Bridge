@@ -1,4 +1,4 @@
-import 'package:panda_bridge/panda_bridge.dart';
+import 'package:bridge/bridge.dart';
 import 'package:test/test.dart';
 
 void main() {

@@ -326,7 +326,11 @@ pub(crate) fn interrupt_codex_app_server_turn(
     )
 }
 
-fn codex_app_server_request(project: &Path, method: &str, params: Value) -> Result<Value> {
+pub(crate) fn codex_app_server_request(
+    project: &Path,
+    method: &str,
+    params: Value,
+) -> Result<Value> {
     let timeout_ms = std::env::var("BURN_CODEX_TIMEOUT_MS")
         .ok()
         .and_then(|raw| raw.parse::<u64>().ok())

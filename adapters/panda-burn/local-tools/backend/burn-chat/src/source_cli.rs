@@ -3,8 +3,9 @@ use burn_chat::{
     agent_source_capabilities, agent_source_status, continue_agent_source_session,
     continue_agent_source_session_with_progress, create_agent_source_session,
     create_agent_source_session_with_progress, display_blocks_from_event,
-    interrupt_agent_source_turn, list_agent_source_sessions, list_agent_sources,
-    run_agent_source_turn, run_agent_source_turn_with_progress, show_agent_source_session, Agent,
+    interrupt_agent_source_turn, list_agent_source_commands, list_agent_source_sessions,
+    list_agent_sources, run_agent_source_command, run_agent_source_turn,
+    run_agent_source_turn_with_progress, show_agent_source_session, Agent,
 };
 use clap::{Arg, Command};
 use serde::Serialize;
@@ -13,9 +14,10 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 
 use crate::source_cli_args::{
-    cursor_arg, interrupt_request, json_arg, json_stream_arg, latest_arg, limit_arg, mode_arg,
-    model_arg, options_arg, project_arg, prompt_arg, required, session_id_arg,
-    session_list_request, session_show_request, session_turn_request, source_arg,
+    command_args_arg, command_catalog_request, command_id_arg, command_run_request, cursor_arg,
+    interrupt_request, json_arg, json_stream_arg, latest_arg, limit_arg, mode_arg, model_arg,
+    optional_prompt_arg, optional_session_id_arg, options_arg, project_arg, prompt_arg, required,
+    session_id_arg, session_list_request, session_show_request, session_turn_request, source_arg,
     source_turn_request,
 };
 
@@ -42,6 +44,8 @@ pub(crate) fn handle_source(args: &clap::ArgMatches) -> Result<()> {
             print_json_stdout(&agent_source_status(source, &project)?);
             Ok(())
         }
+        Some(("commands", commands_args)) => handle_commands(commands_args),
+        Some(("command", command_args)) => handle_command(command_args),
         Some(("turn", turn_args)) => handle_turn(turn_args),
         Some(("sessions", sessions_args)) => handle_sessions(sessions_args),
         Some(("session", session_args)) => handle_session(session_args),
@@ -64,9 +68,33 @@ pub(crate) fn source_cli() -> Command {
         .about("Inspect or run one local agent source")
         .subcommand(capabilities_cli())
         .subcommand(status_cli())
+        .subcommand(commands_cli())
+        .subcommand(command_cli())
         .subcommand(turn_cli())
         .subcommand(sessions_cli())
         .subcommand(session_cli())
+}
+
+fn handle_commands(args: &clap::ArgMatches) -> Result<()> {
+    match args.subcommand() {
+        Some(("list", list_args)) => {
+            print_json_stdout(&list_agent_source_commands(command_catalog_request(
+                list_args,
+            )?)?);
+            Ok(())
+        }
+        _ => bail!("missing source commands command"),
+    }
+}
+
+fn handle_command(args: &clap::ArgMatches) -> Result<()> {
+    match args.subcommand() {
+        Some(("run", run_args)) => {
+            print_json_stdout(&run_agent_source_command(command_run_request(run_args)?)?);
+            Ok(())
+        }
+        _ => bail!("missing source command command"),
+    }
 }
 
 fn handle_turn(args: &clap::ArgMatches) -> Result<()> {
@@ -163,6 +191,37 @@ fn status_cli() -> Command {
         .arg(source_arg())
         .arg(project_arg())
         .arg(json_arg())
+}
+
+fn commands_cli() -> Command {
+    Command::new("commands")
+        .about("Inspect source command catalog")
+        .subcommand(
+            Command::new("list")
+                .about("List provider-aware commands for one source")
+                .arg(source_arg())
+                .arg(project_arg())
+                .arg(json_arg()),
+        )
+}
+
+fn command_cli() -> Command {
+    Command::new("command")
+        .about("Run one safe source command")
+        .subcommand(
+            Command::new("run")
+                .about("Run an executable source command or return structured unsupported")
+                .arg(source_arg())
+                .arg(project_arg())
+                .arg(command_id_arg())
+                .arg(command_args_arg())
+                .arg(optional_session_id_arg())
+                .arg(optional_prompt_arg())
+                .arg(model_arg())
+                .arg(mode_arg())
+                .arg(options_arg())
+                .arg(json_arg()),
+        )
 }
 
 fn turn_cli() -> Command {

@@ -20,7 +20,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:panda_bridge/panda_bridge.dart';
+import 'package:bridge/bridge.dart';
 
 Future<void> main() async {
   final raw = await stdin.transform(utf8.decoder).join();

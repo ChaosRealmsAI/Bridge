@@ -1,4 +1,4 @@
-/// Generic Dart client SDK for the Panda Bridge relay.
+/// Generic Dart client SDK for the Bridge relay.
 ///
 /// Byte-for-byte compatible with the Kotlin/Swift/JS SDKs. Product-neutral:
 /// supply all product-specific identifiers via [BridgeRelayContext].

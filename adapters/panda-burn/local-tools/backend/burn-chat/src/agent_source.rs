@@ -2,11 +2,14 @@ use anyhow::Result;
 use serde::Serialize;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
+use std::thread;
+use std::time::Duration;
 
 use crate::agent_source_catalog::{
     agent_source_descriptor, availability_hint, provider_metadata, source_runtime,
     source_transport, AgentSourceDescriptor,
 };
+use crate::error::classify_chat_error;
 use crate::{
     send_chat, send_chat_with_progress, validate_project_dir, Agent, ChatMode, ChatRequest,
     ChatSuccess,
@@ -99,10 +102,7 @@ pub fn run_agent_source_turn_with_progress(
         mode: request.mode,
         sdk_options: request.options,
     };
-    let chat = match progress {
-        Some(progress) => send_chat_with_progress(chat_request, Some(progress))?,
-        None => send_chat(chat_request)?,
-    };
+    let chat = send_chat_with_resume_retry(chat_request, progress)?;
     Ok(AgentSourceTurnSuccess {
         ok: true,
         interface_version: AGENT_SOURCE_INTERFACE_VERSION,
@@ -117,4 +117,57 @@ pub fn run_agent_source_turn_with_progress(
         provider: provider_metadata(source),
         chat,
     })
+}
+
+const CODEX_RESUME_RETRY_DELAYS_MS: &[u64] = &[250, 750, 1500];
+
+fn send_chat_with_resume_retry(
+    chat_request: ChatRequest,
+    progress: Option<&mut dyn FnMut(&Value)>,
+) -> Result<ChatSuccess> {
+    let should_retry = chat_request.agent == Agent::Codex && chat_request.resume.is_some();
+    match progress {
+        Some(progress) => {
+            for attempt in 0..=CODEX_RESUME_RETRY_DELAYS_MS.len() {
+                match send_chat_with_progress(chat_request.clone(), Some(&mut *progress)) {
+                    Ok(chat) => return Ok(chat),
+                    Err(error)
+                        if should_retry
+                            && attempt < CODEX_RESUME_RETRY_DELAYS_MS.len()
+                            && is_resume_not_found(&error) =>
+                    {
+                        thread::sleep(Duration::from_millis(CODEX_RESUME_RETRY_DELAYS_MS[attempt]));
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+        }
+        None => {
+            for attempt in 0..=CODEX_RESUME_RETRY_DELAYS_MS.len() {
+                match send_chat(chat_request.clone()) {
+                    Ok(chat) => return Ok(chat),
+                    Err(error)
+                        if should_retry
+                            && attempt < CODEX_RESUME_RETRY_DELAYS_MS.len()
+                            && is_resume_not_found(&error) =>
+                    {
+                        thread::sleep(Duration::from_millis(CODEX_RESUME_RETRY_DELAYS_MS[attempt]));
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+        }
+    }
+    unreachable!("resume retry loop always returns")
+}
+
+fn is_resume_not_found(error: &anyhow::Error) -> bool {
+    let display_message = error.to_string();
+    let chain_message = format!("{error:#}");
+    let classify_text = if chain_message == display_message {
+        display_message
+    } else {
+        format!("{display_message}\n{chain_message}")
+    };
+    classify_chat_error(&classify_text) == "resume_not_found"
 }

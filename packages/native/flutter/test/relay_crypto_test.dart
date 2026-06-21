@@ -2,7 +2,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:cryptography/cryptography.dart';
-import 'package:panda_bridge/panda_bridge.dart';
+import 'package:bridge/bridge.dart';
 import 'package:test/test.dart';
 
 BridgeRelayContext _context(String relayKeyB64) => BridgeRelayContext(

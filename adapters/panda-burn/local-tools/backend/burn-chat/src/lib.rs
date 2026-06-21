@@ -19,6 +19,7 @@ mod display;
 mod drivers;
 mod error;
 mod json_text;
+mod source_commands;
 pub use agent_session::{
     continue_agent_source_session, continue_agent_source_session_with_progress,
     create_agent_source_session, create_agent_source_session_with_progress,
@@ -45,6 +46,10 @@ pub use error::{error_response, ChatError};
 use json_text::find_text_by_paths;
 pub(crate) use json_text::{
     find_session_id, find_text_by_key, find_transcript_path, get_path, tail_text, text_from_value,
+};
+pub use source_commands::{
+    list_agent_source_commands, run_agent_source_command, AgentCommandCatalog,
+    AgentCommandCatalogRequest, AgentCommandRunRequest, AgentCommandRunResult, AgentCommandSpec,
 };
 
 pub(crate) const DEFAULT_CODEX_TIMEOUT_MS: u64 = 600_000;

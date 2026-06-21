@@ -13,7 +13,7 @@
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:panda_bridge/panda_bridge.dart';
+import 'package:bridge/bridge.dart';
 
 Future<void> main(List<String> args) async {
   final baseUrl = args.isNotEmpty ? args.first : 'http://127.0.0.1:8799';
